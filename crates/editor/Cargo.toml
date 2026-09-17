@@ -9,5 +9,10 @@ b2d_data.workspace = true
 b2d_editor_ui.workspace = true
 b2d_runtime.workspace = true
 
+# Only `tests/dependency_direction.rs` uses this: it reads the workspace
+# through `cargo metadata`, whose output is JSON.
+[dev-dependencies]
+serde_json = "1.0.151"
+
 [lints]
 workspace = true
