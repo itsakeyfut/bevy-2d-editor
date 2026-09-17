@@ -155,7 +155,7 @@ fn exit_code(passed: bool) -> u8 {
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{TASKS, all, annotation, dispatch, exit_code, workspace_root};
+    use super::{TASKS, all, annotation, dispatch, docs, exit_code, gate, workspace_root};
 
     /// The workflow, read once for the tests that assert what it runs.
     fn workflow() -> String {
@@ -241,6 +241,34 @@ mod tests {
     fn the_tasks_are_the_ones_the_workflow_runs() {
         let tasks: Vec<&str> = TASKS.iter().map(|(task, _)| *task).collect();
         assert_eq!(tasks, ["gate", "docs"]);
+    }
+
+    /// Each task runs the check its name promises.
+    ///
+    /// The names alone are not the table: swapping the two functions behind
+    /// them leaves `cargo xtask gate` checking the documents and
+    /// `cargo xtask docs` running the gate, with every name still in place.
+    /// No test can call `dispatch(Some("gate"))` to find that out, because the
+    /// gate runs `cargo test`, so the wiring is asserted by address instead.
+    ///
+    /// Mutation: swap the two functions in `TASKS`, and this fails.
+    #[test]
+    fn each_task_runs_the_check_its_name_promises() {
+        let by_name = |wanted: &str| {
+            TASKS
+                .iter()
+                .find(|(task, _)| *task == wanted)
+                .map(|(_, run)| *run)
+                .expect("the task is in the table")
+        };
+        assert!(
+            std::ptr::fn_addr_eq(by_name("gate"), gate::run as fn() -> bool),
+            "the gate task does not run the gate"
+        );
+        assert!(
+            std::ptr::fn_addr_eq(by_name("docs"), docs::run as fn() -> bool),
+            "the docs task does not check the documents"
+        );
     }
 
     /// The workflow runs the one command, on the three platforms the
