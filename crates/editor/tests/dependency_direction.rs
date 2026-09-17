@@ -48,6 +48,51 @@ const EXPECTED: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Whether a dependency is hard or sits behind a feature.
+///
+/// Spelled out rather than a `bool`, because `("avian2d", true)` in the table
+/// below does not say which way round `true` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Optionality {
+    Required,
+    Optional,
+}
+
+/// A dependency, as far as these tests care: what it is called and whether it
+/// is optional.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Dep {
+    name: String,
+    optionality: Optionality,
+}
+
+/// The external dependencies each crate a user's game reaches is allowed, from
+/// `docs/specs/crates.md` §3.
+///
+/// `EXPECTED` above holds the direction; this holds the weight. A game reaches
+/// `b2d_runtime` and, through it, `b2d_data` and `b2d_core`, so those three are
+/// the whole of what a user's build carries from this workspace. `b2d_editor`
+/// and `b2d_editor_ui` are deliberately absent: nothing a game compiles reaches
+/// them, and a list there would have to be edited every time the editor gained
+/// a dependency while buying none of §2's contract about what a consumer pulls
+/// in. What that costs is that an external dependency added to either is held
+/// by nothing.
+///
+/// Every list is empty today. That is the reason for writing it now rather than
+/// later: §3 has `bevy` arriving in `data` and `runtime`, and
+/// `docs/specs/level-editor.md` §3 has `avian2d` arriving behind a default-on
+/// feature, and a list agreed while it is empty costs one line each.
+///
+/// What this list does **not** hold is the contents of the `default` feature.
+/// Taking `avian2d` out of `default` changes what a game carries and passes
+/// here. No crate in the workspace has a `[features]` table yet, so holding it
+/// now would mean a mechanism with no subject; the issue that brings `avian2d`
+/// in is where that gets decided, and it arrives with the first feature table.
+/// Direct dependencies only, too: what `bevy` pulls in behind itself is not
+/// this list's business.
+const SHIPPED: &[(&str, &[(&str, Optionality)])] =
+    &[("b2d_core", &[]), ("b2d_data", &[]), ("b2d_runtime", &[])];
+
 /// The workspace as cargo resolves it, members only.
 ///
 /// Panics carrying cargo's own message when cargo refuses to produce it, which
@@ -68,31 +113,46 @@ fn metadata() -> Value {
     serde_json::from_slice(&out.stdout).expect("cargo metadata should be JSON")
 }
 
-/// Every workspace member, as `(name, manifest_path, dependency names)`.
+/// The non-dev dependencies of one package, as `cargo metadata` reports them.
 ///
 /// Dev-dependencies are skipped: one never reaches a consumer of a published
 /// crate, and this file is itself the reason `b2d_editor` has one. Build
 /// dependencies are kept, because those do reach a consumer's build.
-fn members(meta: &Value) -> Vec<(String, String, BTreeSet<String>)> {
+///
+/// A dependency declared under a target table is one entry like any other.
+/// Metadata flattens the target tables, which is the reason this file reads
+/// metadata rather than manifests, stated in the module comment above.
+fn deps_of(pkg: &Value) -> BTreeSet<Dep> {
+    pkg["dependencies"]
+        .as_array()
+        .expect("dependencies")
+        .iter()
+        .filter(|d| d["kind"].as_str() != Some("dev"))
+        .map(|d| Dep {
+            name: d["name"].as_str().expect("name").to_owned(),
+            optionality: if d["optional"].as_bool() == Some(true) {
+                Optionality::Optional
+            } else {
+                Optionality::Required
+            },
+        })
+        .collect()
+}
+
+/// Every workspace member, as `(name, manifest_path, dependencies)`.
+fn members(meta: &Value) -> Vec<(String, String, BTreeSet<Dep>)> {
     meta["packages"]
         .as_array()
         .expect("packages")
         .iter()
         .map(|p| {
-            let deps = p["dependencies"]
-                .as_array()
-                .expect("dependencies")
-                .iter()
-                .filter(|d| d["kind"].as_str() != Some("dev"))
-                .map(|d| d["name"].as_str().expect("name").to_owned())
-                .collect();
             (
                 p["name"].as_str().expect("name").to_owned(),
                 p["manifest_path"]
                     .as_str()
                     .expect("manifest_path")
                     .to_owned(),
-                deps,
+                deps_of(p),
             )
         })
         .collect()
@@ -132,7 +192,7 @@ fn the_internal_dependency_graph_is_what_the_specification_says() {
         };
         let internal: BTreeSet<&str> = deps
             .iter()
-            .map(String::as_str)
+            .map(|d| d.name.as_str())
             .filter(|d| workspace.contains(*d))
             .collect();
         let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
@@ -218,7 +278,7 @@ fn a_dev_dependency_is_not_a_dependency() {
         .find(|(n, _, _)| n == "b2d_editor")
         .expect("b2d_editor is a workspace member");
     assert!(
-        !deps.contains("serde_json"),
+        !deps.iter().any(|d| d.name == "serde_json"),
         "b2d_editor's dev-dependency on serde_json reached the graph check"
     );
 }
@@ -238,4 +298,125 @@ fn a_manifest_path_is_read_the_same_way_on_every_platform() {
     assert!(is_under_crates(r"D:\w\crates\core\Cargo.toml"));
     assert!(!is_under_crates("/w/xtask/Cargo.toml"));
     assert!(!is_under_crates(r"D:\w\xtask\Cargo.toml"));
+}
+
+/// Each crate a user's game reaches carries exactly the external dependencies
+/// `SHIPPED` allows it.
+///
+/// Equality rather than containment, for the reason the graph test gives: a
+/// dependency named in the list and missing from the manifest is a
+/// disagreement worth seeing too. Workspace members are dropped first, because
+/// those are `EXPECTED`'s business and holding them twice means two places to
+/// keep in step.
+///
+/// Mutation: add `serde_json = "1.0.151"` to `crates/runtime/Cargo.toml`, or to
+/// `crates/data/Cargo.toml`, or add `("regex", Optionality::Required)` to a
+/// `SHIPPED` row with no dependency behind it. Each fails this test, naming the
+/// crate. The same in `crates/core/Cargo.toml` fails this and
+/// `core_depends_on_nothing_at_all`, which is the one crate held from both
+/// sides.
+#[test]
+fn a_crate_a_game_reaches_carries_exactly_the_external_dependencies_the_list_allows() {
+    let meta = metadata();
+    let workspace: BTreeSet<String> = members(&meta).into_iter().map(|(n, _, _)| n).collect();
+    for (name, allowed) in SHIPPED {
+        let (_, _, deps) = members(&meta)
+            .into_iter()
+            .find(|(n, _, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} is named in SHIPPED and is not a workspace member"));
+        let external: BTreeSet<Dep> = deps
+            .into_iter()
+            .filter(|d| !workspace.contains(&d.name))
+            .collect();
+        let allowed: BTreeSet<Dep> = allowed
+            .iter()
+            .map(|(n, o)| Dep {
+                name: (*n).to_owned(),
+                optionality: *o,
+            })
+            .collect();
+        assert_eq!(
+            external, allowed,
+            "{name} carries the external dependencies {external:?}, and the list \
+             in this file allows {allowed:?}. docs/specs/crates.md §3 fixes what \
+             a user's game pulls in: add it to SHIPPED if that is the decision, \
+             or take it out of the manifest"
+        );
+    }
+}
+
+/// Every crate a game reaches through `b2d_runtime` has a row in `SHIPPED`.
+///
+/// The vacuity guard. The test above walks `SHIPPED`, so a crate missing from
+/// it is not checked and not reported; `runtime` gaining an internal crate
+/// would quietly leave that crate's external dependencies held by nothing.
+///
+/// The closure is computed over `EXPECTED`, which is the other written table
+/// and is itself held against `cargo metadata` by
+/// `the_internal_dependency_graph_is_what_the_specification_says`. That is
+/// deliberate: a membership check computed from the manifests this file checks
+/// would agree with them however wrong both are.
+///
+/// Mutation: remove a row from `SHIPPED`, or add `b2d_editor_ui` to
+/// `EXPECTED`'s `b2d_runtime` row. The first fails this test alone; the second
+/// fails this and the graph test, which reads that row against the manifest.
+#[test]
+fn every_crate_a_game_reaches_through_runtime_has_a_row_in_the_shipped_list() {
+    let mut reached = BTreeSet::new();
+    let mut frontier = vec!["b2d_runtime"];
+    while let Some(name) = frontier.pop() {
+        if !reached.insert(name) {
+            continue;
+        }
+        let (_, deps) = EXPECTED
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| {
+                panic!("{name} is reachable from b2d_runtime and has no row in EXPECTED")
+            });
+        frontier.extend(deps.iter().copied());
+    }
+    let listed: BTreeSet<&str> = SHIPPED.iter().map(|(n, _)| *n).collect();
+    assert_eq!(
+        reached, listed,
+        "SHIPPED is about a different set of crates than the ones a game \
+         reaches through b2d_runtime, so whatever it holds is not the contract \
+         in docs/specs/crates.md §3"
+    );
+}
+
+/// A dependency `cargo metadata` marks optional is read as optional.
+///
+/// Every `SHIPPED` row is empty today, so nothing else in this file would
+/// notice `deps_of` reading `optionality` as a constant `Required`, and the
+/// column would stay unguarded until the first optional dependency arrived.
+/// `avian2d` arriving behind a default-on feature
+/// (`docs/specs/level-editor.md` §3) is what that column is for.
+///
+/// Mutation: read `optionality` as a constant `Required` in `deps_of`, or drop
+/// the `kind != dev` filter. The first fails this test alone; the second fails
+/// this and `a_dev_dependency_is_not_a_dependency`.
+#[test]
+fn a_dependency_marked_optional_in_metadata_is_read_as_optional() {
+    let pkg = serde_json::json!({
+        "dependencies": [
+            { "name": "avian2d", "kind": null, "optional": true },
+            { "name": "bevy", "kind": null, "optional": false },
+            { "name": "serde_json", "kind": "dev", "optional": false },
+        ]
+    });
+    let deps = deps_of(&pkg);
+    assert_eq!(
+        deps,
+        BTreeSet::from([
+            Dep {
+                name: "avian2d".to_owned(),
+                optionality: Optionality::Optional,
+            },
+            Dep {
+                name: "bevy".to_owned(),
+                optionality: Optionality::Required,
+            },
+        ])
+    );
 }
