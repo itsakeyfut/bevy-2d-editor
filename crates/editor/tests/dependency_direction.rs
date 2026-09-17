@@ -163,11 +163,18 @@ fn core_depends_on_nothing_at_all() {
 /// `docs/specs/crates.md` §3 ends by saying that anything with no place in the
 /// graph is not a crate yet. This is where that stops being advice.
 ///
-/// Mutation: add a sixth crate under `crates/` and put it in the workspace.
-/// It fails this test and nothing else.
+/// The second assertion is what stops this test passing vacuously. The loop
+/// skips anything outside `crates/`, so an `is_under_crates` that answers
+/// `false` for everything would skip every package and report success having
+/// examined nothing.
+///
+/// Mutation: add a sixth crate under `crates/` and put it in the workspace, and
+/// the first assertion fails. Break `is_under_crates`, and the second does.
+/// Neither fails anything else.
 #[test]
 fn every_package_under_crates_has_a_place_in_the_graph() {
     let meta = metadata();
+    let mut seen = BTreeSet::new();
     for (name, manifest, _) in members(&meta) {
         if !is_under_crates(&manifest) {
             continue;
@@ -177,5 +184,50 @@ fn every_package_under_crates_has_a_place_in_the_graph() {
             "{name} sits under crates/ and has no row in docs/specs/crates.md §3. \
              Decide where it goes in the graph, or it is not a crate yet"
         );
+        seen.insert(name);
     }
+    let expected: BTreeSet<String> = EXPECTED.iter().map(|(n, _)| (*n).to_owned()).collect();
+    assert_eq!(
+        seen, expected,
+        "this test examined the wrong set of crates, so whatever it reported is \
+         about something other than the workspace"
+    );
+}
+
+/// A dev-dependency is not a dependency for this purpose.
+///
+/// `b2d_editor` has one, `serde_json`, and this file is the reason for it. If
+/// dev-dependencies counted, the crate holding the guard would be the first
+/// thing the guard complained about, and the fix would be to weaken the guard.
+///
+/// Mutation: remove the `kind != dev` filter in `members`. This test fails and
+/// nothing else, which is the point: without it that filter is unguarded.
+#[test]
+fn a_dev_dependency_is_not_a_dependency() {
+    let meta = metadata();
+    let (_, _, deps) = members(&meta)
+        .into_iter()
+        .find(|(n, _, _)| n == "b2d_editor")
+        .expect("b2d_editor is a workspace member");
+    assert!(
+        !deps.contains("serde_json"),
+        "b2d_editor's dev-dependency on serde_json reached the graph check"
+    );
+}
+
+/// A manifest path is read the same way whichever separator the platform uses.
+///
+/// Windows spells `manifest_path` with backslashes, so a check written against
+/// `/crates/` alone answers `false` for every package on the machine this is
+/// developed on and `true` for every package on Linux CI. The test above would
+/// pass on both while guarding nothing on one of them.
+///
+/// Mutation: drop the `replace` in `is_under_crates`. This test fails, and so
+/// does the vacuity assertion above.
+#[test]
+fn a_manifest_path_is_read_the_same_way_on_every_platform() {
+    assert!(is_under_crates("/w/crates/core/Cargo.toml"));
+    assert!(is_under_crates(r"D:\w\crates\core\Cargo.toml"));
+    assert!(!is_under_crates("/w/xtask/Cargo.toml"));
+    assert!(!is_under_crates(r"D:\w\xtask\Cargo.toml"));
 }
