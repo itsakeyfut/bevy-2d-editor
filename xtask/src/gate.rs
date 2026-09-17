@@ -3,7 +3,7 @@
 //! **Every row runs.** The rows are collected into an array before a verdict is
 //! taken, so one invocation reports everything that is wrong rather than the
 //! first thing. The order therefore decides only what a reader sees first, not
-//! how long a failing run takes: the four cargo rows come in rising cost, and
+//! how long a failing run takes: the five cargo rows come in rising cost, and
 //! `no-unsafe`, which spawns no process at all, sits after them because it is
 //! the workspace's own policy rather than something cargo can be asked.
 //!
@@ -39,8 +39,9 @@ use crate::{annotation, on_github, workspace_root};
 /// pins the channel instead, which is the claim that can actually be kept.
 pub fn run() -> bool {
     println!("gate:");
-    let rows = [
+    let rows: [bool; ROW_COUNT] = [
         row("fmt", &mut fmt_command()),
+        game(),
         row("clippy", &mut clippy_command()),
         row("doc", &mut doc_command()),
         row("test", &mut test_command()),
@@ -54,6 +55,15 @@ pub fn run() -> bool {
     }
     passed
 }
+
+/// How many rows `run` takes a verdict over.
+///
+/// Written rather than inferred, so that dropping a row from the array is a
+/// type error rather than a gate that goes on printing `gate: passed` about one
+/// thing fewer. Changing this to agree with a dropped row fails
+/// `one_failing_row_fails_the_gate`, which is the second half of the same
+/// guard.
+const ROW_COUNT: usize = 6;
 
 /// The gate passes only when every row did.
 ///
@@ -81,6 +91,81 @@ fn cargo(args: &[&str]) -> Command {
 /// so it cannot rewrite `Cargo.lock` either.
 fn fmt_command() -> Command {
     cargo(&["fmt", "--all", "--", "--check"])
+}
+
+/// The crates a user's game depends on directly.
+///
+/// A second copy of `GAME_ENTRY_POINTS` in
+/// `crates/editor/tests/dependency_direction.rs`, written out rather than read
+/// from it, and held equal to it by
+/// `the_game_row_checks_every_entry_point_the_graph_names`. Two independently
+/// written lists compared against each other is the shape RK-001 asks for: a
+/// list read out of the file it is checking agrees with that file however wrong
+/// both are.
+const GAME_ENTRY_POINTS: &[&str] = &["b2d_runtime"];
+
+/// The `game` row's command, for one entry point.
+///
+/// `check` rather than `build`: a `use` across a feature boundary fails at name
+/// resolution, so linking catches nothing this row is about, and it costs a
+/// link per entry point on each of the three platforms
+/// `docs/specs/dev-environment.md` §3 runs.
+///
+/// There is no `--no-default-features` invocation beside it. What a crate's own
+/// `default` contains is deferred in `docs/specs/open-questions.md` §1 with its
+/// trigger, the first `[features]` table; answering it here would be bringing
+/// that forward.
+fn game_command(pkg: &str) -> Command {
+    cargo(&["check", "-p", pkg, "--locked"])
+}
+
+/// Every crate a game reaches, resolved the way a game resolves it.
+///
+/// `docs/specs/crates.md` §3 has `data` putting its editor-only parts behind a
+/// feature so a user's game compiles only what loading needs. `SHIPPED` in
+/// `crates/editor/tests/dependency_direction.rs` holds the **declared** edge;
+/// no other row here resolves the configuration a game actually gets. The
+/// `clippy` row passes `--all-features`, and the `test` row builds the
+/// workspace, where `b2d_editor` turns the feature on and cargo unifies it onto
+/// `data`. So `runtime` using `data`'s editor-only code leaves every other row
+/// green and fails in somebody's project instead.
+///
+/// The row is an addition rather than an edit to `clippy`. Dropping
+/// `--all-features` there would make that row see the split and stop it linting
+/// the feature-on configuration, and both configurations matter.
+fn game() -> bool {
+    game_rows(GAME_ENTRY_POINTS, |pkg| {
+        row(&format!("game:{pkg}"), &mut game_command(pkg))
+    })
+}
+
+/// The `game` row's verdict over a given list of entry points.
+///
+/// What each entry point costs is passed in rather than called here, the way
+/// `hits_for` takes the result of reading a file. Both arms are then claims a
+/// test can make without spawning a cargo process per assertion, and the
+/// empty-list arm has no cheap mutation from outside, the way `no_unsafe`'s
+/// does not either.
+///
+/// **A row that examined no entry points is a failure**, for the reason
+/// `no_unsafe` gives about a scan that examined no files: a list that quietly
+/// emptied would print nothing and pass.
+///
+/// `&` rather than `&&`, so a second entry point still runs after the first has
+/// failed. That is the rule `verdict` here and `all` in `main.rs` already keep:
+/// one invocation reports everything that is wrong.
+///
+/// Mutation: change `&` to `&&`, and
+/// `every_entry_point_runs_even_after_one_has_failed` fails.
+fn game_rows(entry_points: &[&str], mut check: impl FnMut(&str) -> bool) -> bool {
+    if entry_points.is_empty() {
+        fail(
+            "game",
+            "examined no entry points, so this row is about nothing",
+        );
+        return false;
+    }
+    entry_points.iter().fold(true, |ok, pkg| ok & check(pkg))
 }
 
 /// The `clippy` row.
@@ -315,8 +400,9 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        clippy_command, doc_command, failure_report, fmt_command, fs, hits_for, scanned_sources,
-        test_command, unsafe_lines, verdict, workspace_root,
+        GAME_ENTRY_POINTS, ROW_COUNT, clippy_command, doc_command, failure_report, fmt_command, fs,
+        game_command, game_rows, hits_for, scanned_sources, test_command, unsafe_lines, verdict,
+        workspace_root,
     };
 
     fn args(cmd: &Command) -> Vec<String> {
@@ -434,16 +520,110 @@ mod tests {
         );
     }
 
+    /// A `game` row with no entry points fails rather than passing quietly.
+    ///
+    /// RK-001, in the shape this row can take it: a list that emptied would
+    /// spawn nothing, print nothing, and leave the gate green about the
+    /// configuration a user's game compiles.
+    ///
+    /// Mutation: drop the `is_empty` arm from `game_rows`, and this fails.
+    /// Nothing else does.
+    #[test]
+    fn a_game_row_with_no_entry_points_fails() {
+        let mut visited = Vec::new();
+        let passed = game_rows(&[], |pkg| {
+            visited.push(pkg.to_owned());
+            true
+        });
+        assert!(!passed, "a row that examined nothing reported success");
+        assert!(visited.is_empty(), "got {visited:?}");
+    }
+
+    /// Every entry point runs, even after an earlier one has failed.
+    ///
+    /// The same rule `verdict` here and `all` in `main.rs` keep: one invocation
+    /// reports everything that is wrong. With one entry point today it is
+    /// unobservable, which is exactly why it is asserted now rather than when
+    /// `runtime_myphysics` arrives and the second crate stops being checked.
+    ///
+    /// Mutation: change `&` to `&&` in `game_rows`, and this fails naming the
+    /// entry point that was never examined.
+    #[test]
+    fn every_entry_point_runs_even_after_one_has_failed() {
+        let mut visited = Vec::new();
+        let passed = game_rows(&["first", "second"], |pkg| {
+            visited.push(pkg.to_owned());
+            false
+        });
+        assert!(!passed);
+        assert_eq!(visited, ["first", "second"]);
+    }
+
+    /// Every entry point passing is the row passing.
+    #[test]
+    fn a_game_row_passes_when_every_entry_point_does() {
+        assert!(game_rows(&["first", "second"], |_| true));
+    }
+
+    /// The `game` row checks every entry point the dependency graph names.
+    ///
+    /// Two independently written lists, compared against each other. Reading
+    /// `GAME_ENTRY_POINTS` out of `dependency_direction.rs` and using it as the
+    /// row's own list would agree with that file however wrong it was, which is
+    /// the second half of RK-001; so the list here is written out and this
+    /// holds the two equal.
+    ///
+    /// The non-empty assertion is not decoration: a pattern that stopped
+    /// matching would compare an empty set against an empty set and pass.
+    ///
+    /// The text is taken to the `;` rather than to the end of the line, because
+    /// rustfmt wraps the declaration once the list has more than one entry.
+    ///
+    /// Mutation: add a name to `GAME_ENTRY_POINTS` on either side and not the
+    /// other, or empty either one, and this fails.
+    #[test]
+    fn the_game_row_checks_every_entry_point_the_graph_names() {
+        let path = workspace_root()
+            .join("crates")
+            .join("editor")
+            .join("tests")
+            .join("dependency_direction.rs");
+        let source = fs::read_to_string(&path)
+            .expect("the dependency graph's entry points live in dependency_direction.rs");
+        let declaration = source
+            .split_once("const GAME_ENTRY_POINTS")
+            .and_then(|(_, rest)| rest.split_once(';'))
+            .map(|(decl, _)| decl)
+            .expect("dependency_direction.rs declares GAME_ENTRY_POINTS");
+
+        let named: Vec<&str> = declaration.split('"').skip(1).step_by(2).collect();
+        assert!(
+            !named.is_empty(),
+            "no entry point was read out of {}, so this test compares nothing: {declaration}",
+            path.display()
+        );
+        assert_eq!(
+            named, GAME_ENTRY_POINTS,
+            "the gate checks {GAME_ENTRY_POINTS:?} and the dependency graph says a game              reaches {named:?}. A crate a game depends on directly is compiled the way a              game resolves it or it is not checked at all"
+        );
+    }
+
     /// One failing row fails the gate, wherever it sits.
     ///
     /// Mutation: change `all` to `any` in `verdict`, or make `run` keep only
     /// the last row's result, and this fails.
     #[test]
     fn one_failing_row_fails_the_gate() {
-        assert!(verdict(&[true, true, true, true, true]));
-        assert!(!verdict(&[false, true, true, true, true]));
-        assert!(!verdict(&[true, true, true, true, false]));
-        assert!(!verdict(&[true, false, true, true, true]));
+        assert_eq!(
+            ROW_COUNT, 6,
+            "a row was added to or taken from `run` without this test being told,              so the position it occupies is asserted by nothing"
+        );
+        assert!(verdict(&[true; ROW_COUNT]));
+        for i in 0..ROW_COUNT {
+            let mut rows = [true; ROW_COUNT];
+            rows[i] = false;
+            assert!(!verdict(&rows), "the gate passed with row {i} failing");
+        }
     }
 
     /// Each row runs the command its name promises.
@@ -484,6 +664,10 @@ mod tests {
             args(&test_command()),
             ["test", "--workspace", "--locked", "--no-fail-fast"]
         );
+        assert_eq!(
+            args(&game_command("b2d_runtime")),
+            ["check", "-p", "b2d_runtime", "--locked"]
+        );
     }
 
     /// Every row that cargo lets be `--locked` is `--locked`.
@@ -506,6 +690,7 @@ mod tests {
             ("clippy", clippy_command()),
             ("doc", doc_command()),
             ("test", test_command()),
+            ("game", game_command("b2d_runtime")),
         ] {
             assert!(
                 args(&cmd).iter().any(|a| a == "--locked"),
