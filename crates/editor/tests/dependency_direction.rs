@@ -159,7 +159,7 @@ const SHIPPED: &[(&str, &[Allowed])] = &[
 ///
 /// `xtask/src/gate.rs` writes this list out a second time, for the `game` row
 /// that compiles each entry point the way a game resolves it. The two are held
-/// equal by `the_game_row_checks_every_entry_point_the_graph_names` there, so
+/// equal by `the_gates_entry_point_list_agrees_with_the_dependency_graphs` there, so
 /// adding a name here without adding it there fails that test rather than
 /// leaving the new crate compiled by nothing.
 const GAME_ENTRY_POINTS: &[&str] = &["b2d_runtime"];

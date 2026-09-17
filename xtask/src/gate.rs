@@ -98,7 +98,7 @@ fn fmt_command() -> Command {
 /// A second copy of `GAME_ENTRY_POINTS` in
 /// `crates/editor/tests/dependency_direction.rs`, written out rather than read
 /// from it, and held equal to it by
-/// `the_game_row_checks_every_entry_point_the_graph_names`. Two independently
+/// `the_gates_entry_point_list_agrees_with_the_dependency_graphs`. Two independently
 /// written lists compared against each other is the shape RK-001 asks for: a
 /// list read out of the file it is checking agrees with that file however wrong
 /// both are.
@@ -134,12 +134,20 @@ fn game_command(pkg: &str) -> Command {
 /// `--all-features` there would make that row see the split and stop it linting
 /// the feature-on configuration, and both configurations matter.
 ///
-/// What this assembly is not held to: that the list it passes is
-/// `GAME_ENTRY_POINTS` at all. A literal list written here would leave
-/// `the_game_row_checks_every_entry_point_the_graph_names` comparing two files
-/// the row no longer reads, and seeing that through the closure takes running
-/// cargo, which is a test that costs a compile of `b2d_runtime` per run.
-/// Measured and left open deliberately, rather than not noticed.
+/// **What this assembly is not held to: anything at all.** Nothing calls it, so
+/// replacing this body with `true` leaves every test in the workspace passing,
+/// and so does passing a list written in place instead of `GAME_ENTRY_POINTS`.
+/// Both were applied and the suite stayed green. The pieces it is built from
+/// are each guarded: `game_rows`' two arms, `game_command`'s arguments,
+/// `game_row_name`'s spelling, and the two lists held equal. The assembly is
+/// not.
+///
+/// Closing it takes a test that calls this, which runs cargo inside the suite.
+/// That is cheaper than it sounds: measured on this tree, such a test ran in
+/// 0.04s, and `cargo xtask gate` with it in place took 5.3s in total, because
+/// the row has already run the identical invocation by then and cargo reuses
+/// it. What it costs instead is a unit test that spawns a process and resolves
+/// a lockfile, and that trade is what is left open here.
 fn game() -> bool {
     game_rows(GAME_ENTRY_POINTS, |pkg| {
         row(&game_row_name(pkg), &mut game_command(pkg))
@@ -588,7 +596,12 @@ mod tests {
         assert!(game_rows(&["first", "second"], |_| true));
     }
 
-    /// The `game` row checks every entry point the dependency graph names.
+    /// The gate's own entry point list agrees with the dependency graph's.
+    ///
+    /// Named for what it compares, which is two written-out lists, and not for
+    /// what a reader might hope it compares. It does **not** hold that the row
+    /// wired into the gate reads either list; `game`'s doc comment says what is
+    /// left open there. A test name here is held to what it asserts.
     ///
     /// Two independently written lists, compared against each other. Reading
     /// `GAME_ENTRY_POINTS` out of `dependency_direction.rs` and using it as the
@@ -602,10 +615,30 @@ mod tests {
     /// The text is taken to the `;` rather than to the end of the line, because
     /// rustfmt wraps the declaration once the list has more than one entry.
     ///
+    /// **Comments are the hazard here, in three ways, and each one was measured
+    /// reporting `ok` while the two lists genuinely disagreed.** A comment
+    /// quoting the declaration is found ahead of the real item, so the needle
+    /// begins with a newline and matches only an item at column zero, and the
+    /// number of matches is asserted rather than trusting that. A comment
+    /// *inside* the list containing a semicolon, which this repository's prose
+    /// does constantly, truncates the text at that semicolon, so line comments
+    /// are stripped before the `;` is looked for. A comment inside the list
+    /// quoting a crate name would otherwise be read as an entry, which the same
+    /// stripping handles.
+    ///
+    /// That is RK-001 arriving inside the guard written to apply RK-001: the
+    /// set being compared was not the set anybody meant.
+    ///
     /// Mutation: add a name to `GAME_ENTRY_POINTS` on either side and not the
-    /// other, or empty either one, and this fails.
+    /// other, empty either one, drop the leading newline from `DECLARATION`, or
+    /// drop the comment stripping and put a `;` in a comment inside the list,
+    /// and this fails.
     #[test]
-    fn the_game_row_checks_every_entry_point_the_graph_names() {
+    fn the_gates_entry_point_list_agrees_with_the_dependency_graphs() {
+        /// The declaration as an item, not as prose quoting one.
+        const DECLARATION: &str = "
+const GAME_ENTRY_POINTS";
+
         let path = workspace_root()
             .join("crates")
             .join("editor")
@@ -613,11 +646,29 @@ mod tests {
             .join("dependency_direction.rs");
         let source = fs::read_to_string(&path)
             .expect("the dependency graph's entry points live in dependency_direction.rs");
-        let declaration = source
-            .split_once("const GAME_ENTRY_POINTS")
-            .and_then(|(_, rest)| rest.split_once(';'))
-            .map(|(decl, _)| decl)
+        let found = source.matches(DECLARATION).count();
+        assert_eq!(
+            found,
+            1,
+            "{} holds {found} declarations of GAME_ENTRY_POINTS, and this test reads whichever comes first",
+            path.display()
+        );
+        let rest = source
+            .split_once(DECLARATION)
+            .map(|(_, rest)| rest)
             .expect("dependency_direction.rs declares GAME_ENTRY_POINTS");
+        let uncommented: String = rest
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        let declaration = uncommented
+            .split_once(';')
+            .map(|(decl, _)| decl)
+            .expect("the declaration of GAME_ENTRY_POINTS ends in a semicolon");
 
         let named: Vec<&str> = declaration.split('"').skip(1).step_by(2).collect();
         assert!(
@@ -627,7 +678,7 @@ mod tests {
         );
         assert_eq!(
             named, GAME_ENTRY_POINTS,
-            "the gate checks {GAME_ENTRY_POINTS:?} and the dependency graph says a game              reaches {named:?}. A crate a game depends on directly is compiled the way a              game resolves it or it is not checked at all"
+            "the gate checks {GAME_ENTRY_POINTS:?} and the dependency graph says a game reaches {named:?}. A crate a game depends on directly is compiled the way a game resolves it or it is not checked at all"
         );
     }
 
@@ -757,7 +808,7 @@ mod tests {
             ("clippy", clippy_command()),
             ("doc", doc_command()),
             ("test", test_command()),
-            ("game", game_command("b2d_runtime")),
+            (&game_row_name("b2d_runtime"), game_command("b2d_runtime")),
         ] {
             assert!(
                 args(&cmd).iter().any(|a| a == "--locked"),
