@@ -133,10 +133,33 @@ fn game_command(pkg: &str) -> Command {
 /// The row is an addition rather than an edit to `clippy`. Dropping
 /// `--all-features` there would make that row see the split and stop it linting
 /// the feature-on configuration, and both configurations matter.
+///
+/// What this assembly is not held to: that the list it passes is
+/// `GAME_ENTRY_POINTS` at all. A literal list written here would leave
+/// `the_game_row_checks_every_entry_point_the_graph_names` comparing two files
+/// the row no longer reads, and seeing that through the closure takes running
+/// cargo, which is a test that costs a compile of `b2d_runtime` per run.
+/// Measured and left open deliberately, rather than not noticed.
 fn game() -> bool {
     game_rows(GAME_ENTRY_POINTS, |pkg| {
-        row(&format!("game:{pkg}"), &mut game_command(pkg))
+        row(&game_row_name(pkg), &mut game_command(pkg))
     })
+}
+
+/// What one entry point's row is called.
+///
+/// The package is in the name so that the annotation `failure_report` puts on
+/// the Checks page reads `gate: the game:b2d_runtime row failed` and says which
+/// crate without the log being opened. Cargo's own error names it too, so what
+/// this buys is not knowing rather than not being able to find out.
+///
+/// Built rather than formatted in place for the reason [`failure_report`] is:
+/// otherwise dropping the package from the name fails nothing.
+///
+/// Mutation: return `"game".to_owned()`, and
+/// `a_game_row_is_named_after_the_crate_it_compiled` fails.
+fn game_row_name(pkg: &str) -> String {
+    format!("game:{pkg}")
 }
 
 /// The `game` row's verdict over a given list of entry points.
@@ -401,8 +424,8 @@ mod tests {
 
     use super::{
         GAME_ENTRY_POINTS, ROW_COUNT, clippy_command, doc_command, failure_report, fmt_command, fs,
-        game_command, game_rows, hits_for, scanned_sources, test_command, unsafe_lines, verdict,
-        workspace_root,
+        game_command, game_row_name, game_rows, hits_for, scanned_sources, test_command,
+        unsafe_lines, verdict, workspace_root,
     };
 
     fn args(cmd: &Command) -> Vec<String> {
@@ -667,6 +690,50 @@ mod tests {
         assert_eq!(
             args(&game_command("b2d_runtime")),
             ["check", "-p", "b2d_runtime", "--locked"]
+        );
+    }
+
+    /// The `game` row compiles the entry point it was handed.
+    ///
+    /// Said with a name that is not today's only entry point, because
+    /// `game_command` can ignore its argument and hardcode `b2d_runtime`
+    /// without the assertion above noticing: it passes that same name in. The
+    /// day `runtime_myphysics` arrives, the row would compile one crate twice
+    /// and print `ok` about the other, which is RK-001 in this row's shape and
+    /// the reason acceptance criterion 3 of #15 exists.
+    ///
+    /// Mutation: ignore `pkg` in `game_command` and name a crate in its place,
+    /// and this fails. Nothing else does.
+    #[test]
+    fn a_game_row_compiles_the_entry_point_it_was_handed() {
+        assert_eq!(
+            args(&game_command("runtime_myphysics")),
+            ["check", "-p", "runtime_myphysics", "--locked"]
+        );
+    }
+
+    /// A `game` row is named after the crate it compiled.
+    ///
+    /// The Checks page gets one annotation per failing row, built from the row
+    /// name. Without the package in it, a red build says only that `game`
+    /// failed, and which crate is a log away.
+    ///
+    /// Mutation: return `"game".to_owned()` from `game_row_name`, and this
+    /// fails. Nothing else does.
+    #[test]
+    fn a_game_row_is_named_after_the_crate_it_compiled() {
+        assert_eq!(game_row_name("runtime_myphysics"), "game:runtime_myphysics");
+        assert!(
+            failure_report(
+                &game_row_name("b2d_runtime"),
+                "error: x
+",
+                true
+            )
+            .ends_with(
+                "
+::error::gate: the game:b2d_runtime row failed"
+            )
         );
     }
 
