@@ -1,0 +1,4 @@
+[alias]
+# One definition of the gate, reachable from a clean checkout by a person and,
+# once a workflow exists to call it, by CI. There is no workflow yet.
+xtask = "run --quiet --package xtask --"

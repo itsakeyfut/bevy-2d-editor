@@ -112,12 +112,20 @@ fn is_under_crates(manifest_path: &str) -> bool {
 /// adding one stops `cargo metadata` before this runs, and removing one lands
 /// here.
 ///
+/// "In this workspace" is decided by what `cargo metadata` calls a member, not
+/// by the `b2d_` prefix. `docs/specs/crates.md` §4 is a naming rule and §3 is a
+/// dependency rule, and a workspace member that does not carry the prefix,
+/// `xtask` being the one that exists, would be invisible to a check keyed on
+/// spelling.
+///
 /// Mutation: add `b2d_data.workspace = true` to `crates/editor_ui/Cargo.toml`,
-/// or remove `b2d_core` from `crates/data/Cargo.toml`. Either fails this test
-/// and nothing else.
+/// remove `b2d_core` from `crates/data/Cargo.toml`, or add
+/// `xtask = { path = "../../xtask" }` to `crates/runtime/Cargo.toml`. Each
+/// fails this test and nothing else.
 #[test]
 fn the_internal_dependency_graph_is_what_the_specification_says() {
     let meta = metadata();
+    let workspace: BTreeSet<String> = members(&meta).into_iter().map(|(n, _, _)| n).collect();
     for (name, _, deps) in members(&meta) {
         let Some((_, allowed)) = EXPECTED.iter().find(|(n, _)| *n == name) else {
             continue; // a package outside the graph is the next test's business
@@ -125,7 +133,7 @@ fn the_internal_dependency_graph_is_what_the_specification_says() {
         let internal: BTreeSet<&str> = deps
             .iter()
             .map(String::as_str)
-            .filter(|d| d.starts_with("b2d_"))
+            .filter(|d| workspace.contains(*d))
             .collect();
         let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
         assert_eq!(

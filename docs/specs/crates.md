@@ -217,6 +217,12 @@ Why:
   crates are split at all; when in doubt, follow the graph.
 * Adding a crate starts by deciding where in this graph it goes. **Anything with
   no place in it is not a crate yet** (§2).
+* **The graph is about `crates/`.** A package outside it, such as `xtask/`, is a
+  tool the workspace builds itself with rather than part of what is built, and
+  it has no place in the graph on purpose. That is not an exception to the rule
+  above, it is the rule's boundary, and
+  `crates/editor/tests/dependency_direction.rs` is where the boundary is drawn:
+  `is_under_crates` decides which packages the graph governs.
 
 ---
 
