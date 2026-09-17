@@ -144,7 +144,7 @@ slipped rather than a sign of progress.
   whose pointers are dead is a record nobody can check.
 * No em dashes.
 
-`bash .claude/scripts/docs.sh` checks the parts of this that a machine can: the
+`cargo xtask docs` checks the parts of this that a machine can: the
 index and the records agreeing, the statuses matching, and Confirmation being
 filled in.
 
