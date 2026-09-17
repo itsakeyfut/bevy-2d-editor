@@ -1,0 +1,4 @@
+[alias]
+# `cargo xtask gate` is what CI runs and what a person runs. One definition,
+# reachable from a clean checkout, which is the whole point of the crate.
+xtask = "run --quiet --package xtask --"
