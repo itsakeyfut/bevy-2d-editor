@@ -10,6 +10,16 @@
 //! Each row's command is built by its own named function, so that what the row
 //! actually runs is a thing a test can read. A row whose arguments drift is a
 //! row that goes on printing `ok` about something other than its name.
+//!
+//! **Every row that can be is `--locked`.** Without it cargo resolves and
+//! rewrites `Cargo.lock` on the way past, so a lockfile that disagrees with
+//! what was committed is silently corrected and the gate passes about a
+//! resolution nobody chose. It is unconditional rather than switched on by a
+//! `CI` environment variable, because a gate that means one thing at a
+//! terminal and another on a runner is two gates, and `CLAUDE.md` defines done
+//! as the exit code of one command. What that costs: after a dependency is
+//! added to a manifest, the next run fails with cargo's own
+//! `the lock file needs to be updated` until `cargo fetch` has run.
 
 use std::fs;
 use std::io;
@@ -61,6 +71,13 @@ fn cargo(args: &[&str]) -> Command {
 }
 
 /// The `fmt` row.
+///
+/// The only row without `--locked`, because `cargo fmt` does not take it:
+/// `cargo fmt --all --locked -- --check` answers
+/// `error: unexpected argument '--locked' found`. That is a fact about cargo
+/// rather than a choice, and it is said here so the absence does not read as
+/// an oversight. Nothing is lost by it: `fmt` does not resolve dependencies,
+/// so it cannot rewrite `Cargo.lock` either.
 fn fmt_command() -> Command {
     cargo(&["fmt", "--all", "--", "--check"])
 }
@@ -75,6 +92,7 @@ fn clippy_command() -> Command {
         "--workspace",
         "--all-targets",
         "--all-features",
+        "--locked",
         "--",
         "-D",
         "warnings",
@@ -91,6 +109,7 @@ fn doc_command() -> Command {
         "--workspace",
         "--no-deps",
         "--document-private-items",
+        "--locked",
     ]);
     cmd.env("RUSTDOCFLAGS", "-Dwarnings");
     cmd
@@ -103,7 +122,7 @@ fn doc_command() -> Command {
 /// the gate agree with whatever they blessed, so the variable is removed from
 /// the child rather than merely left unset here.
 fn test_command() -> Command {
-    let mut cmd = cargo(&["test", "--workspace"]);
+    let mut cmd = cargo(&["test", "--workspace", "--locked"]);
     cmd.env_remove("BEVY2D_BLESS");
     cmd
 }
@@ -267,8 +286,8 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        clippy_command, doc_command, fmt_command, hits_for, scanned_sources, test_command,
-        unsafe_lines, verdict,
+        clippy_command, doc_command, fmt_command, fs, hits_for, scanned_sources, test_command,
+        unsafe_lines, verdict, workspace_root,
     };
 
     fn args(cmd: &Command) -> Vec<String> {
@@ -404,8 +423,8 @@ mod tests {
     /// other test noticing: it would still exit 0, still print `ok`, and still
     /// have stopped running the suite.
     ///
-    /// Mutation: change any subcommand or drop `-D warnings` or `--check`, and
-    /// this fails naming the row.
+    /// Mutation: change any subcommand, or drop `-D warnings`, `--check` or
+    /// `--locked`, and this fails naming the row.
     #[test]
     fn each_row_runs_the_command_its_name_promises() {
         assert_eq!(args(&fmt_command()), ["fmt", "--all", "--", "--check"]);
@@ -416,6 +435,7 @@ mod tests {
                 "--workspace",
                 "--all-targets",
                 "--all-features",
+                "--locked",
                 "--",
                 "-D",
                 "warnings"
@@ -427,10 +447,70 @@ mod tests {
                 "doc",
                 "--workspace",
                 "--no-deps",
-                "--document-private-items"
+                "--document-private-items",
+                "--locked"
             ]
         );
-        assert_eq!(args(&test_command()), ["test", "--workspace"]);
+        assert_eq!(args(&test_command()), ["test", "--workspace", "--locked"]);
+    }
+
+    /// Every row that cargo lets be `--locked` is `--locked`.
+    ///
+    /// Said separately from the row above, which is an exact argument list and
+    /// would keep passing with a `--locked` moved to a row that happened to be
+    /// rewritten. This one is about the property: a lockfile that disagrees
+    /// with what was committed fails the gate rather than being corrected on
+    /// the way past.
+    ///
+    /// `fmt` is the exception and is asserted as one, because `cargo fmt`
+    /// rejects the flag. An exception nobody wrote down is an exception that
+    /// spreads.
+    ///
+    /// Mutation: drop `--locked` from any of the three, and this fails naming
+    /// the row.
+    #[test]
+    fn every_row_that_can_refuse_a_stale_lockfile_does() {
+        for (name, cmd) in [
+            ("clippy", clippy_command()),
+            ("doc", doc_command()),
+            ("test", test_command()),
+        ] {
+            assert!(
+                args(&cmd).iter().any(|a| a == "--locked"),
+                "the {name} row would rewrite Cargo.lock instead of failing on it"
+            );
+        }
+        assert!(
+            !args(&fmt_command()).iter().any(|a| a == "--locked"),
+            "cargo fmt rejects --locked, so the fmt row cannot carry it"
+        );
+    }
+
+    /// The invocation that starts the gate refuses a stale lockfile too.
+    ///
+    /// `cargo xtask` is itself `cargo run`, and it resolves before any row of
+    /// the gate exists to be `--locked`. Measured, with the flag on every row
+    /// and not on the alias: editing `Cargo.lock` to claim `regex 1.13.0` and
+    /// running `cargo xtask gate` printed `gate: passed` and left the lockfile
+    /// resolved back to `1.13.1`. Every row was `--locked` and not one of them
+    /// ever saw the stale file.
+    ///
+    /// Mutation: drop `--locked` from the alias in `.cargo/config.toml`, and
+    /// this fails. Nothing else does, which is the whole reason it is here: the
+    /// gate goes on passing, about a resolution nobody committed.
+    #[test]
+    fn the_alias_that_starts_the_gate_refuses_a_stale_lockfile() {
+        let path = workspace_root().join(".cargo").join("config.toml");
+        let config =
+            fs::read_to_string(&path).expect("the xtask alias lives in .cargo/config.toml");
+        let alias = config
+            .lines()
+            .find(|line| line.starts_with("xtask = "))
+            .expect("the xtask alias is defined in .cargo/config.toml");
+        assert!(
+            alias.contains("--locked"),
+            "the alias resolves before the gate does, so it carries the flag too: {alias}"
+        );
     }
 
     /// The `doc` row makes a rustdoc warning an error.
