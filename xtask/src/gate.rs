@@ -21,10 +21,10 @@ pub fn run() -> bool {
     println!("gate:");
     let mut passed = true;
 
-    passed &= cargo_row("fmt", &["fmt", "--all", "--", "--check"], |_| {});
-    passed &= cargo_row(
+    passed &= row("fmt", &mut cargo(&["fmt", "--all", "--", "--check"]));
+    passed &= row(
         "clippy",
-        &[
+        &mut cargo(&[
             "clippy",
             "--workspace",
             "--all-targets",
@@ -32,27 +32,10 @@ pub fn run() -> bool {
             "--",
             "-D",
             "warnings",
-        ],
-        |_| {},
+        ]),
     );
-    passed &= cargo_row(
-        "doc",
-        &[
-            "doc",
-            "--workspace",
-            "--no-deps",
-            "--document-private-items",
-        ],
-        |c| {
-            c.env("RUSTDOCFLAGS", "-Dwarnings");
-        },
-    );
-    // `BEVY2D_BLESS` makes a snapshot corpus rewrite its expectations instead
-    // of comparing against them. Somebody who blessed a moment ago should not
-    // have the gate agree with whatever they blessed.
-    passed &= cargo_row("test", &["test", "--workspace"], |c| {
-        c.env_remove("BEVY2D_BLESS");
-    });
+    passed &= row("doc", &mut doc_command());
+    passed &= row("test", &mut test_command());
     passed &= no_unsafe();
 
     if passed {
@@ -63,12 +46,43 @@ pub fn run() -> bool {
     passed
 }
 
-/// Run one cargo invocation as a row, printing `ok` or `FAIL` and a tail.
-fn cargo_row(name: &str, args: &[&str], tweak: impl FnOnce(&mut Command)) -> bool {
+/// A cargo invocation rooted at the workspace, whichever directory the person
+/// who typed `cargo xtask` happened to be standing in.
+fn cargo(args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO"));
     cmd.args(args).current_dir(workspace_root());
-    tweak(&mut cmd);
+    cmd
+}
 
+/// The `doc` row.
+///
+/// `RUSTDOCFLAGS=-Dwarnings` is the row. Without it rustdoc reports a broken
+/// intra-doc link, exits 0, and the gate agrees with it.
+fn doc_command() -> Command {
+    let mut cmd = cargo(&[
+        "doc",
+        "--workspace",
+        "--no-deps",
+        "--document-private-items",
+    ]);
+    cmd.env("RUSTDOCFLAGS", "-Dwarnings");
+    cmd
+}
+
+/// The `test` row.
+///
+/// `BEVY2D_BLESS` makes a snapshot corpus rewrite its expectations instead of
+/// comparing against them. Somebody who blessed a moment ago should not have
+/// the gate agree with whatever they blessed, so the variable is removed from
+/// the child rather than merely left unset here.
+fn test_command() -> Command {
+    let mut cmd = cargo(&["test", "--workspace"]);
+    cmd.env_remove("BEVY2D_BLESS");
+    cmd
+}
+
+/// Run one row, printing `ok` or `FAIL` and a tail of what it said.
+fn row(name: &str, cmd: &mut Command) -> bool {
     let out = match cmd.output() {
         Ok(out) => out,
         Err(err) => {
@@ -103,16 +117,22 @@ fn fail(name: &str, log: &str) {
 /// the gate asks rather than assuming.
 ///
 /// `xtask/` is not scanned. It is the tooling rather than the editor, none of
-/// it reaches a user's game, and the tests for this very function have to spell
+/// it reaches a user's game, and the tests for [`unsafe_lines`] have to spell
 /// the keyword out to have anything to match.
+///
+/// A scan that examined nothing reports `FAIL`, not `ok`. That is not caution
+/// for its own sake: the check this crate replaces spent its last weeks
+/// printing `ok` about a workspace it was no longer looking at, and a row that
+/// cannot say whether it looked is that defect waiting to happen again.
 fn no_unsafe() -> bool {
-    let root = workspace_root();
-    let mut sources = Vec::new();
-    for dir in ["crates", "src"] {
-        collect_rust_files(&root.join(dir), &mut sources);
+    let sources = scanned_sources();
+    if sources.is_empty() {
+        println!("  FAIL  no-unsafe");
+        println!("        examined no source files, so this row is about nothing");
+        return false;
     }
-    sources.sort();
 
+    let root = workspace_root();
     let mut hits = Vec::new();
     for path in &sources {
         let Ok(text) = fs::read_to_string(path) else {
@@ -138,6 +158,19 @@ fn no_unsafe() -> bool {
         println!("        {hit}");
     }
     false
+}
+
+/// Every `.rs` file the `no-unsafe` row examines.
+///
+/// Split out so that "it examined something" is a claim with a test behind it.
+fn scanned_sources() -> Vec<PathBuf> {
+    let root = workspace_root();
+    let mut sources = Vec::new();
+    for dir in ["crates", "src"] {
+        collect_rust_files(&root.join(dir), &mut sources);
+    }
+    sources.sort();
+    sources
 }
 
 /// The 1-based lines of `text` that open an `unsafe` block or declare one.
@@ -176,7 +209,9 @@ fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[cfg(test)]
 mod tests {
-    use super::unsafe_lines;
+    use std::ffi::OsStr;
+
+    use super::{doc_command, scanned_sources, test_command, unsafe_lines};
 
     /// A block and a declaration are both hits, and the line number is 1-based.
     ///
@@ -205,13 +240,65 @@ mod tests {
         assert_eq!(unsafe_lines(src), Vec::<usize>::new());
     }
 
-    /// A file with nothing to find reports nothing, which is what stops the
-    /// row passing while it looks at the wrong thing.
+    /// A file with nothing to find reports nothing.
     #[test]
     fn an_ordinary_file_has_no_hits() {
         assert_eq!(
             unsafe_lines("//! A crate.\n\npub fn f() -> u32 {\n    1\n}\n"),
             Vec::<usize>::new()
         );
+    }
+
+    /// The `no-unsafe` row examines the crates that are actually there.
+    ///
+    /// Without this the row is free to look at nothing and print `ok`, which is
+    /// how the dependency-graph check it sits beside died: written against
+    /// names that had since been changed, it went on passing.
+    ///
+    /// Mutation: misspell either directory in `scanned_sources`, and this
+    /// fails. Nothing else does.
+    #[test]
+    fn the_unsafe_scan_reads_the_crates_that_are_there() {
+        let sources = scanned_sources();
+        assert!(
+            !sources.is_empty(),
+            "the no-unsafe row examined no files at all"
+        );
+        assert!(
+            sources.iter().any(|p| p.ends_with("lib.rs")),
+            "the no-unsafe row found no crate root: {sources:?}"
+        );
+    }
+
+    /// The `doc` row makes a rustdoc warning an error.
+    ///
+    /// Mutation: drop the `env` call in `doc_command`, and this fails. Nothing
+    /// else does, because every other row still passes on a workspace whose
+    /// documentation has quietly stopped building.
+    #[test]
+    fn the_doc_row_makes_a_rustdoc_warning_an_error() {
+        let cmd = doc_command();
+        let flag = cmd
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("RUSTDOCFLAGS"))
+            .and_then(|(_, value)| value);
+        assert_eq!(flag, Some(OsStr::new("-Dwarnings")));
+    }
+
+    /// The `test` row refuses a blessing inherited from the shell.
+    ///
+    /// `env_remove` records the key with no value, which is what unsetting it
+    /// in the child looks like from here.
+    ///
+    /// Mutation: drop the `env_remove` call, and this fails. Nothing else does,
+    /// and what it prevents is a snapshot corpus agreeing with whatever
+    /// somebody blessed a moment ago.
+    #[test]
+    fn the_test_row_refuses_an_inherited_blessing() {
+        let cmd = test_command();
+        let entry = cmd
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("BEVY2D_BLESS"));
+        assert_eq!(entry, Some((OsStr::new("BEVY2D_BLESS"), None)));
     }
 }

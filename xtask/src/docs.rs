@@ -58,12 +58,19 @@ pub fn run() -> bool {
         }
     }
     println!(
-        "\nfiles: {}  records: {}  problems: {}",
-        docs.markdown.len(),
-        docs.records().len(),
-        problems.len()
+        "\n{}",
+        summary(docs.markdown.len(), docs.records().len(), problems.len())
     );
     problems.is_empty()
+}
+
+/// The line a person greps for after a run.
+///
+/// Split out because it is an interface. `problems: 0` is what somebody reads
+/// to decide the documents agree, and `files: 0` beside it would be saying
+/// something quite different about the same run.
+fn summary(files: usize, records: usize, problems: usize) -> String {
+    format!("files: {files}  records: {records}  problems: {problems}")
 }
 
 impl Docs {
@@ -383,7 +390,7 @@ fn normalize(here: &str, rel: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Docs, normalize};
+    use super::{Docs, normalize, summary};
     use std::collections::{BTreeMap, BTreeSet};
 
     impl Docs {
@@ -669,5 +676,84 @@ mod tests {
             normalize("docs/specs", "./crates.md"),
             "docs/specs/crates.md"
         );
+    }
+
+    /// A record with no status in its front matter is reported.
+    ///
+    /// Mutation: delete the `has no status` branch, and this fails. Without it
+    /// a record can drop its front matter and be skipped in silence, which is
+    /// the same shape as passing while examining nothing.
+    #[test]
+    fn a_record_with_no_status_is_reported() {
+        let record = "# A choice\n\n### Confirmation\n\nGuarded by a test.\n";
+        let found = Docs::of(&with_adr(record, ADR_INDEX), &[]).problems();
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("has no status in its front matter")),
+            "got {found:?}"
+        );
+    }
+
+    /// A record the by-status line does not account for is reported.
+    ///
+    /// Mutation: delete the `line.contains(id)` branch, and this fails.
+    #[test]
+    fn a_record_missing_from_the_by_status_line_is_reported() {
+        let index = "# Records\n\n| # | Decision | Status | Confirmed by |\n| --- | --- | --- | --- |\n| [0001](./0001-a-choice.md) | A choice | accepted | a test |\n\n**By status**: accepted: none\n";
+        let found = Docs::of(&with_adr(RECORD, index), &[]).problems();
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("missing from the by-status line")),
+            "got {found:?}"
+        );
+    }
+
+    /// An index row pointing at a record that is not there is reported.
+    ///
+    /// Mutation: delete the `linked` loop, and this fails. A row with no record
+    /// is the half of the promise the record-side check cannot see.
+    #[test]
+    fn an_index_row_naming_a_record_that_is_not_there_is_reported() {
+        let index = "# Records\n\n| # | Decision | Status | Confirmed by |\n| --- | --- | --- | --- |\n| [0001](./0001-a-choice.md) | A choice | accepted | a test |\n| [0002](./0002-gone.md) | Gone | accepted | a test |\n\n**By status**: accepted: 0001\n";
+        let found = Docs::of(&with_adr(RECORD, index), &[]).problems();
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("the ADR index links 0002-gone.md, which does not exist")),
+            "got {found:?}"
+        );
+    }
+
+    /// Reading the real documents finds them.
+    ///
+    /// Every other test here works on a map built from literals, which is what
+    /// makes them cheap and is also what leaves `read` unexamined. A `read`
+    /// that found nothing would still be caught, because the checks would then
+    /// report `decisions.md is missing`, but they would be reporting it for the
+    /// wrong reason and nobody reading the output would learn which.
+    ///
+    /// Mutation: change the `.md` suffix in `walk`, and this fails.
+    #[test]
+    fn reading_the_real_documents_finds_them() {
+        let docs = Docs::read(crate::workspace_root()).expect("docs/ is in the repository");
+        assert!(
+            docs.markdown.contains_key("docs/specs/decisions.md"),
+            "read found {} documents and not that one",
+            docs.markdown.len()
+        );
+        assert!(
+            docs.present.contains("docs/specs"),
+            "read found no docs/specs"
+        );
+    }
+
+    /// The summary line keeps the shape people read it in.
+    ///
+    /// Mutation: change any of the three labels or the spacing, and this fails.
+    #[test]
+    fn the_summary_line_keeps_its_shape() {
+        assert_eq!(summary(18, 0, 0), "files: 18  records: 0  problems: 0");
     }
 }
