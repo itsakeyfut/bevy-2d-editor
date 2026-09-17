@@ -29,6 +29,14 @@ use std::process::ExitCode;
 /// the working directory, because `cargo run` hands the binary whichever
 /// directory cargo was invoked from. `git rev-parse` would answer too, and
 /// would make the checks need a git checkout to run in.
+///
+/// What this costs: the path is baked into the binary, so moving the whole
+/// checkout, `target/` included, leaves a cached binary pointing at where the
+/// tree used to be. Cargo rebuilds on a source change and not on a move, so
+/// `cargo xtask docs` then says `docs/ does not exist` until something is
+/// touched. Loud, and recoverable. The quiet version is the one to know about:
+/// if a second checkout sits at the old path, the checks run against that tree
+/// and report about a workspace nobody asked them to look at.
 fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -57,12 +65,24 @@ fn dispatch(task: Option<&str>) -> u8 {
             return 2;
         }
     };
+    exit_code(passed)
+}
+
+/// A verdict as a process exit code: 0 passed, 1 failed.
+///
+/// One line, and it is the line `CLAUDE.md` rests on when it defines done as an
+/// exit code rather than as a feeling. Inverting it leaves every row still
+/// printing what it printed.
+///
+/// Mutation: drop the `!`, and `a_verdict_becomes_the_exit_code_it_means`
+/// fails. Nothing else does.
+fn exit_code(passed: bool) -> u8 {
     u8::from(!passed)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::dispatch;
+    use super::{dispatch, exit_code};
 
     /// A task that does not exist is not a pass.
     ///
@@ -75,5 +95,20 @@ mod tests {
     fn a_task_that_does_not_exist_is_not_a_pass() {
         assert_eq!(dispatch(Some("gat")), 2);
         assert_eq!(dispatch(None), 2);
+    }
+
+    /// A verdict becomes the exit code it means.
+    ///
+    /// No test can call `dispatch(Some("gate"))` without running the gate, so
+    /// this is the only place the translation from "the rows passed" to "what
+    /// the process returns" is asserted. Both 0 and 1 are checked: a code that
+    /// is always 0 and one that is inverted are different mistakes and this
+    /// catches each.
+    ///
+    /// Mutation: drop the `!` in `exit_code`, and this fails.
+    #[test]
+    fn a_verdict_becomes_the_exit_code_it_means() {
+        assert_eq!(exit_code(true), 0);
+        assert_eq!(exit_code(false), 1);
     }
 }

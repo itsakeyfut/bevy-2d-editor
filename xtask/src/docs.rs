@@ -41,6 +41,12 @@ pub struct Docs {
     /// Every path under `docs/`, files and directories alike. A link may point
     /// at a directory, as `docs/README.md` does at `./specs/`.
     present: BTreeSet<String>,
+    /// Documents that are there and could not be read. Kept rather than
+    /// skipped: a `.md` saved in the wrong encoding is in `present`, so links
+    /// to it still resolve, while nothing inside it is ever checked. That is a
+    /// document silently leaving the corpus, which is the failure this whole
+    /// check exists to make impossible.
+    unreadable: Vec<String>,
 }
 
 /// Read the documents, check them, and report whether they agree.
@@ -83,6 +89,7 @@ impl Docs {
         let mut docs = Docs {
             markdown: BTreeMap::new(),
             present: BTreeSet::new(),
+            unreadable: Vec::new(),
         };
         docs.present.insert("docs".to_owned());
         docs.walk(root, &top);
@@ -102,10 +109,15 @@ impl Docs {
             self.present.insert(rel.clone());
             if path.is_dir() {
                 self.walk(root, &path);
-            } else if rel.ends_with(".md")
-                && let Ok(text) = fs::read_to_string(&path)
-            {
-                self.markdown.insert(rel, text);
+            } else if rel.ends_with(".md") {
+                match fs::read_to_string(&path) {
+                    Ok(text) => {
+                        self.markdown.insert(rel, text);
+                    }
+                    Err(err) => self
+                        .unreadable
+                        .push(format!("{rel} is there and could not be read: {err}")),
+                }
             }
         }
     }
@@ -149,7 +161,7 @@ impl Docs {
             })
             .collect();
 
-        let mut bad = Vec::new();
+        let mut bad = self.unreadable.clone();
 
         for (path, body) in &bodies {
             let here = path.rsplit_once('/').map_or("", |(dir, _)| dir);
@@ -223,24 +235,30 @@ impl Docs {
             }
         }
 
-        self.check_decision_index(&link, &anywhere, &sections, &mut bad);
+        self.check_decisions_file(&link, &anywhere, &sections, &mut bad);
         self.check_records(&mut bad);
         bad
     }
 
-    /// 6. Every row of the decision index points at a file that exists, and at
-    ///    a section that is still there. The index is the one place that claims
-    ///    to know where every decision lives.
-    fn check_decision_index(
+    /// 6. Every two-column linked row in `docs/specs/decisions.md` points at a
+    ///    file that exists, and at a section that is still there.
+    ///
+    ///    Every such row, not only the ones under `## Index`. That file carries
+    ///    a second two-column table listing every decision, and its rows link
+    ///    sections too, so both tables are claims about where a decision lives
+    ///    and both rot the same way. The diagnostics therefore name the file
+    ///    rather than the index: somebody sent to `## Index` to find a row that
+    ///    is ninety lines further down learns only that the message lied.
+    fn check_decisions_file(
         &self,
         link: &Regex,
         anywhere: &Regex,
         sections: &BTreeMap<String, BTreeSet<String>>,
         bad: &mut Vec<String>,
     ) {
-        const INDEX: &str = "docs/specs/decisions.md";
-        let Some(text) = self.markdown.get(INDEX) else {
-            bad.push(format!("{INDEX} is missing"));
+        const DECISIONS: &str = "docs/specs/decisions.md";
+        let Some(text) = self.markdown.get(DECISIONS) else {
+            bad.push(format!("{DECISIONS} is missing"));
             return;
         };
         let row = Regex::new(r"(?m)^\|([^|\n]+)\|([^|\n]+)\|[ \t\r]*$").expect("a literal pattern");
@@ -259,7 +277,7 @@ impl Docs {
             let full = normalize("docs/specs", &target);
             if !self.present.contains(&full) {
                 bad.push(format!(
-                    "the decision index points at {target}, which does not exist"
+                    "{DECISIONS} points at {target}, which does not exist"
                 ));
                 continue;
             }
@@ -268,14 +286,14 @@ impl Docs {
                 && !has.contains(&claim[1])
             {
                 bad.push(format!(
-                    "the decision index says {label}, and that section is gone"
+                    "{DECISIONS} says {label}, and that section is gone"
                 ));
             }
         }
         if linked == 0 {
-            bad.push(
-                "the decision index has no rows, which is either a wipe or a bad parse".into(),
-            );
+            bad.push(format!(
+                "{DECISIONS} has no linked rows: either a wipe or a bad parse"
+            ));
         }
     }
 
@@ -414,6 +432,7 @@ mod tests {
             Docs {
                 markdown: files,
                 present,
+                unreadable: Vec::new(),
             }
         }
     }
@@ -589,7 +608,7 @@ mod tests {
         let files = vec![("docs/specs/decisions.md", "# Decisions\n\nNothing here.\n")];
         let found = Docs::of(&files, &[]).problems();
         assert!(
-            found.iter().any(|p| p.contains("has no rows")),
+            found.iter().any(|p| p.contains("has no linked rows")),
             "got {found:?}"
         );
     }
@@ -604,6 +623,31 @@ mod tests {
     const ADR_INDEX: &str = "# Records\n\n| # | Decision | Status | Confirmed by |\n| --- | --- | --- | --- |\n| [0001](./0001-a-choice.md) | A choice | accepted | a test |\n\n**By status**: accepted: 0001\n";
 
     const RECORD: &str = "---\nstatus: \"accepted\"\n---\n\n# A choice\n\n### Confirmation\n\nA named test fails when the choice is undone.\n";
+
+    /// A linked row outside the `## Index` table is checked in the same way.
+    ///
+    /// `docs/specs/decisions.md` carries a second two-column table, and its
+    /// rows link sections too. Every fixture above holds an Index table alone,
+    /// so without this one the check could be narrowed to that table and
+    /// nothing would notice.
+    ///
+    /// Mutation: scope the row pattern to the text under `## Index`, and this
+    /// fails.
+    #[test]
+    fn a_linked_row_outside_the_index_table_is_checked_too() {
+        let decisions = "# Decisions\n\n## Index\n\n| Decision | Where |\n| --- | --- |\n| A thing | [crates.md \u{a7}1](./crates.md) |\n\n## 1. Every decision, in one table\n\n| Item | Decision |\n| --- | --- |\n| Nightly | not required ([crates.md \u{a7}99](./crates.md)) |\n";
+        let files = vec![
+            ("docs/specs/decisions.md", decisions),
+            ("docs/specs/crates.md", CRATES),
+        ];
+        let found = Docs::of(&files, &[]).problems();
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("says crates.md \u{a7}99, and that section is gone")),
+            "got {found:?}"
+        );
+    }
 
     /// A healthy record and index report nothing, so that the three tests
     /// below are each reporting their own mutation.
@@ -747,6 +791,46 @@ mod tests {
             docs.present.contains("docs/specs"),
             "read found no docs/specs"
         );
+    }
+
+    /// A document that is there and will not read is reported, not skipped.
+    ///
+    /// It stays in `present`, so every link to it still resolves, while
+    /// nothing inside it is ever checked. Demonstrated before this guard
+    /// existed: a `.md` holding a dangling link and two bytes of invalid UTF-8
+    /// left `cargo xtask docs` printing `files: 18  problems: 0`, the same as a
+    /// tree without it.
+    ///
+    /// Mutation: go back to skipping the `Err`, and this fails.
+    #[test]
+    fn a_document_that_will_not_read_is_reported() {
+        let mut docs = Docs::of(&base(), &[]);
+        docs.present.insert("docs/specs/broken.md".to_owned());
+        docs.unreadable
+            .push("docs/specs/broken.md is there and could not be read: bad UTF-8".to_owned());
+        let found = docs.problems();
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("docs/specs/broken.md is there and could not be read")),
+            "got {found:?}"
+        );
+    }
+
+    /// The documents in this repository agree with each other.
+    ///
+    /// Every other test here runs the checks against literals, which proves the
+    /// checks work and says nothing about the documents. Without this, a link
+    /// in `docs/` can break and `cargo test --workspace`, which is what the
+    /// gate's `test` row runs, stays green until somebody remembers to type
+    /// `cargo xtask docs`.
+    ///
+    /// Mutation: point any link in `docs/` at a file that is not there, and
+    /// this fails naming it.
+    #[test]
+    fn the_documents_in_this_repository_agree_with_each_other() {
+        let docs = Docs::read(crate::workspace_root()).expect("docs/ is in the repository");
+        assert_eq!(docs.problems(), Vec::<String>::new());
     }
 
     /// The summary line keeps the shape people read it in.

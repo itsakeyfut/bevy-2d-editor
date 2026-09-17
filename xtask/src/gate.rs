@@ -1,9 +1,18 @@
-//! The rows of the gate, in the order that fails cheapest first.
+//! The rows of the gate.
 //!
-//! The output is deliberately the same as the shell script this replaces, so
-//! that nobody has to relearn what a passing run looks like.
+//! **Every row runs.** The rows are collected into an array before a verdict is
+//! taken, so one invocation reports everything that is wrong rather than the
+//! first thing. The order therefore decides only what a reader sees first, not
+//! how long a failing run takes: the four cargo rows come in rising cost, and
+//! `no-unsafe`, which spawns no process at all, sits after them because it is
+//! the workspace's own policy rather than something cargo can be asked.
+//!
+//! Each row's command is built by its own named function, so that what the row
+//! actually runs is a thing a test can read. A row whose arguments drift is a
+//! row that goes on printing `ok` about something other than its name.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -19,25 +28,14 @@ use crate::workspace_root;
 /// pins the channel instead, which is the claim that can actually be kept.
 pub fn run() -> bool {
     println!("gate:");
-    let mut passed = true;
-
-    passed &= row("fmt", &mut cargo(&["fmt", "--all", "--", "--check"]));
-    passed &= row(
-        "clippy",
-        &mut cargo(&[
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--all-features",
-            "--",
-            "-D",
-            "warnings",
-        ]),
-    );
-    passed &= row("doc", &mut doc_command());
-    passed &= row("test", &mut test_command());
-    passed &= no_unsafe();
-
+    let rows = [
+        row("fmt", &mut fmt_command()),
+        row("clippy", &mut clippy_command()),
+        row("doc", &mut doc_command()),
+        row("test", &mut test_command()),
+        no_unsafe(),
+    ];
+    let passed = verdict(&rows);
     if passed {
         println!("gate: passed");
     } else {
@@ -46,12 +44,41 @@ pub fn run() -> bool {
     passed
 }
 
+/// The gate passes only when every row did.
+///
+/// Mutation: change `all` to `any`, or take only the last row, and
+/// `one_failing_row_fails_the_gate` fails.
+fn verdict(rows: &[bool]) -> bool {
+    rows.iter().all(|ok| *ok)
+}
+
 /// A cargo invocation rooted at the workspace, whichever directory the person
 /// who typed `cargo xtask` happened to be standing in.
 fn cargo(args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO"));
     cmd.args(args).current_dir(workspace_root());
     cmd
+}
+
+/// The `fmt` row.
+fn fmt_command() -> Command {
+    cargo(&["fmt", "--all", "--", "--check"])
+}
+
+/// The `clippy` row.
+///
+/// `-D warnings` is the row: `missing_docs` and the lints in the workspace
+/// manifest are warnings, and without this they stay warnings.
+fn clippy_command() -> Command {
+    cargo(&[
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+    ])
 }
 
 /// The `doc` row.
@@ -81,7 +108,7 @@ fn test_command() -> Command {
     cmd
 }
 
-/// Run one row, printing `ok` or `FAIL` and a tail of what it said.
+/// Run one row, printing `ok` or `FAIL` and what it said.
 fn row(name: &str, cmd: &mut Command) -> bool {
     let out = match cmd.output() {
         Ok(out) => out,
@@ -100,11 +127,15 @@ fn row(name: &str, cmd: &mut Command) -> bool {
     false
 }
 
-/// Report a failed row, with the last 25 lines of what it said.
+/// Report a failed row, with everything it said.
+///
+/// All of it, not a tail. A tail of the last lines of a cargo log is the
+/// `could not compile, 8 previous errors` summary and none of the errors, and
+/// the person reading it is often looking at a runner they cannot cheaply
+/// rerun.
 fn fail(name: &str, log: &str) {
     println!("  FAIL  {name}");
-    let lines: Vec<&str> = log.lines().collect();
-    for line in lines.iter().skip(lines.len().saturating_sub(25)) {
+    for line in log.lines() {
         println!("        {line}");
     }
 }
@@ -120,10 +151,12 @@ fn fail(name: &str, log: &str) {
 /// it reaches a user's game, and the tests for [`unsafe_lines`] have to spell
 /// the keyword out to have anything to match.
 ///
-/// A scan that examined nothing reports `FAIL`, not `ok`. That is not caution
-/// for its own sake: the check this crate replaces spent its last weeks
-/// printing `ok` about a workspace it was no longer looking at, and a row that
-/// cannot say whether it looked is that defect waiting to happen again.
+/// **A file this cannot read is a failure, and a scan that examined nothing is
+/// a failure.** Neither is caution for its own sake. The check this crate
+/// replaces spent its last weeks printing `ok` about a workspace it was no
+/// longer looking at, and "I skipped that one" is the same sentence said more
+/// quietly: a stray source file saved in the wrong encoding is enough to hide a
+/// live `unsafe` block behind a green row.
 fn no_unsafe() -> bool {
     let sources = scanned_sources();
     if sources.is_empty() {
@@ -135,18 +168,13 @@ fn no_unsafe() -> bool {
     let root = workspace_root();
     let mut hits = Vec::new();
     for path in &sources {
-        let Ok(text) = fs::read_to_string(path) else {
-            continue;
-        };
         let shown = path
             .strip_prefix(root)
             .unwrap_or(path)
             .display()
             .to_string()
             .replace('\\', "/");
-        for line in unsafe_lines(&text) {
-            hits.push(format!("{shown}:{line}"));
-        }
+        hits.extend(hits_for(&shown, fs::read_to_string(path)));
     }
 
     if hits.is_empty() {
@@ -158,6 +186,24 @@ fn no_unsafe() -> bool {
         println!("        {hit}");
     }
     false
+}
+
+/// What one source file contributes to the row, given what reading it produced.
+///
+/// Mutation: return `Vec::new()` for the `Err` arm, and
+/// `a_file_that_cannot_be_read_is_a_hit` fails. That arm is the one that
+/// matters: a file that will not decode is a file nothing in the workspace
+/// examines, and skipping it quietly is how a green row comes to mean nothing.
+fn hits_for(shown: &str, read: io::Result<String>) -> Vec<String> {
+    match read {
+        Ok(text) => unsafe_lines(&text)
+            .into_iter()
+            .map(|line| format!("{shown}:{line}"))
+            .collect(),
+        Err(err) => vec![format!(
+            "{shown}: could not be read, so it was not checked: {err}"
+        )],
+    }
 }
 
 /// Every `.rs` file the `no-unsafe` row examines.
@@ -175,15 +221,22 @@ fn scanned_sources() -> Vec<PathBuf> {
 
 /// The 1-based lines of `text` that open an `unsafe` block or declare one.
 ///
+/// Every shape the keyword takes, not the three that come to mind. Edition 2024
+/// is what makes that worth spelling out: `unsafe extern` blocks are how FFI is
+/// declared in it, `unsafe static` goes with them, and `#[unsafe(no_mangle)]`
+/// spells an attribute. A pattern that knew only `fn`, `impl` and a block would
+/// let an `unsafe trait` through while claiming the workspace had none.
+///
 /// The `[^_[:alnum:]]` guard is what keeps `get_unsafe(` and `unsafely` out.
 ///
 /// Mutation: drop that guard, and
-/// `a_word_that_merely_contains_the_keyword_is_not_a_hit` fails. Drop the
-/// `impl` alternative, and `a_declaration_is_a_hit` fails. Neither fails
-/// anything else.
+/// `a_word_that_merely_contains_the_keyword_is_not_a_hit` fails. Drop `trait`
+/// or `extern` from the alternation, and `every_shape_of_the_keyword_is_a_hit`
+/// fails. Neither fails anything else.
 fn unsafe_lines(text: &str) -> Vec<usize> {
-    let pattern = Regex::new(r"(^|[^_[:alnum:]])unsafe\s*[{(]|unsafe fn|unsafe impl")
-        .expect("the pattern is a literal and compiles");
+    let pattern =
+        Regex::new(r"(^|[^_[:alnum:]])unsafe(\s*[{(]|\s+(fn|impl|trait|extern|static|async))")
+            .expect("the pattern is a literal and compiles");
     text.lines()
         .enumerate()
         .filter(|(_, line)| pattern.is_match(line))
@@ -210,8 +263,19 @@ fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
+    use std::io;
+    use std::process::Command;
 
-    use super::{doc_command, scanned_sources, test_command, unsafe_lines};
+    use super::{
+        clippy_command, doc_command, fmt_command, hits_for, scanned_sources, test_command,
+        unsafe_lines, verdict,
+    };
+
+    fn args(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
 
     /// A block and a declaration are both hits, and the line number is 1-based.
     ///
@@ -228,6 +292,28 @@ mod tests {
     fn an_opened_block_is_a_hit() {
         let src = "unsafe { ptr.read() }\n    let x = unsafe { ptr.read() };\n";
         assert_eq!(unsafe_lines(src), vec![1, 2]);
+    }
+
+    /// Every shape the keyword takes is a hit, not the three that come to mind.
+    ///
+    /// `unsafe trait` has always been Rust, and edition 2024 made
+    /// `unsafe extern` the way FFI is declared. A pattern that knew only `fn`,
+    /// `impl` and a block passed both straight through while the row above it
+    /// claimed the workspace had no `unsafe` in it.
+    ///
+    /// Mutation: remove `trait`, `extern`, `static` or `async` from the
+    /// alternation, and this fails naming the line that got through.
+    #[test]
+    fn every_shape_of_the_keyword_is_a_hit() {
+        let src = concat!(
+            "pub unsafe trait Sync {}\n",
+            "unsafe extern \"C\" {\n",
+            "    unsafe static COUNT: u32;\n",
+            "}\n",
+            "pub unsafe async fn f() {}\n",
+            "#[unsafe(no_mangle)]\n",
+        );
+        assert_eq!(unsafe_lines(src), vec![1, 2, 3, 5, 6]);
     }
 
     /// A word that merely contains the keyword is not a hit.
@@ -249,6 +335,36 @@ mod tests {
         );
     }
 
+    /// A file that cannot be read is a hit, not a file to skip.
+    ///
+    /// A stray source file saved as UTF-16, which one wrong choice in an editor
+    /// on this project's own development platform produces, is not read by
+    /// `fmt`, `clippy`, `doc` or `test` either. Skipping it here is the one
+    /// place a live `unsafe` block can sit behind five green rows.
+    ///
+    /// Mutation: return `Vec::new()` for the `Err` arm of `hits_for`, and this
+    /// fails. Nothing else does.
+    #[test]
+    fn a_file_that_cannot_be_read_is_a_hit() {
+        let err = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        );
+        let hits = hits_for("crates/core/src/stray.rs", Err(err));
+        assert_eq!(hits.len(), 1, "got {hits:?}");
+        assert!(hits[0].starts_with("crates/core/src/stray.rs: could not be read"));
+    }
+
+    /// A file that reads is reported by line.
+    #[test]
+    fn a_file_that_reads_is_reported_by_line() {
+        let hits = hits_for(
+            "crates/core/src/lib.rs",
+            Ok("fn a() {}\nunsafe fn b() {}\n".into()),
+        );
+        assert_eq!(hits, vec!["crates/core/src/lib.rs:2".to_owned()]);
+    }
+
     /// The `no-unsafe` row examines the crates that are actually there.
     ///
     /// Without this the row is free to look at nothing and print `ok`, which is
@@ -268,6 +384,53 @@ mod tests {
             sources.iter().any(|p| p.ends_with("lib.rs")),
             "the no-unsafe row found no crate root: {sources:?}"
         );
+    }
+
+    /// One failing row fails the gate, wherever it sits.
+    ///
+    /// Mutation: change `all` to `any` in `verdict`, or make `run` keep only
+    /// the last row's result, and this fails.
+    #[test]
+    fn one_failing_row_fails_the_gate() {
+        assert!(verdict(&[true, true, true, true, true]));
+        assert!(!verdict(&[false, true, true, true, true]));
+        assert!(!verdict(&[true, true, true, true, false]));
+        assert!(!verdict(&[true, false, true, true, true]));
+    }
+
+    /// Each row runs the command its name promises.
+    ///
+    /// The row named `test` can become `cargo check --workspace` without any
+    /// other test noticing: it would still exit 0, still print `ok`, and still
+    /// have stopped running the suite.
+    ///
+    /// Mutation: change any subcommand or drop `-D warnings` or `--check`, and
+    /// this fails naming the row.
+    #[test]
+    fn each_row_runs_the_command_its_name_promises() {
+        assert_eq!(args(&fmt_command()), ["fmt", "--all", "--", "--check"]);
+        assert_eq!(
+            args(&clippy_command()),
+            [
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--all-features",
+                "--",
+                "-D",
+                "warnings"
+            ]
+        );
+        assert_eq!(
+            args(&doc_command()),
+            [
+                "doc",
+                "--workspace",
+                "--no-deps",
+                "--document-private-items"
+            ]
+        );
+        assert_eq!(args(&test_command()), ["test", "--workspace"]);
     }
 
     /// The `doc` row makes a rustdoc warning an error.
