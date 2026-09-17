@@ -47,6 +47,7 @@ Quotations are left in the language of their source.
 | Two kinds of running: preview and play | [runtime-and-play.md §2](./runtime-and-play.md) |
 | Start with the fewest crates that work | [crates.md §2](./crates.md) |
 | The dependency direction between crates | [crates.md §3](./crates.md) |
+| Package names carry a `b2d_` prefix; directory names do not | [crates.md §4](./crates.md) |
 | Unity is the design target, Jackdaw the implementation reference | [ui.md §2](./ui.md) |
 | The UI stack is Bevy UI + `bevy_feathers` | [ui.md §3](./ui.md) |
 | Tilemaps ride on Bevy's own `TilemapChunk` | [level-editor.md §2](./level-editor.md) |
@@ -85,6 +86,7 @@ Quotations are left in the language of their source.
 | `bevy/dynamic_linking` | dev builds only, for link time |
 | Editor and runtime process model | **separate processes, over IPC** |
 | Crate layout | **start minimal, split when it is earned** |
+| Package names | **`b2d_` prefix**; the directories stay as §1 has them ([crates.md §4](./crates.md)) |
 | UI design target | **Unity** |
 | UI implementation reference | **Jackdaw**, for how to build it in Rust |
 | UI stack | **Bevy UI + `bevy_feathers`** ([ui.md §3](./ui.md)) |

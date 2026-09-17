@@ -217,3 +217,58 @@ Why:
   crates are split at all; when in doubt, follow the graph.
 * Adding a crate starts by deciding where in this graph it goes. **Anything with
   no place in it is not a crate yet** (§2).
+
+---
+
+## 4. A package name is not a directory name
+
+### Decision
+
+The directories keep the names §1 gives them. **The packages carry a `b2d_`
+prefix.**
+
+| Directory | Package |
+| --- | --- |
+| `crates/core/` | `b2d_core` |
+| `crates/data/` | `b2d_data` |
+| `crates/runtime/` | `b2d_runtime` |
+| `crates/editor_ui/` | `b2d_editor_ui` |
+| `crates/editor/` | `b2d_editor` |
+
+### Why the directory names cannot be the package names
+
+**A package called `core` shadows the sysroot crate of the same name**, in every
+crate that depends on it. It is not a warning and it is not caught by a lint:
+
+```text
+error[E0433]: cannot find `mem` in `core`
+ --> crates/data/src/lib.rs:2:11
+  |
+2 |     core::mem::size_of::<u32>()
+  |           ^^^ could not find `mem` in `core`
+```
+
+Nothing in an empty crate says `core::`, so a workspace of five empty crates
+builds green and the first person to write `core::mem` finds this instead.
+
+### Why a prefix, and why this one
+
+§3 makes `runtime` the only crate a user's game depends on. Publishing it means
+publishing everything it reaches by path, so `b2d_runtime`, `b2d_data` and
+`b2d_core` are all names this project has to hold on crates.io. `runtime`,
+`data` and `core` are not names anyone can hold there.
+
+`b2d_` rather than something longer because **it is mechanically renameable.**
+This project has no name of its own the way Jackdaw does, and if it takes one,
+a single regular expression over the tree moves every package, every path
+dependency and every `use`. A prefix that reads as a description, such as
+`bevy_2d_editor_`, is the same work and produces `bevy_2d_editor_editor_ui`
+along the way.
+
+### Consequences
+
+* Directory `core`, package `b2d_core`, and `use b2d_core::` in the code. The
+  name in a path is the package name, always.
+* The binary is `b2d_editor`, from the package name, until somebody decides what
+  the command should be called. Nothing is published, so that is free to change.
+* §1's diagram is directory names. **Read it as directory names.**
