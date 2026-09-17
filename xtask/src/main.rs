@@ -59,17 +59,30 @@ pub(crate) fn annotation(on_github: bool, message: &str) -> Option<String> {
     on_github.then(|| format!("::error::{message}"))
 }
 
-/// Print [`annotation`] when there is one.
+/// Whether there is a Checks page reading this run.
 ///
 /// `GITHUB_ACTIONS` is what the runner sets, and it is the only thing asked
 /// about: a workflow that stops setting it loses the annotations and keeps
 /// every exit code, which is the right way round for a line whose only job is
 /// to be read.
-pub(crate) fn annotate(message: &str) {
-    if let Some(line) = annotation(std::env::var_os("GITHUB_ACTIONS").is_some(), message) {
-        println!("{line}");
-    }
+pub(crate) fn on_github() -> bool {
+    std::env::var_os("GITHUB_ACTIONS").is_some()
 }
+
+/// A task: the name it is typed as, and what running it reports.
+type Task = (&'static str, fn() -> bool);
+
+/// Every task `cargo xtask` runs, in the order `all` runs them.
+///
+/// Written out as a table because `all` runs the table rather than naming the
+/// tasks a second time. A task cannot quietly leave `all` while still existing
+/// on its own, which was reachable while the `all` arm listed them itself:
+/// dropping `docs` from it left the whole suite green and the documents
+/// unchecked on every runner.
+///
+/// Mutation: remove a row, and `the_tasks_are_the_ones_the_workflow_runs`
+/// fails.
+const TASKS: [Task; 2] = [("gate", gate::run), ("docs", docs::run)];
 
 fn main() -> ExitCode {
     ExitCode::from(dispatch(std::env::args().nth(1).as_deref()))
@@ -83,38 +96,47 @@ fn main() -> ExitCode {
 /// never ran" are different pieces of news.
 fn dispatch(task: Option<&str>) -> u8 {
     let passed = match task {
-        Some("gate") => gate::run(),
-        Some("docs") => docs::run(),
-        Some("all") => all(gate::run, docs::run),
-        other => {
-            if let Some(name) = other {
+        Some("all") => all(&TASKS),
+        Some(name) => match TASKS.iter().find(|(task, _)| *task == name) {
+            Some((_, run)) => run(),
+            None => {
                 eprintln!("xtask: `{name}` is not a task");
+                return usage();
             }
-            eprintln!("usage: cargo xtask <all|gate|docs>");
-            return 2;
-        }
+        },
+        None => return usage(),
     };
     exit_code(passed)
 }
 
-/// Run every task, and report whether all of them passed.
+/// Say what the tasks are, and report that none of them ran.
 ///
-/// **Both run.** A task that says nothing because an earlier one failed is a
-/// task somebody has to run a second time to find out about, and on a runner
-/// that means pushing a commit to ask a question. It is the same reason
-/// [`gate::run`] collects its rows before taking a verdict.
+/// Built from [`TASKS`] rather than written out, so a task added to the table
+/// is a task the usage line already knows about.
+fn usage() -> u8 {
+    let tasks: Vec<&str> = TASKS.iter().map(|(task, _)| *task).collect();
+    eprintln!("usage: cargo xtask <all|{}>", tasks.join("|"));
+    2
+}
+
+/// Run every task in `tasks`, and report whether all of them passed.
+///
+/// **Every one runs.** A task that says nothing because an earlier one failed
+/// is a task somebody has to run a second time to find out about, and on a
+/// runner that means pushing a commit to ask a question. It is the same reason
+/// [`gate::run`] collects its rows before taking a verdict, and it is why the
+/// fold is `&` rather than `&&`: the right-hand side of `&&` would not be
+/// evaluated once something had failed.
 ///
 /// This is what the workflow names, so that the list of tasks is written down
-/// once. Taking the two as arguments is what makes that testable: `dispatch`
+/// once. Taking the table as an argument is what makes it testable: `dispatch`
 /// cannot be called with `all` from a test, because `gate` runs `cargo test`,
 /// which runs the test.
 ///
-/// Mutation: write `gate() && docs()` instead, and
+/// Mutation: write `passed && run()` instead, and
 /// `a_failed_task_does_not_silence_the_next_one` fails.
-fn all(gate: impl FnOnce() -> bool, docs: impl FnOnce() -> bool) -> bool {
-    let gate = gate();
-    let docs = docs();
-    gate && docs
+fn all(tasks: &[Task]) -> bool {
+    tasks.iter().fold(true, |passed, (_, run)| run() & passed)
 }
 
 /// A verdict as a process exit code: 0 passed, 1 failed.
@@ -131,9 +153,27 @@ fn exit_code(passed: bool) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{all, annotation, dispatch, exit_code};
+    use super::{TASKS, all, annotation, dispatch, exit_code, workspace_root};
+
+    /// Whether the second task of `a_failed_task_does_not_silence_the_next_one`
+    /// ran. A static because `all` takes function pointers, which cannot carry
+    /// a captured environment, and only that test touches it.
+    static SECOND_TASK_RAN: AtomicBool = AtomicBool::new(false);
+
+    fn fails() -> bool {
+        false
+    }
+
+    fn passes() -> bool {
+        true
+    }
+
+    fn records_that_it_ran() -> bool {
+        SECOND_TASK_RAN.store(true, Ordering::SeqCst);
+        true
+    }
 
     /// A task that does not exist is not a pass.
     ///
@@ -155,31 +195,70 @@ mod tests {
     /// reports a formatting failure, and only after a second push reports the
     /// broken link that was there all along.
     ///
-    /// Mutation: write `gate() && docs()` in `all`, and this fails saying the
+    /// Mutation: write `passed && run()` in `all`, and this fails saying the
     /// second task did not run.
     #[test]
     fn a_failed_task_does_not_silence_the_next_one() {
-        let ran = Cell::new(false);
-        let passed = all(
-            || false,
-            || {
-                ran.set(true);
-                true
-            },
+        SECOND_TASK_RAN.store(false, Ordering::SeqCst);
+        let passed = all(&[("fails", fails), ("records", records_that_it_ran)]);
+        assert!(
+            SECOND_TASK_RAN.load(Ordering::SeqCst),
+            "the second task did not run"
         );
-        assert!(ran.get(), "the second task did not run");
         assert!(!passed, "a failed task passed the run");
     }
 
     /// Every task has to pass for the run to pass.
     ///
-    /// Mutation: return `gate` or `docs` alone from `all`, and this fails.
+    /// Mutation: return the first or the last verdict from `all`, and this
+    /// fails.
     #[test]
     fn every_task_has_to_pass_for_the_run_to_pass() {
-        assert!(all(|| true, || true));
-        assert!(!all(|| true, || false));
-        assert!(!all(|| false, || true));
-        assert!(!all(|| false, || false));
+        assert!(all(&[("passes", passes), ("passes", passes)]));
+        assert!(!all(&[("passes", passes), ("fails", fails)]));
+        assert!(!all(&[("fails", fails), ("passes", passes)]));
+        assert!(!all(&[("fails", fails), ("fails", fails)]));
+    }
+
+    /// The tasks are the ones the workflow runs.
+    ///
+    /// `all` runs this table, so a task that leaves it leaves every runner
+    /// without saying so: the remaining tasks stay green and the run reports a
+    /// pass. That is the shape RK-001 is about, and this asserts the table is
+    /// the set that was meant.
+    ///
+    /// Mutation: remove either row from `TASKS`, and this fails.
+    #[test]
+    fn the_tasks_are_the_ones_the_workflow_runs() {
+        let tasks: Vec<&str> = TASKS.iter().map(|(task, _)| *task).collect();
+        assert_eq!(tasks, ["gate", "docs"]);
+    }
+
+    /// The workflow runs the one command, on the three platforms the
+    /// specification names.
+    ///
+    /// `docs/specs/dev-environment.md` §3 decided both, and nothing else here
+    /// can tell when a platform quietly leaves the matrix: the remaining legs
+    /// stay green and the run still reports a pass. The development platform is
+    /// the one that matters, which is why the rows are named rather than
+    /// counted.
+    ///
+    /// Mutation: remove `windows-latest` from the matrix, or change the step to
+    /// `cargo xtask gate`, and this fails naming what went missing.
+    #[test]
+    fn the_workflow_runs_every_task_on_every_platform() {
+        let path = workspace_root()
+            .join(".github")
+            .join("workflows")
+            .join("ci.yml");
+        let workflow = std::fs::read_to_string(&path).expect("the workflow is in the repository");
+        assert!(
+            workflow.contains("cargo xtask all"),
+            "the workflow does not run every task"
+        );
+        for os in ["ubuntu-latest", "macos-latest", "windows-latest"] {
+            assert!(workflow.contains(os), "the matrix does not name {os}");
+        }
     }
 
     /// A failed check is said again where the Checks page reads it.

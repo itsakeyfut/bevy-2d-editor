@@ -28,7 +28,7 @@ use std::process::Command;
 
 use regex::Regex;
 
-use crate::{annotate, workspace_root};
+use crate::{annotation, on_github, workspace_root};
 
 /// Run every row, and report whether all of them passed.
 ///
@@ -149,19 +149,36 @@ fn row(name: &str, cmd: &mut Command) -> bool {
 /// Report a failed row, with everything it said.
 ///
 /// Every failing row goes through here, `no-unsafe` included, which is what
-/// makes one call to [`annotate`] enough to name any of them on the Checks
-/// page.
+/// makes one annotation in [`failure_report`] enough to name any of them on
+/// the Checks page.
 ///
 /// All of it, not a tail. A tail of the last lines of a cargo log is the
 /// `could not compile, 8 previous errors` summary and none of the errors, and
 /// the person reading it is often looking at a runner they cannot cheaply
 /// rerun.
 fn fail(name: &str, log: &str) {
-    println!("  FAIL  {name}");
+    println!("{}", failure_report(name, log, on_github()));
+}
+
+/// Everything a failed row says, as one string.
+///
+/// Built rather than printed so that the annotation has a test. Without one,
+/// deleting the line that emits it leaves every test in the workspace passing
+/// and the Checks page silent about which row failed, which is the acceptance
+/// criterion this exists for.
+///
+/// Mutation: drop the annotation, and
+/// `a_failed_row_names_itself_to_the_checks_page` fails.
+fn failure_report(name: &str, log: &str, on_github: bool) -> String {
+    let mut report = format!("  FAIL  {name}");
     for line in log.lines() {
-        println!("        {line}");
+        report.push_str(&format!("\n        {line}"));
     }
-    annotate(&format!("gate: the {name} row failed"));
+    if let Some(line) = annotation(on_github, &format!("gate: the {name} row failed")) {
+        report.push('\n');
+        report.push_str(&line);
+    }
+    report
 }
 
 /// No source file in the workspace's crates contains `unsafe`.
@@ -290,8 +307,8 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        clippy_command, doc_command, fmt_command, fs, hits_for, scanned_sources, test_command,
-        unsafe_lines, verdict, workspace_root,
+        clippy_command, doc_command, failure_report, fmt_command, fs, hits_for, scanned_sources,
+        test_command, unsafe_lines, verdict, workspace_root,
     };
 
     fn args(cmd: &Command) -> Vec<String> {
@@ -488,6 +505,27 @@ mod tests {
             !args(&fmt_command()).iter().any(|a| a == "--locked"),
             "cargo fmt rejects --locked, so the fmt row cannot carry it"
         );
+    }
+
+    /// A failed row names itself to the Checks page, and only there.
+    ///
+    /// The row output a person reads at a terminal is unchanged either way: the
+    /// annotation is an extra line and not a rewrite of the existing ones.
+    ///
+    /// Mutation: drop the annotation from `failure_report`, and this fails.
+    /// Nothing else does, and what it prevents is a red build whose Checks page
+    /// says only that something failed.
+    #[test]
+    fn a_failed_row_names_itself_to_the_checks_page() {
+        let on_runner = failure_report("clippy", "error: something\n", true);
+        assert!(
+            on_runner.ends_with("\n::error::gate: the clippy row failed"),
+            "{on_runner}"
+        );
+        assert!(on_runner.starts_with("  FAIL  clippy\n        error: something"));
+
+        let locally = failure_report("clippy", "error: something\n", false);
+        assert_eq!(locally, "  FAIL  clippy\n        error: something");
     }
 
     /// The invocation that starts the gate refuses a stale lockfile too.
