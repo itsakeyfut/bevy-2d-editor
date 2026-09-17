@@ -32,6 +32,9 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use DefaultFeatures::{Off, On};
+use Optionality::{Optional, Required};
+
 /// The internal dependencies each crate is allowed, from
 /// `docs/specs/crates.md` §3.
 ///
@@ -58,16 +61,45 @@ enum Optionality {
     Optional,
 }
 
-/// A dependency, as far as these tests care: what it is called and whether it
-/// is optional.
+/// Whether a dependency is pulled in with its `default` feature or without it.
+///
+/// Spelled out for the same reason as `Optionality`: `("bevy", Required, true)`
+/// in the table below does not say which way round `true` runs. `Off` is
+/// `default-features = false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DefaultFeatures {
+    On,
+    Off,
+}
+
+/// A dependency, as far as these tests care: what it is called, whether it is
+/// optional, and what weight is selected on it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Dep {
     name: String,
     optionality: Optionality,
+    default_features: DefaultFeatures,
+    features: BTreeSet<String>,
 }
 
-/// The external dependencies each crate a user's game reaches is allowed, from
-/// `docs/specs/crates.md` §3.
+/// One entry of a `SHIPPED` row: a dependency the crate may carry, and the
+/// weight it may carry it with.
+///
+/// Named because the gate runs clippy with `-D warnings` and
+/// `clippy::type_complexity` refuses the nested tuple written out in place.
+/// The rows below stay tuples: two enums of different types cannot be written
+/// in the wrong order without a compile error, which a pair of `bool`s or a
+/// pair of same-typed fields would not give.
+type Allowed = (
+    &'static str,
+    Optionality,
+    DefaultFeatures,
+    &'static [&'static str],
+);
+
+/// Every dependency each crate a user's game reaches is allowed to carry, from
+/// `docs/specs/crates.md` §3: its name, its optionality, and the weight it is
+/// pulled in with.
 ///
 /// `EXPECTED` above holds the direction; this holds what comes with it. A game
 /// reaches `GAME_ENTRY_POINTS` and everything under them, which today is
@@ -78,25 +110,44 @@ struct Dep {
 /// in. What that costs is that an external dependency added to either is held
 /// by nothing.
 ///
-/// Every list is empty today. That is the reason for writing it now rather than
-/// later: §3 has `bevy` arriving in `data` and `runtime`, and
-/// `docs/specs/level-editor.md` §3 has `avian2d` arriving behind a default-on
-/// feature, and a list agreed while it is empty costs one line each.
+/// **Workspace members are held here rather than delegated to `EXPECTED`.** §3
+/// has `data` putting its editor-only parts behind a feature so that a user's
+/// game compiles only what loading needs, and the line that defeats that
+/// decision is `b2d_data = { workspace = true, features = ["editor"] }` in
+/// `crates/runtime/Cargo.toml`, which is an **internal** edge. A list that
+/// dropped members before comparing could not see it, whatever it held about
+/// features. The price is that `b2d_core` and `b2d_data` are named both here
+/// and in `EXPECTED`; both tables are compared against the same
+/// `cargo metadata` output, so they cannot come to disagree without one of them
+/// failing.
 ///
-/// What this list holds about a dependency is its name and its optionality, and
-/// **not the weight behind the name**. Two things sit in that gap. Taking
-/// `avian2d` out of `default` changes what a game carries and passes here; so
-/// does `b2d_data = { workspace = true, features = ["editor"] }` in
-/// `crates/runtime/Cargo.toml`, which would defeat §3's feature split in `data`
-/// without a word. No crate in the workspace has a `[features]` table yet, so
-/// closing either now means a mechanism with no subject. The first is decided
-/// by the issue that brings `avian2d` in, which arrives with the first feature
-/// table; the second is its own issue.
+/// The external lists are still empty, so `bevy` arriving in `data` and
+/// `runtime` (§3) and `avian2d` arriving behind a default-on feature
+/// (`docs/specs/level-editor.md` §3) each cost one line. Every row's weight is
+/// the default one, which is why
+/// `a_dependency_pulled_in_with_features_is_read_with_them` and
+/// `a_shipped_row_carries_its_feature_selection_into_the_comparison` exist: a
+/// column no row uses is a column nothing exercises.
+///
+/// What this list still does not hold is **what a crate's own `default` feature
+/// contains**. Taking `avian2d` out of `default` changes what a game carries
+/// and passes here. No crate in the workspace has a `[features]` table yet, so
+/// closing that now means a mechanism with no subject; the issue that brings
+/// `avian2d` in decides it, and it arrives with the first feature table.
 ///
 /// Direct dependencies only, too: what `bevy` pulls in behind itself is not
 /// this list's business.
-const SHIPPED: &[(&str, &[(&str, Optionality)])] =
-    &[("b2d_core", &[]), ("b2d_data", &[]), ("b2d_runtime", &[])];
+const SHIPPED: &[(&str, &[Allowed])] = &[
+    ("b2d_core", &[]),
+    ("b2d_data", &[("b2d_core", Required, On, &[])]),
+    (
+        "b2d_runtime",
+        &[
+            ("b2d_core", Required, On, &[]),
+            ("b2d_data", Required, On, &[]),
+        ],
+    ),
+];
 
 /// The crates a user's game depends on directly.
 ///
@@ -112,11 +163,13 @@ const GAME_ENTRY_POINTS: &[&str] = &["b2d_runtime"];
 /// Extracted so that the optionality a row carries is read by something a test
 /// can call with a non-empty row. Inline, it was only ever applied to the empty
 /// rows above, so nothing could tell whether it read the column at all.
-fn allowed_deps(row: &[(&str, Optionality)]) -> BTreeSet<Dep> {
+fn allowed_deps(row: &[Allowed]) -> BTreeSet<Dep> {
     row.iter()
-        .map(|(n, o)| Dep {
+        .map(|(n, o, df, fs)| Dep {
             name: (*n).to_owned(),
             optionality: *o,
+            default_features: *df,
+            features: fs.iter().map(|f| (*f).to_owned()).collect(),
         })
         .collect()
 }
@@ -158,10 +211,24 @@ fn deps_of(pkg: &Value) -> BTreeSet<Dep> {
         .map(|d| Dep {
             name: d["name"].as_str().expect("name").to_owned(),
             optionality: if d["optional"].as_bool() == Some(true) {
-                Optionality::Optional
+                Optional
             } else {
-                Optionality::Required
+                Required
             },
+            default_features: if d["uses_default_features"]
+                .as_bool()
+                .expect("uses_default_features")
+            {
+                On
+            } else {
+                Off
+            },
+            features: d["features"]
+                .as_array()
+                .expect("features")
+                .iter()
+                .map(|f| f.as_str().expect("feature name").to_owned())
+                .collect(),
         })
         .collect()
 }
@@ -327,40 +394,55 @@ fn a_manifest_path_is_read_the_same_way_on_every_platform() {
     assert!(!is_under_crates(r"D:\w\xtask\Cargo.toml"));
 }
 
-/// Each crate a user's game reaches carries exactly the external dependencies
-/// `SHIPPED` allows it.
+/// Each crate a user's game reaches carries exactly the dependencies `SHIPPED`
+/// allows it, with exactly the weight it allows.
 ///
 /// Equality rather than containment, for the reason the graph test gives: a
 /// dependency named in the list and missing from the manifest is a
-/// disagreement worth seeing too. Workspace members are dropped first, because
-/// those are `EXPECTED`'s business and holding them twice means two places to
-/// keep in step.
+/// disagreement worth seeing too.
+///
+/// Workspace members are **not** dropped before comparing. `runtime -> data` is
+/// an internal edge, and it is where a game's copy of §3's feature split in
+/// `data` is decided, so a comparison that delegated members to `EXPECTED`,
+/// which holds names, could not see a feature turned on across it.
+/// `SHIPPED`'s doc comment carries what including them costs.
+///
+/// What this holds is the **declared** edge, and that is not the only way the
+/// split can die. If `runtime` used `data`'s editor-only code directly, every
+/// row of this gate would stay green, because the clippy row passes
+/// `--all-features` and the test row builds the workspace, where `b2d_editor`
+/// turns the feature on and cargo unifies it onto `data`. Only
+/// `cargo check -p b2d_runtime`, which nothing here runs, resolves `data` the
+/// way a game does and refuses it.
 ///
 /// Mutation: add `serde_json = "1.0.151"` to `crates/runtime/Cargo.toml`, or to
-/// `crates/data/Cargo.toml`, or add `("regex", Optionality::Required)` to a
+/// `crates/data/Cargo.toml`, or add `("regex", Required, On, &[])` to a
 /// `SHIPPED` row with no dependency behind it. Each fails this test, naming the
-/// crate. The same in `crates/core/Cargo.toml` fails this and
-/// `core_depends_on_nothing_at_all`, which is the one crate held from both
-/// sides.
+/// crate. So does each of the two that this test exists for: `features =
+/// ["editor"]` on `runtime`'s edge to `data`, against a `[features] editor =
+/// []` table in `crates/data/Cargo.toml`, and `default-features = false` on
+/// `b2d_data` in the root `[workspace.dependencies]`. The same in
+/// `crates/core/Cargo.toml` fails this and `core_depends_on_nothing_at_all`,
+/// which is the one crate held from both sides.
+///
+/// `default-features = false` at the member rather than in the workspace table
+/// is not in that list because cargo refuses it outright: `default-features =
+/// false cannot override workspace's default-features`. That edge is a resolve
+/// error before this test runs.
 #[test]
-fn a_crate_a_game_reaches_carries_exactly_the_external_dependencies_the_list_allows() {
+fn a_crate_a_game_reaches_carries_exactly_the_dependencies_the_list_allows() {
     let meta = metadata();
-    let workspace: BTreeSet<String> = members(&meta).into_iter().map(|(n, _, _)| n).collect();
     for (name, allowed) in SHIPPED {
-        let (_, _, deps) = members(&meta)
+        let (_, _, carried) = members(&meta)
             .into_iter()
             .find(|(n, _, _)| n == name)
             .unwrap_or_else(|| panic!("{name} is named in SHIPPED and is not a workspace member"));
-        let external: BTreeSet<Dep> = deps
-            .into_iter()
-            .filter(|d| !workspace.contains(&d.name))
-            .collect();
         let allowed = allowed_deps(allowed);
         assert_eq!(
-            external, allowed,
-            "{name} carries the external dependencies {external:?}, and the list \
+            carried, allowed,
+            "{name} carries the dependencies {carried:?}, and the list \
              in this file allows {allowed:?}. docs/specs/crates.md §3 fixes what \
-             a user's game pulls in: add it to SHIPPED if that is the decision, \
+             a user's game pulls in, features included: add it to SHIPPED if that is the decision, \
              or take it out of the manifest"
         );
     }
@@ -422,9 +504,12 @@ fn every_crate_a_game_reaches_has_a_row_in_the_shipped_list() {
 fn a_dependency_marked_optional_in_metadata_is_read_as_optional() {
     let pkg = serde_json::json!({
         "dependencies": [
-            { "name": "avian2d", "kind": null, "optional": true },
-            { "name": "bevy", "kind": null, "optional": false },
-            { "name": "serde_json", "kind": "dev", "optional": false },
+            { "name": "avian2d", "kind": null, "optional": true,
+              "uses_default_features": true, "features": [] },
+            { "name": "bevy", "kind": null, "optional": false,
+              "uses_default_features": true, "features": [] },
+            { "name": "serde_json", "kind": "dev", "optional": false,
+              "uses_default_features": true, "features": [] },
         ]
     });
     let deps = deps_of(&pkg);
@@ -433,11 +518,15 @@ fn a_dependency_marked_optional_in_metadata_is_read_as_optional() {
         BTreeSet::from([
             Dep {
                 name: "avian2d".to_owned(),
-                optionality: Optionality::Optional,
+                optionality: Optional,
+                default_features: On,
+                features: BTreeSet::new(),
             },
             Dep {
                 name: "bevy".to_owned(),
-                optionality: Optionality::Required,
+                optionality: Required,
+                default_features: On,
+                features: BTreeSet::new(),
             },
         ])
     );
@@ -457,10 +546,75 @@ fn a_dependency_marked_optional_in_metadata_is_read_as_optional() {
 #[test]
 fn a_shipped_row_carries_its_optionality_into_the_comparison() {
     assert_eq!(
-        allowed_deps(&[("avian2d", Optionality::Optional)]),
+        allowed_deps(&[("avian2d", Optional, On, &[])]),
         BTreeSet::from([Dep {
             name: "avian2d".to_owned(),
-            optionality: Optionality::Optional,
+            optionality: Optional,
+            default_features: On,
+            features: BTreeSet::new(),
+        }])
+    );
+}
+
+/// A dependency's feature selection is read out of metadata as metadata
+/// reports it.
+///
+/// Every `SHIPPED` row selects nothing and leaves `default` on, so nothing else
+/// in this file would notice `deps_of` reading either column as a constant.
+/// `docs/specs/crates.md` §3 puts `data`'s editor-only parts behind a feature
+/// so a game does not compile them, and a feature turned on across
+/// `runtime -> data` is what takes that back.
+///
+/// The fixture's `optional` and `uses_default_features` deliberately disagree.
+/// With both `false`, reading one field in place of the other is invisible
+/// here and fails only the test named for optionality, which is a name that
+/// does not describe the defect.
+///
+/// Mutation: read `default_features` as a constant `On` in `deps_of`, or build
+/// `features` as `BTreeSet::new()`. Each fails this test alone. Read
+/// `default_features` from `d["optional"]`, and this test fails along with
+/// `a_dependency_marked_optional_in_metadata_is_read_as_optional`.
+#[test]
+fn a_dependency_pulled_in_with_features_is_read_with_them() {
+    let pkg = serde_json::json!({
+        "dependencies": [
+            { "name": "bevy", "kind": null, "optional": true,
+              "uses_default_features": false,
+              "features": ["bevy_asset", "bevy_sprite"] },
+        ]
+    });
+    assert_eq!(
+        deps_of(&pkg),
+        BTreeSet::from([Dep {
+            name: "bevy".to_owned(),
+            optionality: Optional,
+            default_features: Off,
+            features: ["bevy_asset", "bevy_sprite"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        }])
+    );
+}
+
+/// A `SHIPPED` row's feature selection reaches the comparison.
+///
+/// The other half of the column, and unguarded for the same reason:
+/// `allowed_deps` only ever runs over rows that select nothing. A row written
+/// `Off` while the manifest leaves `default` on has to compare unequal, or the
+/// table can say a game carries less than it does.
+///
+/// Mutation: replace `default_features: *df` in `allowed_deps` with a constant
+/// `On`, or `features` with `BTreeSet::new()`. Each fails this test alone.
+#[test]
+fn a_shipped_row_carries_its_feature_selection_into_the_comparison() {
+    assert_eq!(
+        allowed_deps(&[("bevy", Required, Off, &["bevy_asset"])]),
+        BTreeSet::from([Dep {
+            name: "bevy".to_owned(),
+            optionality: Required,
+            default_features: Off,
+            features: BTreeSet::from(["bevy_asset".to_owned()]),
         }])
     );
 }

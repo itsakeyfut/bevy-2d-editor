@@ -225,10 +225,17 @@ Why:
   `is_under_crates` decides which packages the graph governs.
 * **What a user's game may carry is a list, not a diagram.** The table above is
   the decision; `SHIPPED` in `crates/editor/tests/dependency_direction.rs` is
-  where the names and the optionality of it are enforced, for the crates a game
-  reaches from the entry points that file lists. What it does not hold yet is
-  the weight behind a name: neither what a crate's own `default` feature
-  contains, nor which features a dependency is pulled in with.
+  where it is enforced, for the crates a game reaches from the entry points
+  that file lists: the name of each dependency, whether it is optional, and the
+  weight it is pulled in with, which is its selected features and whether
+  `default` is on. **Internal edges count**: `runtime -> data` is where a game's
+  copy of the feature split above is decided, and a list that skipped internal
+  edges could not see it turned back on. What the list holds is the **declared**
+  edge, not the configuration a game compiles, so `data`'s editor-only code
+  being reachable from `runtime` is a different failure and one nothing here
+  catches. What it also does not hold is what a crate's own `default` feature
+  contains; that is decided by the change that brings `avian2d` in, which is
+  where the first feature table arrives.
 
 ---
 
