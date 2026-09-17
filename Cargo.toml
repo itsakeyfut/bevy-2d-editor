@@ -1,6 +1,31 @@
-[package]
-name = "bevy-2d-editor"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+# `b2d_editor` is deliberately absent: nothing in this workspace may depend on
+# it. See docs/specs/crates.md §3 for the direction, and §4 for why the package
+# names are not the directory names.
+[workspace.dependencies]
+b2d_core = { path = "crates/core" }
+b2d_data = { path = "crates/data" }
+b2d_runtime = { path = "crates/runtime" }
+b2d_editor_ui = { path = "crates/editor_ui" }
+
+[workspace.lints.rust]
+# The gate runs clippy with `-D warnings`, so a crate that does not say what it
+# is for fails the build rather than drifting.
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+doc_markdown = "warn"
+semicolon_if_nothing_returned = "warn"
+redundant_else = "warn"
+manual_let_else = "warn"
+match_same_arms = "warn"
+redundant_closure_for_method_calls = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"

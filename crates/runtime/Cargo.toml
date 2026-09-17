@@ -1,0 +1,11 @@
+[package]
+name = "b2d_runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+b2d_core.workspace = true
+b2d_data.workspace = true
+
+[lints]
+workspace = true
