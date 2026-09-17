@@ -50,9 +50,15 @@ pub struct Docs {
 }
 
 /// Read the documents, check them, and report whether they agree.
+///
+/// One annotation on the way out, not one per problem. A problem names the
+/// document it is about and not a line in it, so a per-problem annotation
+/// would have nothing to anchor to, and thirty of them would bury the thing
+/// the annotation is for: which check failed, read without opening the log.
 pub fn run() -> bool {
     let Some(docs) = Docs::read(crate::workspace_root()) else {
         println!("  docs/ does not exist");
+        crate::annotate("docs: docs/ does not exist");
         return false;
     };
     let problems = docs.problems();
@@ -67,6 +73,9 @@ pub fn run() -> bool {
         "\n{}",
         summary(docs.markdown.len(), docs.records().len(), problems.len())
     );
+    if !problems.is_empty() {
+        crate::annotate("docs: the documents do not agree");
+    }
     problems.is_empty()
 }
 

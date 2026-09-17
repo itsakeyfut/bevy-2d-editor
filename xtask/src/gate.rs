@@ -28,7 +28,7 @@ use std::process::Command;
 
 use regex::Regex;
 
-use crate::workspace_root;
+use crate::{annotate, workspace_root};
 
 /// Run every row, and report whether all of them passed.
 ///
@@ -148,6 +148,10 @@ fn row(name: &str, cmd: &mut Command) -> bool {
 
 /// Report a failed row, with everything it said.
 ///
+/// Every failing row goes through here, `no-unsafe` included, which is what
+/// makes one call to [`annotate`] enough to name any of them on the Checks
+/// page.
+///
 /// All of it, not a tail. A tail of the last lines of a cargo log is the
 /// `could not compile, 8 previous errors` summary and none of the errors, and
 /// the person reading it is often looking at a runner they cannot cheaply
@@ -157,6 +161,7 @@ fn fail(name: &str, log: &str) {
     for line in log.lines() {
         println!("        {line}");
     }
+    annotate(&format!("gate: the {name} row failed"));
 }
 
 /// No source file in the workspace's crates contains `unsafe`.
@@ -179,8 +184,10 @@ fn fail(name: &str, log: &str) {
 fn no_unsafe() -> bool {
     let sources = scanned_sources();
     if sources.is_empty() {
-        println!("  FAIL  no-unsafe");
-        println!("        examined no source files, so this row is about nothing");
+        fail(
+            "no-unsafe",
+            "examined no source files, so this row is about nothing",
+        );
         return false;
     }
 
@@ -200,10 +207,7 @@ fn no_unsafe() -> bool {
         println!("  ok    no-unsafe");
         return true;
     }
-    println!("  FAIL  no-unsafe");
-    for hit in &hits {
-        println!("        {hit}");
-    }
+    fail("no-unsafe", &hits.join("\n"));
     false
 }
 

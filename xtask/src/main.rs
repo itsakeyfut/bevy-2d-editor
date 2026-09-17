@@ -43,6 +43,34 @@ fn workspace_root() -> &'static Path {
         .expect("xtask/ sits under the workspace root")
 }
 
+/// A failed check, said again in the syntax the Checks page reads.
+///
+/// `cargo xtask all` is one step of one job, so without this the only way to
+/// find out which check failed is to open the log of the job that failed.
+/// One line per failed check puts the name on the summary page instead.
+///
+/// Whether this is a runner is a parameter rather than a call to
+/// [`std::env::var_os`] inside, so that both answers have a test and neither
+/// depends on what the process running the suite happens to carry in its
+/// environment.
+///
+/// Mutation: return `Some` for both, and `a_local_run_is_not_annotated` fails.
+pub(crate) fn annotation(on_github: bool, message: &str) -> Option<String> {
+    on_github.then(|| format!("::error::{message}"))
+}
+
+/// Print [`annotation`] when there is one.
+///
+/// `GITHUB_ACTIONS` is what the runner sets, and it is the only thing asked
+/// about: a workflow that stops setting it loses the annotations and keeps
+/// every exit code, which is the right way round for a line whose only job is
+/// to be read.
+pub(crate) fn annotate(message: &str) {
+    if let Some(line) = annotation(std::env::var_os("GITHUB_ACTIONS").is_some(), message) {
+        println!("{line}");
+    }
+}
+
 fn main() -> ExitCode {
     ExitCode::from(dispatch(std::env::args().nth(1).as_deref()))
 }
@@ -105,7 +133,7 @@ fn exit_code(passed: bool) -> u8 {
 mod tests {
     use std::cell::Cell;
 
-    use super::{all, dispatch, exit_code};
+    use super::{all, annotation, dispatch, exit_code};
 
     /// A task that does not exist is not a pass.
     ///
@@ -152,6 +180,33 @@ mod tests {
         assert!(!all(|| true, || false));
         assert!(!all(|| false, || true));
         assert!(!all(|| false, || false));
+    }
+
+    /// A failed check is said again where the Checks page reads it.
+    ///
+    /// `cargo xtask all` is one step, so this line is the whole of what the
+    /// acceptance criterion asks for: which check failed, without the log
+    /// being opened.
+    ///
+    /// Mutation: change the prefix, and this fails. What it prevents is a
+    /// message GitHub renders as an ordinary log line, which is the failure
+    /// that looks exactly like success from here.
+    #[test]
+    fn a_failed_check_is_said_again_where_the_checks_page_reads_it() {
+        assert_eq!(
+            annotation(true, "gate: the clippy row failed").as_deref(),
+            Some("::error::gate: the clippy row failed")
+        );
+    }
+
+    /// A local run is not annotated.
+    ///
+    /// Mutation: return `Some` for both in `annotation`, and this fails. What
+    /// it prevents is `::error::` appearing in the output somebody reads at a
+    /// terminal, where it means nothing and hides the row it sits beside.
+    #[test]
+    fn a_local_run_is_not_annotated() {
+        assert_eq!(annotation(false, "gate: the clippy row failed"), None);
     }
 
     /// A verdict becomes the exit code it means.
