@@ -231,9 +231,11 @@ Why:
   `default` is on. **Internal edges count**: `runtime -> data` is where a game's
   copy of the feature split above is decided, and a list that skipped internal
   edges could not see it turned back on. What the list holds is the **declared**
-  edge, not the configuration a game compiles, so `data`'s editor-only code
-  being reachable from `runtime` is a different failure and one nothing here
-  catches. What it also does not hold is what a crate's own `default` feature
+  edge; the configuration a game compiles is a different failure, and the `game`
+  row of `cargo xtask gate` is what catches it, by running `cargo check` on each
+  of those entry points so that `data`'s editor-only code being reachable from
+  `runtime` fails here rather than in somebody's project. What neither holds is
+  what a crate's own `default` feature
   contains; that is decided by the change that brings `avian2d` in, which is
   where the first feature table arrives.
 

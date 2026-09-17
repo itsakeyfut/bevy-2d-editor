@@ -156,6 +156,12 @@ const SHIPPED: &[(&str, &[Allowed])] = &[
 /// the same way". A game that opts into such an adapter reaches it directly
 /// rather than through `runtime`, so the closure below starts from every entry
 /// point in this list. Adding one here is what pulls its crates into `SHIPPED`.
+///
+/// `xtask/src/gate.rs` writes this list out a second time, for the `game` row
+/// that compiles each entry point the way a game resolves it. The two are held
+/// equal by `the_gates_entry_point_list_agrees_with_the_dependency_graphs` there, so
+/// adding a name here without adding it there fails that test rather than
+/// leaving the new crate compiled by nothing.
 const GAME_ENTRY_POINTS: &[&str] = &["b2d_runtime"];
 
 /// One `SHIPPED` row's entries, in the shape `deps_of` produces.
@@ -408,12 +414,13 @@ fn a_manifest_path_is_read_the_same_way_on_every_platform() {
 /// `SHIPPED`'s doc comment carries what including them costs.
 ///
 /// What this holds is the **declared** edge, and that is not the only way the
-/// split can die. If `runtime` used `data`'s editor-only code directly, every
-/// row of this gate would stay green, because the clippy row passes
-/// `--all-features` and the test row builds the workspace, where `b2d_editor`
-/// turns the feature on and cargo unifies it onto `data`. Only
-/// `cargo check -p b2d_runtime`, which nothing here runs, resolves `data` the
-/// way a game does and refuses it.
+/// split can die. If `runtime` used `data`'s editor-only code directly, this
+/// test would stay green, and so would the clippy row, which passes
+/// `--all-features`, and the test row, which builds the workspace, where
+/// `b2d_editor` turns the feature on and cargo unifies it onto `data`. The
+/// other half is the `game` row of `cargo xtask gate`: it runs
+/// `cargo check -p <entry point>`, which resolves `data` the way a game does
+/// and refuses it.
 ///
 /// Mutation: add `serde_json = "1.0.151"` to `crates/runtime/Cargo.toml`, or to
 /// `crates/data/Cargo.toml`, or add `("regex", Required, On, &[])` to a
