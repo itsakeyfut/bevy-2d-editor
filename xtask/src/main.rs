@@ -57,15 +57,36 @@ fn dispatch(task: Option<&str>) -> u8 {
     let passed = match task {
         Some("gate") => gate::run(),
         Some("docs") => docs::run(),
+        Some("all") => all(gate::run, docs::run),
         other => {
             if let Some(name) = other {
                 eprintln!("xtask: `{name}` is not a task");
             }
-            eprintln!("usage: cargo xtask <gate|docs>");
+            eprintln!("usage: cargo xtask <all|gate|docs>");
             return 2;
         }
     };
     exit_code(passed)
+}
+
+/// Run every task, and report whether all of them passed.
+///
+/// **Both run.** A task that says nothing because an earlier one failed is a
+/// task somebody has to run a second time to find out about, and on a runner
+/// that means pushing a commit to ask a question. It is the same reason
+/// [`gate::run`] collects its rows before taking a verdict.
+///
+/// This is what the workflow names, so that the list of tasks is written down
+/// once. Taking the two as arguments is what makes that testable: `dispatch`
+/// cannot be called with `all` from a test, because `gate` runs `cargo test`,
+/// which runs the test.
+///
+/// Mutation: write `gate() && docs()` instead, and
+/// `a_failed_task_does_not_silence_the_next_one` fails.
+fn all(gate: impl FnOnce() -> bool, docs: impl FnOnce() -> bool) -> bool {
+    let gate = gate();
+    let docs = docs();
+    gate && docs
 }
 
 /// A verdict as a process exit code: 0 passed, 1 failed.
@@ -82,7 +103,9 @@ fn exit_code(passed: bool) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, exit_code};
+    use std::cell::Cell;
+
+    use super::{all, dispatch, exit_code};
 
     /// A task that does not exist is not a pass.
     ///
@@ -94,7 +117,41 @@ mod tests {
     #[test]
     fn a_task_that_does_not_exist_is_not_a_pass() {
         assert_eq!(dispatch(Some("gat")), 2);
+        assert_eq!(dispatch(Some("al")), 2);
         assert_eq!(dispatch(None), 2);
+    }
+
+    /// A task that failed does not silence the one after it.
+    ///
+    /// One run says everything that is wrong. The alternative is a runner that
+    /// reports a formatting failure, and only after a second push reports the
+    /// broken link that was there all along.
+    ///
+    /// Mutation: write `gate() && docs()` in `all`, and this fails saying the
+    /// second task did not run.
+    #[test]
+    fn a_failed_task_does_not_silence_the_next_one() {
+        let ran = Cell::new(false);
+        let passed = all(
+            || false,
+            || {
+                ran.set(true);
+                true
+            },
+        );
+        assert!(ran.get(), "the second task did not run");
+        assert!(!passed, "a failed task passed the run");
+    }
+
+    /// Every task has to pass for the run to pass.
+    ///
+    /// Mutation: return `gate` or `docs` alone from `all`, and this fails.
+    #[test]
+    fn every_task_has_to_pass_for_the_run_to_pass() {
+        assert!(all(|| true, || true));
+        assert!(!all(|| true, || false));
+        assert!(!all(|| false, || true));
+        assert!(!all(|| false, || false));
     }
 
     /// A verdict becomes the exit code it means.
