@@ -69,9 +69,9 @@ struct Dep {
 /// The external dependencies each crate a user's game reaches is allowed, from
 /// `docs/specs/crates.md` §3.
 ///
-/// `EXPECTED` above holds the direction; this holds the weight. A game reaches
-/// `b2d_runtime` and, through it, `b2d_data` and `b2d_core`, so those three are
-/// the whole of what a user's build carries from this workspace. `b2d_editor`
+/// `EXPECTED` above holds the direction; this holds what comes with it. A game
+/// reaches `GAME_ENTRY_POINTS` and everything under them, which today is
+/// `b2d_runtime` and, through it, `b2d_data` and `b2d_core`. `b2d_editor`
 /// and `b2d_editor_ui` are deliberately absent: nothing a game compiles reaches
 /// them, and a list there would have to be edited every time the editor gained
 /// a dependency while buying none of §2's contract about what a consumer pulls
@@ -83,15 +83,43 @@ struct Dep {
 /// `docs/specs/level-editor.md` §3 has `avian2d` arriving behind a default-on
 /// feature, and a list agreed while it is empty costs one line each.
 ///
-/// What this list does **not** hold is the contents of the `default` feature.
-/// Taking `avian2d` out of `default` changes what a game carries and passes
-/// here. No crate in the workspace has a `[features]` table yet, so holding it
-/// now would mean a mechanism with no subject; the issue that brings `avian2d`
-/// in is where that gets decided, and it arrives with the first feature table.
+/// What this list holds about a dependency is its name and its optionality, and
+/// **not the weight behind the name**. Two things sit in that gap. Taking
+/// `avian2d` out of `default` changes what a game carries and passes here; so
+/// does `b2d_data = { workspace = true, features = ["editor"] }` in
+/// `crates/runtime/Cargo.toml`, which would defeat §3's feature split in `data`
+/// without a word. No crate in the workspace has a `[features]` table yet, so
+/// closing either now means a mechanism with no subject. The first is decided
+/// by the issue that brings `avian2d` in, which arrives with the first feature
+/// table; the second is its own issue.
+///
 /// Direct dependencies only, too: what `bevy` pulls in behind itself is not
 /// this list's business.
 const SHIPPED: &[(&str, &[(&str, Optionality)])] =
     &[("b2d_core", &[]), ("b2d_data", &[]), ("b2d_runtime", &[])];
+
+/// The crates a user's game depends on directly.
+///
+/// `docs/specs/crates.md` §3 has `runtime` as the one a game depends on, and
+/// names `runtime_myphysics` as a future adapter that "sits beside `runtime`
+/// the same way". A game that opts into such an adapter reaches it directly
+/// rather than through `runtime`, so the closure below starts from every entry
+/// point in this list. Adding one here is what pulls its crates into `SHIPPED`.
+const GAME_ENTRY_POINTS: &[&str] = &["b2d_runtime"];
+
+/// One `SHIPPED` row's entries, in the shape `deps_of` produces.
+///
+/// Extracted so that the optionality a row carries is read by something a test
+/// can call with a non-empty row. Inline, it was only ever applied to the empty
+/// rows above, so nothing could tell whether it read the column at all.
+fn allowed_deps(row: &[(&str, Optionality)]) -> BTreeSet<Dep> {
+    row.iter()
+        .map(|(n, o)| Dep {
+            name: (*n).to_owned(),
+            optionality: *o,
+        })
+        .collect()
+}
 
 /// The workspace as cargo resolves it, members only.
 ///
@@ -119,9 +147,8 @@ fn metadata() -> Value {
 /// crate, and this file is itself the reason `b2d_editor` has one. Build
 /// dependencies are kept, because those do reach a consumer's build.
 ///
-/// A dependency declared under a target table is one entry like any other.
-/// Metadata flattens the target tables, which is the reason this file reads
-/// metadata rather than manifests, stated in the module comment above.
+/// A dependency declared under a target table is one entry like any other:
+/// metadata flattens the target tables, so there is no special case here.
 fn deps_of(pkg: &Value) -> BTreeSet<Dep> {
     pkg["dependencies"]
         .as_array()
@@ -328,13 +355,7 @@ fn a_crate_a_game_reaches_carries_exactly_the_external_dependencies_the_list_all
             .into_iter()
             .filter(|d| !workspace.contains(&d.name))
             .collect();
-        let allowed: BTreeSet<Dep> = allowed
-            .iter()
-            .map(|(n, o)| Dep {
-                name: (*n).to_owned(),
-                optionality: *o,
-            })
-            .collect();
+        let allowed = allowed_deps(allowed);
         assert_eq!(
             external, allowed,
             "{name} carries the external dependencies {external:?}, and the list \
@@ -345,7 +366,7 @@ fn a_crate_a_game_reaches_carries_exactly_the_external_dependencies_the_list_all
     }
 }
 
-/// Every crate a game reaches through `b2d_runtime` has a row in `SHIPPED`.
+/// Every crate a game reaches has a row in `SHIPPED`.
 ///
 /// The vacuity guard. The test above walks `SHIPPED`, so a crate missing from
 /// it is not checked and not reported; `runtime` gaining an internal crate
@@ -357,13 +378,14 @@ fn a_crate_a_game_reaches_carries_exactly_the_external_dependencies_the_list_all
 /// deliberate: a membership check computed from the manifests this file checks
 /// would agree with them however wrong both are.
 ///
-/// Mutation: remove a row from `SHIPPED`, or add `b2d_editor_ui` to
-/// `EXPECTED`'s `b2d_runtime` row. The first fails this test alone; the second
-/// fails this and the graph test, which reads that row against the manifest.
+/// Mutation: remove a row from `SHIPPED`, add `b2d_editor_ui` to `EXPECTED`'s
+/// `b2d_runtime` row, or add an entry point to `GAME_ENTRY_POINTS` whose crates
+/// have no rows. The first and third fail this test alone; the second fails
+/// this and the graph test, which reads that row against the manifest.
 #[test]
-fn every_crate_a_game_reaches_through_runtime_has_a_row_in_the_shipped_list() {
+fn every_crate_a_game_reaches_has_a_row_in_the_shipped_list() {
     let mut reached = BTreeSet::new();
-    let mut frontier = vec!["b2d_runtime"];
+    let mut frontier = GAME_ENTRY_POINTS.to_vec();
     while let Some(name) = frontier.pop() {
         if !reached.insert(name) {
             continue;
@@ -372,7 +394,7 @@ fn every_crate_a_game_reaches_through_runtime_has_a_row_in_the_shipped_list() {
             .iter()
             .find(|(n, _)| *n == name)
             .unwrap_or_else(|| {
-                panic!("{name} is reachable from b2d_runtime and has no row in EXPECTED")
+                panic!("{name} is reachable from a game entry point and has no row in EXPECTED")
             });
         frontier.extend(deps.iter().copied());
     }
@@ -380,8 +402,8 @@ fn every_crate_a_game_reaches_through_runtime_has_a_row_in_the_shipped_list() {
     assert_eq!(
         reached, listed,
         "SHIPPED is about a different set of crates than the ones a game \
-         reaches through b2d_runtime, so whatever it holds is not the contract \
-         in docs/specs/crates.md §3"
+         actually reaches from GAME_ENTRY_POINTS, so whatever it holds is not \
+         the contract in docs/specs/crates.md §3"
     );
 }
 
@@ -418,5 +440,27 @@ fn a_dependency_marked_optional_in_metadata_is_read_as_optional() {
                 optionality: Optionality::Required,
             },
         ])
+    );
+}
+
+/// A `SHIPPED` row's optionality reaches the comparison.
+///
+/// Every row is empty today, so `allowed_deps` runs only over empty slices and
+/// nothing else in this file notices it ignoring the column. That matters in
+/// one direction in particular: a dependency written `Optional` in `SHIPPED`
+/// while the manifest declares it hard would compare equal and pass, which is
+/// exactly the contract `docs/specs/level-editor.md` §3 states about `avian2d`
+/// being a feature rather than a hard dependency.
+///
+/// Mutation: replace `optionality: *o` in `allowed_deps` with a constant
+/// `Optionality::Required`. This test fails and nothing else does.
+#[test]
+fn a_shipped_row_carries_its_optionality_into_the_comparison() {
+    assert_eq!(
+        allowed_deps(&[("avian2d", Optionality::Optional)]),
+        BTreeSet::from([Dep {
+            name: "avian2d".to_owned(),
+            optionality: Optionality::Optional,
+        }])
     );
 }
