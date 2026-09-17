@@ -223,6 +223,12 @@ Why:
   above, it is the rule's boundary, and
   `crates/editor/tests/dependency_direction.rs` is where the boundary is drawn:
   `is_under_crates` decides which packages the graph governs.
+* **What a user's game may carry is a list, not a diagram.** The table above is
+  the decision; `SHIPPED` in `crates/editor/tests/dependency_direction.rs` is
+  where the names and the optionality of it are enforced, for the crates a game
+  reaches from the entry points that file lists. What it does not hold yet is
+  the weight behind a name: neither what a crate's own `default` feature
+  contains, nor which features a dependency is pulled in with.
 
 ---
 
