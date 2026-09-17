@@ -402,10 +402,18 @@ fn a_manifest_path_is_read_the_same_way_on_every_platform() {
 /// disagreement worth seeing too.
 ///
 /// Workspace members are **not** dropped before comparing. `runtime -> data` is
-/// an internal edge and is the one §3's feature split in `data` dies on, so a
-/// comparison that delegated members to `EXPECTED`, which holds names, could
-/// not see a feature turned on across it. `SHIPPED`'s doc comment carries what
-/// that costs.
+/// an internal edge, and it is where a game's copy of §3's feature split in
+/// `data` is decided, so a comparison that delegated members to `EXPECTED`,
+/// which holds names, could not see a feature turned on across it.
+/// `SHIPPED`'s doc comment carries what including them costs.
+///
+/// What this holds is the **declared** edge, and that is not the only way the
+/// split can die. If `runtime` used `data`'s editor-only code directly, every
+/// row of this gate would stay green, because the clippy row passes
+/// `--all-features` and the test row builds the workspace, where `b2d_editor`
+/// turns the feature on and cargo unifies it onto `data`. Only
+/// `cargo check -p b2d_runtime`, which nothing here runs, resolves `data` the
+/// way a game does and refuses it.
 ///
 /// Mutation: add `serde_json = "1.0.151"` to `crates/runtime/Cargo.toml`, or to
 /// `crates/data/Cargo.toml`, or add `("regex", Required, On, &[])` to a
@@ -557,13 +565,20 @@ fn a_shipped_row_carries_its_optionality_into_the_comparison() {
 /// so a game does not compile them, and a feature turned on across
 /// `runtime -> data` is what takes that back.
 ///
+/// The fixture's `optional` and `uses_default_features` deliberately disagree.
+/// With both `false`, reading one field in place of the other is invisible
+/// here and fails only the test named for optionality, which is a name that
+/// does not describe the defect.
+///
 /// Mutation: read `default_features` as a constant `On` in `deps_of`, or build
-/// `features` as `BTreeSet::new()`. Each fails this test alone.
+/// `features` as `BTreeSet::new()`. Each fails this test alone. Read
+/// `default_features` from `d["optional"]`, and this test fails along with
+/// `a_dependency_marked_optional_in_metadata_is_read_as_optional`.
 #[test]
 fn a_dependency_pulled_in_with_features_is_read_with_them() {
     let pkg = serde_json::json!({
         "dependencies": [
-            { "name": "bevy", "kind": null, "optional": false,
+            { "name": "bevy", "kind": null, "optional": true,
               "uses_default_features": false,
               "features": ["bevy_asset", "bevy_sprite"] },
         ]
@@ -572,7 +587,7 @@ fn a_dependency_pulled_in_with_features_is_read_with_them() {
         deps_of(&pkg),
         BTreeSet::from([Dep {
             name: "bevy".to_owned(),
-            optionality: Required,
+            optionality: Optional,
             default_features: Off,
             features: ["bevy_asset", "bevy_sprite"]
                 .into_iter()

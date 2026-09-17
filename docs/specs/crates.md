@@ -228,10 +228,14 @@ Why:
   where it is enforced, for the crates a game reaches from the entry points
   that file lists: the name of each dependency, whether it is optional, and the
   weight it is pulled in with, which is its selected features and whether
-  `default` is on. **Internal edges count**, because the feature split above
-  lives or dies on `runtime -> data`. What the list does not hold is what a
-  crate's own `default` feature contains; that is decided by the change that
-  brings `avian2d` in, which is where the first feature table arrives.
+  `default` is on. **Internal edges count**: `runtime -> data` is where a game's
+  copy of the feature split above is decided, and a list that skipped internal
+  edges could not see it turned back on. What the list holds is the **declared**
+  edge, not the configuration a game compiles, so `data`'s editor-only code
+  being reachable from `runtime` is a different failure and one nothing here
+  catches. What it also does not hold is what a crate's own `default` feature
+  contains; that is decided by the change that brings `avian2d` in, which is
+  where the first feature table arrives.
 
 ---
 
