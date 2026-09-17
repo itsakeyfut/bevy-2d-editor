@@ -1,0 +1,10 @@
+[package]
+name = "b2d_data"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+b2d_core.workspace = true
+
+[lints]
+workspace = true

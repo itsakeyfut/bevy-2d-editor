@@ -1,0 +1,13 @@
+[package]
+name = "b2d_editor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+b2d_core.workspace = true
+b2d_data.workspace = true
+b2d_editor_ui.workspace = true
+b2d_runtime.workspace = true
+
+[lints]
+workspace = true
