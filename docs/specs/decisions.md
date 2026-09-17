@@ -58,6 +58,7 @@ Quotations are left in the language of their source.
 | The Editor Model: a typed shell holding AST fragments | [data-model.md §5](./data-model.md) |
 | `.aseprite` files are read directly | [assets.md §1](./assets.md) |
 | Documentation is mdBook | [dev-environment.md §2](./dev-environment.md) |
+| CI runs the whole gate on all three platforms, as one command | [dev-environment.md §3](./dev-environment.md) |
 | The database: user-defined types, scaffolded from templates | [database-editor.md §1](./database-editor.md) |
 | Scenarios are written in a manuscript UI | [scenario-editor.md §2](./scenario-editor.md) |
 | The scenario graph's boundary **(withdrawn)** | [scenario-editor.md §3](./scenario-editor.md) |
@@ -99,6 +100,8 @@ Quotations are left in the language of their source.
 | `bevy_editor_prototypes` | **excluded**, archived 2026-04-16 ([concepts.md §6](../concepts.md)) |
 | Archived and prototype work generally | **excluded as a reference** |
 | Documentation | mdBook, in `book/`, following Jackdaw's shape |
+| CI | **the whole gate on Linux, macOS and Windows**, through `cargo xtask all` ([dev-environment.md §3](./dev-environment.md)) |
+| Build caching in CI | **none until Bevy lands**, then `Swatinem/rust-cache` in the same change ([dev-environment.md §3](./dev-environment.md)) |
 | Editor Model | **a typed shell holding AST fragments for component values** ([data-model.md §5](./data-model.md)) |
 | Running | **preview in phase 1, play in phase 3** ([runtime-and-play.md §2](./runtime-and-play.md)) |
 | Crate dependency direction | **fixed in [crates.md §3](./crates.md)**: `editor → runtime → data → core` |

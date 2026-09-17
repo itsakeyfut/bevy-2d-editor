@@ -1,4 +1,11 @@
 [alias]
-# One definition of the gate, reachable from a clean checkout by a person and,
-# once a workflow exists to call it, by CI. There is no workflow yet.
-xtask = "run --quiet --package xtask --"
+# One definition of the gate, reachable from a clean checkout by a person and
+# by the workflow in .github/workflows/ci.yml.
+#
+# `--locked` has to be here and not only on the rows: this is itself a cargo
+# invocation and it resolves before any row runs. Measured, with the flag on
+# every row but not here: editing Cargo.lock to claim `regex 1.13.0` and
+# running `cargo xtask gate` printed `gate: passed` and left the lockfile
+# resolved back to 1.13.1. The row never saw the stale file, because this line
+# had already corrected it.
+xtask = "run --quiet --locked --package xtask --"

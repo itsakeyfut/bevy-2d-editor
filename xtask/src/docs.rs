@@ -50,9 +50,18 @@ pub struct Docs {
 }
 
 /// Read the documents, check them, and report whether they agree.
+///
+/// One annotation on the way out, not one per problem. A problem names the
+/// document it is about and not a line in it, so a per-problem annotation
+/// would have nothing to anchor to, and thirty of them would bury the thing
+/// the annotation is for: which check failed, read without opening the log.
 pub fn run() -> bool {
+    let on_github = crate::on_github();
     let Some(docs) = Docs::read(crate::workspace_root()) else {
         println!("  docs/ does not exist");
+        if let Some(line) = crate::annotation(on_github, "docs: docs/ does not exist") {
+            println!("{line}");
+        }
         return false;
     };
     let problems = docs.problems();
@@ -65,9 +74,33 @@ pub fn run() -> bool {
     }
     println!(
         "\n{}",
-        summary(docs.markdown.len(), docs.records().len(), problems.len())
+        closing(
+            &summary(docs.markdown.len(), docs.records().len(), problems.len()),
+            problems.len(),
+            on_github,
+        )
     );
     problems.is_empty()
+}
+
+/// What a run ends with: the summary, and the annotation naming this check
+/// when there is a Checks page to read it.
+///
+/// Built rather than printed so the annotation has a test. Without one,
+/// deleting it leaves the whole suite green and the Checks page silent about
+/// the documents.
+///
+/// Mutation: drop the annotation, and
+/// `a_failing_run_names_the_documents_to_the_checks_page` fails.
+fn closing(summary: &str, problems: usize, on_github: bool) -> String {
+    let mut out = summary.to_owned();
+    if problems > 0
+        && let Some(line) = crate::annotation(on_github, "docs: the documents do not agree")
+    {
+        out.push('\n');
+        out.push_str(&line);
+    }
+    out
 }
 
 /// The line a person greps for after a run.
@@ -408,7 +441,7 @@ fn normalize(here: &str, rel: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Docs, normalize, summary};
+    use super::{Docs, closing, normalize, summary};
     use std::collections::{BTreeMap, BTreeSet};
 
     impl Docs {
@@ -839,5 +872,25 @@ mod tests {
     #[test]
     fn the_summary_line_keeps_its_shape() {
         assert_eq!(summary(18, 0, 0), "files: 18  records: 0  problems: 0");
+    }
+
+    /// A failing run names the documents to the Checks page, and only there.
+    ///
+    /// One annotation, not one per problem: a problem names a document and not
+    /// a line in it, so there is nothing for a per-problem annotation to anchor
+    /// to.
+    ///
+    /// Mutation: drop the annotation from `closing`, and this fails. Nothing
+    /// else does, and what it prevents is a red build whose Checks page never
+    /// mentions the documents.
+    #[test]
+    fn a_failing_run_names_the_documents_to_the_checks_page() {
+        let line = "files: 18  records: 0  problems: 1";
+        assert_eq!(
+            closing(line, 1, true),
+            format!("{line}\n::error::docs: the documents do not agree")
+        );
+        assert_eq!(closing(line, 1, false), line);
+        assert_eq!(closing(line, 0, true), line);
     }
 }

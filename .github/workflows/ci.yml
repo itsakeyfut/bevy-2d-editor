@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Supersede a run on the same pull request, never on a push to main: what is on
+# main is what the history claims about itself, and cancelling that leaves a
+# commit nobody ever checked.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # A failing test on a runner cannot be rerun under a debugger.
+  RUST_BACKTRACE: 1
+
+jobs:
+  # The whole gate, on every platform. docs/specs/dev-environment.md §3 says
+  # why all three run all of it rather than the cheaper split.
+  gate:
+    name: Gate (${{ matrix.os }})
+    strategy:
+      # Windows failing must not hide whether macOS passed. Knowing it is one
+      # platform rather than all three is most of the diagnosis.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # rust-toolchain.toml names the channel and the components, and
+      # `rustup show` installs exactly what it names. No toolchain action, so
+      # the pin in the repository stays the only place a version is written.
+      - name: Install the toolchain named by rust-toolchain.toml
+        run: rustup show
+      # One command, because xtask is where the checks are defined. A row added
+      # there runs here without this file being touched, which is the split
+      # that putting the gate in the repository was for. A failed check names
+      # itself as an annotation, so the Checks page says which one it was.
+      - run: cargo xtask all
+
+  # The one check name branch protection requires. It stays correct when the
+  # matrix gains or loses a platform, and it is what stops a leg that did not
+  # succeed reading as a pass.
+  #
+  # The condition is a total one rather than a list of the results somebody
+  # thought of. `needs.<job>.result` has four values, and enumerating three of
+  # them is how a leg that is skipped, by a path filter added later or by an
+  # `if:` on the job, turns the required check green over a commit nothing
+  # ever built.
+  ci:
+    name: All platforms
+    if: always()
+    needs: [gate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every leg succeeded
+        if: needs.gate.result != 'success'
+        run: exit 1
