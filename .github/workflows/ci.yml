@@ -43,14 +43,20 @@ jobs:
       - run: cargo xtask all
 
   # The one check name branch protection requires. It stays correct when the
-  # matrix gains or loses a platform, and it is what makes a cancelled or
-  # skipped leg count as a failure instead of reading as a pass.
+  # matrix gains or loses a platform, and it is what stops a leg that did not
+  # succeed reading as a pass.
+  #
+  # The condition is a total one rather than a list of the results somebody
+  # thought of. `needs.<job>.result` has four values, and enumerating three of
+  # them is how a leg that is skipped, by a path filter added later or by an
+  # `if:` on the job, turns the required check green over a commit nothing
+  # ever built.
   ci:
     name: All platforms
     if: always()
     needs: [gate]
     runs-on: ubuntu-latest
     steps:
-      - name: Fail if any leg failed or was cancelled
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - name: Fail unless every leg succeeded
+        if: needs.gate.result != 'success'
         run: exit 1

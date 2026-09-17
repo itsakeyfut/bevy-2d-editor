@@ -19,7 +19,8 @@
 //! terminal and another on a runner is two gates, and `CLAUDE.md` defines done
 //! as the exit code of one command. What that costs: after a dependency is
 //! added to a manifest, the next run fails with cargo's own
-//! `the lock file needs to be updated` until `cargo fetch` has run.
+//! `cannot update the lock file ... because --locked was passed to prevent
+//! this` until `cargo fetch` has run.
 
 use std::fs;
 use std::io;
@@ -117,12 +118,19 @@ fn doc_command() -> Command {
 
 /// The `test` row.
 ///
+/// `--no-fail-fast` is the same rule the rest of this file keeps, one level
+/// down. `cargo test --workspace` stops at the first failing **target**, not
+/// the first failing test, so one crate going red hides every other crate in
+/// the same run. Measured: with a failing test in `b2d_editor` and another in
+/// `xtask`, the row reported the first and exited, and
+/// `error: 2 targets failed:` is what it says with the flag.
+///
 /// `BEVY2D_BLESS` makes a snapshot corpus rewrite its expectations instead of
 /// comparing against them. Somebody who blessed a moment ago should not have
 /// the gate agree with whatever they blessed, so the variable is removed from
 /// the child rather than merely left unset here.
 fn test_command() -> Command {
-    let mut cmd = cargo(&["test", "--workspace", "--locked"]);
+    let mut cmd = cargo(&["test", "--workspace", "--locked", "--no-fail-fast"]);
     cmd.env_remove("BEVY2D_BLESS");
     cmd
 }
@@ -444,8 +452,8 @@ mod tests {
     /// other test noticing: it would still exit 0, still print `ok`, and still
     /// have stopped running the suite.
     ///
-    /// Mutation: change any subcommand, or drop `-D warnings`, `--check` or
-    /// `--locked`, and this fails naming the row.
+    /// Mutation: change any subcommand, or drop `-D warnings`, `--check`,
+    /// `--locked` or `--no-fail-fast`, and this fails naming the row.
     #[test]
     fn each_row_runs_the_command_its_name_promises() {
         assert_eq!(args(&fmt_command()), ["fmt", "--all", "--", "--check"]);
@@ -472,7 +480,10 @@ mod tests {
                 "--locked"
             ]
         );
-        assert_eq!(args(&test_command()), ["test", "--workspace", "--locked"]);
+        assert_eq!(
+            args(&test_command()),
+            ["test", "--workspace", "--locked", "--no-fail-fast"]
+        );
     }
 
     /// Every row that cargo lets be `--locked` is `--locked`.

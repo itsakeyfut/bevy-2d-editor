@@ -157,6 +157,15 @@ mod tests {
 
     use super::{TASKS, all, annotation, dispatch, exit_code, workspace_root};
 
+    /// The workflow, read once for the tests that assert what it runs.
+    fn workflow() -> String {
+        let path = workspace_root()
+            .join(".github")
+            .join("workflows")
+            .join("ci.yml");
+        std::fs::read_to_string(&path).expect("the workflow is in the repository")
+    }
+
     /// Whether the second task of `a_failed_task_does_not_silence_the_next_one`
     /// ran. A static because `all` takes function pointers, which cannot carry
     /// a captured environment, and only that test touches it.
@@ -243,15 +252,12 @@ mod tests {
     /// the one that matters, which is why the rows are named rather than
     /// counted.
     ///
-    /// Mutation: remove `windows-latest` from the matrix, or change the step to
-    /// `cargo xtask gate`, and this fails naming what went missing.
+    /// Mutation: remove `windows-latest` from the matrix, change the step to
+    /// `cargo xtask gate`, or pin `runs-on` to one platform, and this fails
+    /// naming what went missing.
     #[test]
     fn the_workflow_runs_every_task_on_every_platform() {
-        let path = workspace_root()
-            .join(".github")
-            .join("workflows")
-            .join("ci.yml");
-        let workflow = std::fs::read_to_string(&path).expect("the workflow is in the repository");
+        let workflow = workflow();
         assert!(
             workflow.contains("cargo xtask all"),
             "the workflow does not run every task"
@@ -259,6 +265,32 @@ mod tests {
         for os in ["ubuntu-latest", "macos-latest", "windows-latest"] {
             assert!(workflow.contains(os), "the matrix does not name {os}");
         }
+        // The names above are the matrix list, and a list is not a platform
+        // until something runs on it. Pinning `runs-on` to one runner leaves
+        // all three names in the file and every leg on the same machine, which
+        // is the one failure this whole workflow exists to prevent.
+        assert!(
+            workflow.contains("runs-on: ${{ matrix.os }}"),
+            "the legs are not wired to the matrix, so they all run on one platform"
+        );
+    }
+
+    /// A leg that did not succeed fails the check branch protection requires.
+    ///
+    /// `needs.<job>.result` has four values, so a condition that enumerates
+    /// the ones somebody thought of is a condition that lets the rest through.
+    /// A skipped leg passing here is a required check going green over a
+    /// commit nothing built.
+    ///
+    /// Mutation: enumerate the failing results instead, or drop the condition,
+    /// and this fails.
+    #[test]
+    fn a_leg_that_did_not_succeed_fails_the_required_check() {
+        let workflow = workflow();
+        assert!(
+            workflow.contains("if: needs.gate.result != 'success'"),
+            "the required check does not insist that every leg succeeded"
+        );
     }
 
     /// A failed check is said again where the Checks page reads it.
