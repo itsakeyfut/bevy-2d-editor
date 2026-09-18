@@ -174,3 +174,54 @@ than new.
   directly, and a token the theme lacks logs a warning and draws an error
   colour, so renaming them would be wrong everywhere Feathers draws. What is
   replaced is the values.
+
+---
+
+## 4. Viewport navigation: the middle button pans, the wheel zooms
+
+### Decision
+
+**The middle mouse button drags the view. The wheel zooms, on the cursor.**
+
+The left and right buttons do nothing in the viewport, and are being kept:
+the left for selection and for every tool that paints, the right for a context
+menu.
+
+Zoom is clamped, from 1/32 to 32 world units per pixel.
+
+### Rationale
+
+§2 makes Unity the design target, and this is Unity's Scene view. It is also
+what leaves the left button free, which matters more here than it looks: the
+level editor in [level-editor.md](./level-editor.md) is a sequence of tools that
+all want a drag with the left button, and a viewport that took it for panning
+would have to hand it back.
+
+Zooming on the cursor rather than on the centre is Unity again, and it is the
+difference between reaching a corner of a large level in one gesture and
+reaching it by alternating pans and zooms.
+
+The clamp is not a preference. An unclamped scale reaches zero, and a projection
+with no width shows nothing and does not come back when the wheel is turned the
+other way.
+
+### Rejected options
+
+**Space and the left button, as a second way to pan.** Also Unity, and also
+Photoshop. It is the escape route for a mouse with no middle button, and it
+carries modifier state and its own tests for a case nobody here has hit. It goes
+in when somebody has that mouse.
+
+**The right button to pan**, which is Godot's and Aseprite's. It takes the
+button a context menu will want, and §2 says Unity wins where the two disagree.
+
+**Zooming on the viewport's centre.** Two lines rather than four, and it makes
+the viewport tiring to use at exactly the moment a level gets big enough to
+need it.
+
+### Accepted risk
+
+A trackpad reports scrolling in pixels rather than in notches, and how many
+pixels make a notch is a constant here rather than a measurement. Sixteen is
+`PIXELS_PER_NOTCH` in `crates/editor/src/viewport.rs`; if it turns out to feel
+wrong on a trackpad, it is one number and not a design.
