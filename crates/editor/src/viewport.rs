@@ -129,6 +129,13 @@ fn attach(
 /// Both sides of the division are logical pixels, so this is right whatever the
 /// window's scale factor is, and `area` is what the projection currently shows,
 /// so it is right at every zoom without reading `scale`.
+///
+/// **`inverse_scale_factor` is the one thing here no test holds.** Dropping it
+/// leaves every test green, because a headless app is stuck at a scale factor
+/// of one: `Window::resolution.set_scale_factor_override` does not move
+/// `ComputedNode::inverse_scale_factor` without winit, measured. What it costs
+/// is panning at half speed on a display at 200%, which is invisible on a
+/// machine at 100%. RK-005 in the knowledge bank carries that.
 fn world_per_pixel(node: &ComputedNode, projection: &OrthographicProjection) -> Vec2 {
     projection.area.size() / (node.size() * node.inverse_scale_factor())
 }
@@ -219,7 +226,7 @@ fn zoom(
 
 #[cfg(test)]
 mod tests {
-    use super::{PLACEHOLDER_SIZE, ViewportCamera, ZOOM_MAX, ZOOM_MIN};
+    use super::{PIXELS_PER_NOTCH, PLACEHOLDER_SIZE, ViewportCamera, ZOOM_MAX, ZOOM_MIN};
     use crate::{Region, editor, headless};
     use bevy::camera::{NormalizedRenderTarget, RenderTarget};
     use bevy::input::mouse::MouseScrollUnit;
@@ -320,15 +327,20 @@ mod tests {
 
     /// Turn the wheel by `notches` with the pointer at a window position.
     fn scroll(app: &mut App, position: Vec2, notches: f32) {
+        scroll_in(app, position, MouseScrollUnit::Line, notches);
+    }
+
+    /// Turn the wheel, or push a trackpad, by `amount` of a unit.
+    fn scroll_in(app: &mut App, position: Vec2, unit: MouseScrollUnit, amount: f32) {
         let viewport = region_of(app, Region::Viewport);
         let location = at(app, position);
         app.world_mut().trigger(Pointer::new(
             PointerId::Mouse,
             location.clone(),
             Scroll {
-                unit: MouseScrollUnit::Line,
+                unit,
                 x: 0.0,
-                y: notches,
+                y: amount,
                 hit: HitData::new(viewport, 0.0, None, None),
                 phase: bevy::input::touch::TouchPhase::Moved,
             },
@@ -577,6 +589,38 @@ mod tests {
         assert!(
             (before - after).length() < 0.5,
             "the world moved out from under the cursor: {before:?} became {after:?}"
+        );
+    }
+
+    /// A trackpad's pixels are not a wheel's notches.
+    ///
+    /// `MouseScrollUnit::Pixel` arrives from touchpads and from platforms that
+    /// report smooth scrolling, and a pixel read as a notch is a factor of
+    /// twenty in one gesture rather than the factor of 1.2 a notch means. The
+    /// claim is that the two units agree: `PIXELS_PER_NOTCH` pixels leave the
+    /// camera where one notch does.
+    ///
+    /// Mutation: drop the `/ PIXELS_PER_NOTCH`, and this fails. Nothing else
+    /// here sends a pixel, so nothing else catches it.
+    #[test]
+    fn a_trackpads_pixels_are_not_a_wheels_notches() {
+        let cursor = Vec2::new(600.0, 300.0);
+
+        let mut wheel = viewport_editor();
+        scroll_in(&mut wheel, cursor, MouseScrollUnit::Line, 1.0);
+
+        let mut trackpad = viewport_editor();
+        scroll_in(
+            &mut trackpad,
+            cursor,
+            MouseScrollUnit::Pixel,
+            PIXELS_PER_NOTCH,
+        );
+
+        assert_eq!(
+            camera(&mut trackpad),
+            camera(&mut wheel),
+            "a pixel and a notch are being read as the same amount"
         );
     }
 
