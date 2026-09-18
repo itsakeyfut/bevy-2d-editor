@@ -32,7 +32,8 @@ this project keeps that property, with CI covering Linux and macOS.
 
 **What the gate costs on that machine, now that Bevy is in the workspace.**
 Sampled once a second through six `cargo xtask all` runs, each preceded by
-touching the three crates that carry the engine so they rebuild: physical memory
+touching `core`, `editor_ui` and `editor`, which is enough for the two crates
+that take the engine to be rebuilt and relinked: physical memory
 in use peaked at 16307 MiB of 16309 MiB and stayed there for most of every run,
 while commit charge peaked at 32036 MiB against a limit of 43957 MiB. The
 concurrency at this size is the dependency graph's rather than `-j`'s: two to
