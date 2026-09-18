@@ -75,8 +75,16 @@ impl Plugin for ViewportPlugin {
 /// An observer rather than a `Startup` system ordered after the panels: the
 /// region is spawned by another plugin, and ordering against it would mean
 /// cutting a public `SystemSet` into `PanelsPlugin` for this plugin's benefit.
-/// `Add` arrives whenever the region does, which is also true if the layout is
-/// ever respawned.
+///
+/// **It runs once because the region is spawned once.** Nothing respawns the
+/// layout: `spawn_regions` is a `Startup` system and its scenes are written
+/// inline rather than loaded, so there is no reload that would bring a second
+/// `Add`. If one ever arrives, this spawns a second camera and a second
+/// placeholder and despawns neither, and `pan` and `zoom` both ask for a single
+/// camera and would quietly stop answering. Whatever brings that day, docking
+/// most likely, is what has to make this replace rather than add;
+/// `docs/specs/open-questions.md` §1 is where docking is deferred, with its
+/// trigger.
 ///
 /// Mutation: drop the [`ViewportNode`] insert, and
 /// `the_viewport_camera_renders_to_the_region_and_not_the_window` fails.
@@ -124,11 +132,31 @@ fn attach(
         .observe(zoom);
 }
 
+/// How much of the world the viewport is showing, in world units.
+///
+/// Worked out from the region and the zoom rather than read from
+/// `OrthographicProjection::area`, **which is last frame's**. `area` is an
+/// output of Bevy's `camera_system`, which runs once per frame in `PostUpdate`;
+/// an observer that has already changed `scale` earlier in the same frame is
+/// looking at the extent from before it did. Several `Pointer<Scroll>` in one
+/// frame is the ordinary case rather than a corner: `bevy_picking` turns every
+/// buffered wheel event into one, and one flick of a wheel is several.
+/// `a_burst_of_scrolling_in_one_frame_holds_the_cursor_still` is that claim.
+///
+/// `Camera2d` projects with `ScalingMode::WindowSize`, where
+/// `OrthographicProjection::update` writes `area` as the viewport's own size
+/// times `scale`. The viewport here is the render target, which
+/// `update_viewport_render_target_size` holds equal to the region, so the
+/// region's size times `scale` is the same number a frame earlier.
+fn visible(node: &ComputedNode, projection: &OrthographicProjection) -> Vec2 {
+    node.size() * projection.scale
+}
+
 /// How many world units one logical pixel of the region covers.
 ///
 /// Both sides of the division are logical pixels, so this is right whatever the
-/// window's scale factor is, and `area` is what the projection currently shows,
-/// so it is right at every zoom without reading `scale`.
+/// window's scale factor is, and [`visible`] is current within the frame, so it
+/// is right at every zoom and in the frame a zoom happens.
 ///
 /// **`inverse_scale_factor` is the one thing here no test holds.** Dropping it
 /// leaves every test green, because a headless app is stuck at a scale factor
@@ -137,7 +165,7 @@ fn attach(
 /// is panning at half speed on a display at 200%, which is invisible on a
 /// machine at 100%. RK-005 in the knowledge bank carries that.
 fn world_per_pixel(node: &ComputedNode, projection: &OrthographicProjection) -> Vec2 {
-    projection.area.size() / (node.size() * node.inverse_scale_factor())
+    visible(node, projection) / (node.size() * node.inverse_scale_factor())
 }
 
 /// Drag the world under the pointer, with the middle button.
@@ -180,6 +208,8 @@ fn pan(
 /// Mutation: drop the translation, and
 /// `a_zoom_holds_the_world_point_under_the_cursor_still` fails. Mutation: take
 /// the ratio before clamping, and `zoom_stops_at_the_ends_of_its_range` fails.
+/// Mutation: read `orthographic.area.size()` instead of [`visible`], and
+/// `a_burst_of_scrolling_in_one_frame_holds_the_cursor_still` fails.
 fn zoom(
     scroll: On<Pointer<Scroll>>,
     regions: Query<(&ComputedNode, &UiGlobalTransform)>,
@@ -217,10 +247,10 @@ fn zoom(
     let from_centre = Vec2::new(from_centre.x, -from_centre.y);
 
     // Hold the world point under the cursor still. Arithmetic rather than a
-    // round trip through the camera: `area` is recomputed from `scale` by
-    // Bevy's own camera system a frame later, so asking the camera where the
-    // cursor points would be asking about the frame before this one.
-    transform.translation += (from_centre * orthographic.area.size() * (1.0 - ratio)).extend(0.0);
+    // round trip through the camera: the camera's own view of itself is a
+    // frame old, which `visible` is about, and so is `Camera::viewport_to_world_2d`.
+    transform.translation +=
+        (from_centre * visible(node, orthographic) * (1.0 - ratio)).extend(0.0);
     orthographic.scale = scale;
 }
 
@@ -349,6 +379,30 @@ mod tests {
         app.update();
     }
 
+    /// Turn the wheel `count` times before the frame ends.
+    ///
+    /// The updateless part is the point: `scroll_in` runs one, and a wheel
+    /// delivers several between two frames.
+    fn scroll_burst(app: &mut App, position: Vec2, count: usize) {
+        let viewport = region_of(app, Region::Viewport);
+        let location = at(app, position);
+        for _ in 0..count {
+            app.world_mut().trigger(Pointer::new(
+                PointerId::Mouse,
+                location.clone(),
+                Scroll {
+                    unit: MouseScrollUnit::Line,
+                    x: 0.0,
+                    y: 1.0,
+                    hit: HitData::new(viewport, 0.0, None, None),
+                    phase: bevy::input::touch::TouchPhase::Moved,
+                },
+                viewport,
+            ));
+        }
+        app.update();
+    }
+
     /// Where the camera is, and what it is showing.
     fn camera(app: &mut App) -> (Vec3, f32) {
         let (transform, projection) = app
@@ -402,8 +456,12 @@ mod tests {
     /// Driven by narrowing the inspector rather than by resizing the window,
     /// which needs winit: what moves the layout is a `Node` changing.
     ///
-    /// Mutation: size the image from the window instead of the node, and this
-    /// fails.
+    /// Mutation: drop the `ViewportNode` insert in `attach`, and the target
+    /// stops following anything, which fails this and the test above it. There
+    /// is no line here that sizes the target from the window: `bevy_ui`'s
+    /// `update_viewport_render_target_size` does the sizing and this code only
+    /// says which node, which is the whole reason the region is what it
+    /// follows.
     #[test]
     fn the_render_target_follows_the_region_when_the_region_is_resized() {
         let mut app = viewport_editor();
@@ -621,6 +679,50 @@ mod tests {
             camera(&mut trackpad),
             camera(&mut wheel),
             "a pixel and a notch are being read as the same amount"
+        );
+    }
+
+    /// A burst of scrolling in one frame holds the cursor still too.
+    ///
+    /// The other zoom test turns the wheel once per frame, and that is not how
+    /// a wheel is turned. `bevy_picking` makes one `Pointer<Scroll>` out of
+    /// every buffered wheel event, so one flick arrives as several in the same
+    /// frame, and `OrthographicProjection::area` does not move until Bevy's
+    /// camera system runs at the end of it. Reading `area` in the second event
+    /// of a frame is reading the extent from before the first one: measured at
+    /// 10 world units of drift for two events, and 205 for eight, across a
+    /// region 740 units wide.
+    ///
+    /// Mutation: put `orthographic.area.size()` back in `zoom`'s last
+    /// arithmetic, and this fails while every other test stays green.
+    #[test]
+    fn a_burst_of_scrolling_in_one_frame_holds_the_cursor_still() {
+        let mut app = viewport_editor();
+        let cursor = Vec2::new(300.0, 98.0);
+        let in_region = Vec2::new(60.0, 70.0);
+        let under_cursor = |app: &mut App| {
+            let (camera, transform) = app
+                .world_mut()
+                .query_filtered::<(&Camera, &GlobalTransform), With<ViewportCamera>>()
+                .single(app.world())
+                .expect("there is one viewport camera");
+            camera
+                .viewport_to_world_2d(transform, in_region)
+                .expect("the cursor is inside the viewport")
+        };
+
+        let before = under_cursor(&mut app);
+        scroll_burst(&mut app, cursor, 8);
+        let after = under_cursor(&mut app);
+
+        assert!(
+            camera(&mut app).1 < 0.5,
+            "eight notches did not zoom: {}",
+            camera(&mut app).1
+        );
+        assert!(
+            (before - after).length() < 0.5,
+            "the world slid out from under the cursor: {before:?} became {after:?}"
         );
     }
 
