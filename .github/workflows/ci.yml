@@ -45,6 +45,24 @@ jobs:
       #
       # After `rustup show`, because the cache key includes the toolchain.
       - uses: Swatinem/rust-cache@v2.9.2
+      # Linux only, and derived from Cargo.lock rather than copied: wayland-sys
+      # probes wayland-client, wayland-cursor and wayland-egl through
+      # pkg-config and unwraps, and libudev-sys does the same for libudev. Both
+      # arrive with the engine, because bevy's `2d` feature pulls
+      # `default_platform`, which names x11, wayland and bevy_gilrs. Everything
+      # else Linux-facing in the lock is a `-dl` crate that opens its library at
+      # run time and needs nothing here.
+      #
+      # No libasound2-dev: no alsa crate is in the lock, because the audio
+      # feature is not taken. See docs/specs/ui.md §3.
+      #
+      # Leaving this out does not fail quietly. The Linux leg goes red on the
+      # first build, which is why it carries no test of its own.
+      - name: Install the libraries the engine links against on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libwayland-dev libudev-dev
       # One command, because xtask is where the checks are defined. A row added
       # there runs here without this file being touched, which is the split
       # that putting the gate in the repository was for. A failed check names
