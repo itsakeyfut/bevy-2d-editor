@@ -1121,6 +1121,172 @@ name = \"b2d_core\"
         );
     }
 
+    /// The long spelling of the package flag is read too.
+    ///
+    /// Both spellings are in `claim`, and only the short one was exercised, so
+    /// dropping the long one left the suite green and every command written
+    /// the other way unchecked.
+    ///
+    /// Mutation: drop the `--package` alternative in `claim`, and this fails.
+    #[test]
+    fn a_package_named_with_the_long_flag_is_checked() {
+        let mut files = base();
+        files.push((
+            "docs/specs/ui.md",
+            "# UI\n\nRun `cargo test --package b2d_editr`.\n",
+        ));
+        let found = Prose::of(&files, &[], &["b2d_editor"]).problems();
+        assert!(
+            found.iter().any(|p| p.contains("no package b2d_editr")),
+            "got {found:?}"
+        );
+    }
+
+    /// The other interpreter names a script as well.
+    ///
+    /// `Claim::Script` says `bash` or `sh`, and only one of them was ever
+    /// exercised.
+    ///
+    /// Mutation: drop `"sh"` from the interpreter arm in `claim`, and this
+    /// fails.
+    #[test]
+    fn the_other_interpreter_names_a_script_too() {
+        let mut files = base();
+        files.push(("docs/specs/ui.md", "# UI\n\nRun `sh tools/build.sh`.\n"));
+        let found = Prose::of(&files, &[], &[]).problems();
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("tools/build.sh is not here")),
+            "got {found:?}"
+        );
+    }
+
+    /// A flag is not a script.
+    ///
+    /// Without the guard the word after the interpreter is taken as a path
+    /// whatever it is, and the check reports that a file called `-c` is
+    /// missing, which is a diagnostic nobody can act on.
+    ///
+    /// Mutation: drop the leading-dash condition in `claim`, and this fails.
+    #[test]
+    fn a_flag_is_not_a_script() {
+        let mut files = base();
+        files.push(("docs/specs/ui.md", "# UI\n\nRun `bash -c exit`.\n"));
+        assert_eq!(Prose::of(&files, &[], &[]).problems(), Vec::<String>::new());
+    }
+
+    /// A `.gitignore` that cannot be read is reported.
+    ///
+    /// Not the same as one this cannot interpret: here nothing was excluded at
+    /// all, so the walk would read everything the file meant to keep out. A
+    /// directory in its place is the portable way to make the read fail.
+    ///
+    /// Mutation: drop the push from the `Err` arm of `excluded`, and this
+    /// fails.
+    #[test]
+    fn a_gitignore_that_cannot_be_read_is_reported() {
+        let root = std::env::temp_dir().join("b2d-commands-unreadable-ignore");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".gitignore")).expect("a directory in its place");
+        let found = Prose::read(&root).problems();
+        std::fs::remove_dir_all(&root).expect("the temporary tree goes away");
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains(".gitignore could not be read")),
+            "got {found:?}"
+        );
+    }
+
+    /// A file that is there and will not decode is reported.
+    ///
+    /// It is in `present`, so a claim about it resolves, while nothing inside
+    /// it is ever read. That is a file leaving the corpus quietly, which is
+    /// RK-001 and the reason `read_problems` exists.
+    ///
+    /// Mutation: drop the push from the `Err` arm of the file read in `walk`,
+    /// and this fails.
+    #[test]
+    fn a_file_that_will_not_decode_is_reported() {
+        let root = std::env::temp_dir().join("b2d-commands-undecodable");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a temporary tree");
+        std::fs::write(root.join(".gitignore"), "/target\n").expect("a .gitignore");
+        std::fs::write(root.join("notes.md"), [0xff_u8, 0xfe, 0xff]).expect("an undecodable file");
+        let found = Prose::read(&root).problems();
+        std::fs::remove_dir_all(&root).expect("the temporary tree goes away");
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("notes.md is there and could not be read")),
+            "got {found:?}"
+        );
+    }
+
+    /// A manifest is prose in its comments and nowhere else.
+    ///
+    /// The value of a key is configuration rather than something a reader is
+    /// told to run, and the alias line itself is full of words that would read
+    /// as one.
+    ///
+    /// Mutation: let `.toml` fall to the catch-all in `prose`, and this fails.
+    #[test]
+    fn a_manifest_is_prose_in_its_comments_only() {
+        let files = [
+            (
+                ".cargo/config.toml",
+                "[alias]\nxtask = \"run --quiet --locked --package xtask --\"\nhelp = \"`cargo xtask lint` is not a task\"\n",
+            ),
+            ("xtask/src/main.rs", MAIN),
+        ];
+        assert_eq!(Prose::of(&files, &[], &[]).problems(), Vec::<String>::new());
+    }
+
+    /// The other two shell tags are read as shells.
+    ///
+    /// All three are named in the fence pattern as if they mattered, and only
+    /// one was exercised. The prompt a session transcript carries is stripped
+    /// here too: without that, every line of a `console` block is a command
+    /// beginning with a dollar sign and none of them is checked.
+    ///
+    /// Mutation: leave only `sh` in the fence pattern, or drop the prompt
+    /// stripping in `commands`, and this fails.
+    #[test]
+    fn the_other_shell_tags_are_read_as_shells() {
+        let bash = "# Gate\n\n```bash\ncargo xtask all\n```\n";
+        assert_eq!(commands("docs/specs/ui.md", bash), ["cargo xtask all"]);
+        let console = "# Gate\n\n```console\n$ cargo xtask docs\n```\n";
+        assert_eq!(commands("docs/specs/ui.md", console), ["cargo xtask docs"]);
+    }
+
+    /// The alias needle is anchored at column zero.
+    ///
+    /// A comment showing what the alias looks like is not the alias, and a
+    /// needle that matched it anywhere would report the alias present in a
+    /// file that no longer defines it. RK-001's newest clause is that failure
+    /// in Rust source.
+    ///
+    /// Mutation: drop the anchor in `defines_the_xtask_alias`, and this fails.
+    #[test]
+    fn a_comment_showing_the_alias_is_not_the_alias() {
+        let files = [
+            (
+                ".cargo/config.toml",
+                "[alias]\n# it used to read: xtask = \"run --package xtask --\"\n",
+            ),
+            ("xtask/src/main.rs", MAIN),
+            ("docs/specs/ui.md", "# UI\n\nRun `cargo xtask docs`.\n"),
+        ];
+        let found = Prose::of(&files, &[], &[]).problems();
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("does not define that alias")),
+            "got {found:?}"
+        );
+    }
+
     /// A `.gitignore` line this cannot interpret is reported.
     ///
     /// Guessing would either read an ignored file, and fail over prose nobody
