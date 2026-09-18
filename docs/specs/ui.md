@@ -156,6 +156,17 @@ than new.
   hand-written widgets. The reverse, moving hand-written widgets onto Feathers,
   cannot be done. That asymmetry is part of why this is the choice.
 * **The design tokens are not used as they come.** Per §2 the design target is
-  Unity, so Feathers' colour, spacing and typography tokens are replaced with
-  Unity-shaped ones. What Feathers supplies is widget structure and behaviour,
-  not appearance.
+  Unity, so Feathers' tokens are given Unity-shaped values. What Feathers
+  supplies is widget structure and behaviour, not appearance.
+
+  **Colour is the only token kind there is.** `ThemeProps` in 0.19.1 carries a
+  map of tokens to colours and says "Other style property types to be added
+  later"; spacing is `const` values in `constants.rs` and typography is a font
+  asset with an `InheritableFont` component. An earlier draft of this section
+  said colour, spacing and typography were all tokens, which claimed two kinds
+  the engine does not have.
+
+  **The keys stay Feathers'.** Its widgets read `feathers.*` constants
+  directly, and a token the theme lacks logs a warning and draws an error
+  colour, so renaming them would be wrong everywhere Feathers draws. What is
+  replaced is the values.
