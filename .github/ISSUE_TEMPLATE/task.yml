@@ -116,7 +116,7 @@ body:
         real only when breaking the code makes a named test fail, so name the
         mutation if you already know it.
       placeholder: |
-        `cargo test -p editor tilemap::`, plus a fixture under
+        `cargo test -p b2d_editor tilemap::`, plus a fixture under
         `crates/editor/tests/fixtures/`. Removing the dirty-chunk check makes a
         single paint stroke rebuild every chunk mesh and fails
         `paint_rebuilds_only_touched_chunks`.
