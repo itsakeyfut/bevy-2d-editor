@@ -355,6 +355,62 @@ mod tests {
         );
     }
 
+    /// The cache runs after the toolchain it is keyed on.
+    ///
+    /// `Swatinem/rust-cache` builds its key from the installed toolchain, so a
+    /// step that runs before the toolchain is installed keys the cache on
+    /// whatever the runner happened to ship with. Every leg stays green and
+    /// the cache quietly stops matching, which is the whole of what the step
+    /// was added for.
+    ///
+    /// The needle is the step rather than the prose above it: the comment
+    /// naming the command sits higher in the file, and a check that matched it
+    /// would be measuring the wrong line.
+    ///
+    /// Mutation: move the cache step above the toolchain step, and this fails.
+    #[test]
+    fn the_cache_runs_after_the_toolchain_it_is_keyed_on() {
+        let workflow = workflow();
+        let toolchain = workflow
+            .find("run: rustup show")
+            .expect("the workflow installs the toolchain it pins");
+        let cache = workflow
+            .find("Swatinem/rust-cache")
+            .expect("the workflow caches the build");
+        assert!(
+            cache > toolchain,
+            "the cache step runs before the toolchain is installed, so its key is the runner's"
+        );
+    }
+
+    /// The engine features this editor does without stay out.
+    ///
+    /// `docs/specs/ui.md` §3 takes Bevy without its defaults and records what
+    /// that costs, measured. Nothing else notices a dropped feature coming
+    /// back: the build stays green and only the minutes change.
+    ///
+    /// Read from the lockfile, which is the resolved set rather than the
+    /// manifest that asks for it, so a feature arriving through something
+    /// else is caught as well. The first assertion is the vacuity guard: a
+    /// lockfile this could not read would otherwise pass every line below it.
+    ///
+    /// Mutation: add `audio` to the editor's feature list, and this fails.
+    #[test]
+    fn the_engine_features_this_editor_does_without_stay_out() {
+        let lock = std::fs::read_to_string(workspace_root().join("Cargo.lock"))
+            .expect("the lockfile is in the repository");
+        assert!(
+            lock.contains("name = \"bevy\""),
+            "the engine is not in the lockfile, so this asserts nothing"
+        );
+        for absent in ["bevy_audio", "bevy_gltf"] {
+            assert!(
+                !lock.contains(&format!("name = \"{absent}\"")),
+                "{absent} is resolved, and docs/specs/ui.md §3 says it is not taken"
+            );
+        }
+    }
+
     /// A failed check is said again where the Checks page reads it.
     ///
     /// `cargo xtask all` is one step, so this line is the whole of what the
