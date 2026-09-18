@@ -10,11 +10,13 @@
 //! # Why this is not part of `docs`
 //!
 //! `Docs`, in `docs.rs`, means `docs/`, in the name of its fields and in all
-//! seven of its checks. Commands are said mostly elsewhere: measured over the
-//! tracked tree when this was written, 18 in `.rs` doc comments, 14 in `.md`,
-//! one in a comment in `.cargo/config.toml` and one in an issue template. A
-//! separate corpus with its own summary line keeps those seven checks looking
-//! at what they were written for.
+//! seven of its checks. Commands are said mostly elsewhere. Of the 19 claims
+//! this reports on today, 13 are in Rust comments, four in Markdown, one in a
+//! comment in `.cargo/config.toml` and one in an issue template. That is the
+//! count the summary line prints, so a reader reproduces it by running the
+//! check rather than by counting the same thing a different way and getting a
+//! different answer. A separate corpus with its own summary line keeps those
+//! seven checks looking at what they were written for.
 //!
 //! # What prose is, per file type
 //!
@@ -45,6 +47,13 @@ use regex::Regex;
 ///
 /// Mutation: drop `"rs"`, and `the_corpus_holds_the_files_it_meant` fails.
 const READ: [&str; 4] = ["md", "rs", "toml", "yml"];
+
+/// The workspace's member list, as the root manifest declares it.
+///
+/// Anchored at column zero, so a comment quoting the line is not read as the
+/// declaration. That is RK-001's newest clause, and the guard it was written
+/// for was defeated by exactly such a comment.
+const MEMBERS: &str = r"(?m)^members\s*=\s*\[([^\]]*)\]";
 
 /// Commands that are named on purpose and cannot be run.
 ///
@@ -156,6 +165,7 @@ impl Prose {
         };
         let skip = prose.excluded(root);
         prose.walk(root, root, &skip);
+        prose.read_packages();
         prose
     }
 
@@ -200,9 +210,30 @@ impl Prose {
         skip
     }
 
+    /// Walk `dir`, recording what is there and reading what is prose.
+    ///
+    /// A directory that cannot be listed is reported rather than skipped. The
+    /// file arm below already does that, and the asymmetry was the quieter
+    /// half: an unreadable file costs the corpus one file and says so, while
+    /// an unreadable directory took a whole subtree out of the corpus and left
+    /// the run printing `problems: 0`. That is RK-001, which the field
+    /// documentation above invokes for the file case.
+    ///
+    /// Mutation: return without pushing, and
+    /// `a_directory_that_cannot_be_listed_is_reported` fails.
     fn walk(&mut self, root: &Path, dir: &Path, skip: &BTreeSet<String>) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                let shown = match dir.strip_prefix(root) {
+                    Ok(rel) if rel.as_os_str().is_empty() => ".".to_owned(),
+                    Ok(rel) => rel.display().to_string().replace('\\', "/"),
+                    Err(_) => dir.display().to_string(),
+                };
+                self.read_problems
+                    .push(format!("{shown} could not be listed: {err}"));
+                return;
+            }
         };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -218,9 +249,6 @@ impl Prose {
                 self.walk(root, &path, skip);
                 continue;
             }
-            if rel.ends_with("Cargo.toml") {
-                self.read_package(&path);
-            }
             if !READ.iter().any(|ext| rel.ends_with(&format!(".{ext}"))) {
                 continue;
             }
@@ -235,20 +263,77 @@ impl Prose {
         }
     }
 
-    /// Record the package a manifest declares, if it declares one.
+    /// Record every package the workspace declares.
     ///
-    /// The needle is anchored at column zero. A `name` indented under some
-    /// other table is not the package's, and RK-001's newest instance is a
-    /// check that read Rust source as text and was defeated by three ordinary
-    /// comments.
-    fn read_package(&mut self, path: &Path) {
-        let Ok(text) = fs::read_to_string(path) else {
-            // The read failure is reported by `walk`, which reads it again.
+    /// Only a manifest the root manifest's `members` names. A manifest
+    /// anywhere else is not a package `-p` can reach, and reading one widens
+    /// the set this answers against without saying so: a sample project under
+    /// a fixture directory, which the task template already points
+    /// implementers at, silently excused any command naming it, while the run
+    /// went on printing `problems: 0` about a set it was no longer really
+    /// checking. That is RK-001.
+    ///
+    /// A member entry is a directory, or one ending `/*`, which are the two
+    /// forms this workspace uses. Anything else is reported rather than
+    /// guessed at, for the reason `excluded` gives about `.gitignore`: a
+    /// pattern read wrongly either widens the set or narrows it, and both are
+    /// quiet.
+    ///
+    /// Mutation: accept a manifest anywhere, and
+    /// `a_manifest_outside_the_workspace_declares_no_package` fails.
+    fn read_packages(&mut self) {
+        let Some(root) = self.files.get("Cargo.toml") else {
+            self.read_problems
+                .push("Cargo.toml is missing, so no package can be checked".to_owned());
             return;
         };
-        let name = Regex::new("(?m)^name\\s*=\\s*\"([^\"]+)\"").expect("a literal pattern");
-        if let Some(caps) = name.captures(&text) {
-            self.packages.insert(caps[1].to_owned());
+        let list = Regex::new(MEMBERS).expect("a literal pattern");
+        let Some(caps) = list.captures(root) else {
+            self.read_problems
+                .push("Cargo.toml declares no members, so no package can be checked".to_owned());
+            return;
+        };
+        let mut manifests: BTreeSet<String> = BTreeSet::new();
+        for entry in caps[1].split(',') {
+            let entry = entry.trim().trim_matches('"');
+            if entry.is_empty() {
+                continue;
+            }
+            match entry.strip_suffix("/*") {
+                Some(parent) if !parent.contains('*') => {
+                    let under = format!("{parent}/");
+                    manifests.extend(
+                        self.files
+                            .keys()
+                            .filter(|path| {
+                                path.starts_with(&under)
+                                    && path.ends_with("/Cargo.toml")
+                                    && path.matches('/').count() == under.matches('/').count() + 1
+                            })
+                            .cloned(),
+                    );
+                }
+                _ if entry.contains('*') => self.read_problems.push(format!(
+                    "Cargo.toml lists the member {entry}, which is a pattern this cannot read"
+                )),
+                _ => {
+                    manifests.insert(format!("{entry}/Cargo.toml"));
+                }
+            }
+        }
+        for manifest in &manifests {
+            match self.files.get(manifest).and_then(|text| package_name(text)) {
+                Some(name) => {
+                    self.packages.insert(name);
+                }
+                None => self
+                    .read_problems
+                    .push(format!("{manifest} is a member and declares no package")),
+            }
+        }
+        if self.packages.is_empty() {
+            self.read_problems
+                .push("no member declares a package, so every -p would pass".to_owned());
         }
     }
 
@@ -280,12 +365,6 @@ impl Prose {
         let mut named_xtask = false;
 
         for (file, command, claim) in self.claims() {
-            // A command carrying a placeholder is a shape rather than a claim.
-            // `dependency_direction.rs` names one, to say which packages the
-            // gate's game row checks rather than to be typed.
-            if command.contains('<') && command.contains('>') {
-                continue;
-            }
             if let Some(row) = NOT_RUNNABLE
                 .iter()
                 .position(|(path, exempt, _)| *path == file && *exempt == command)
@@ -300,8 +379,20 @@ impl Prose {
                 Claim::Task(task) => (task != "all"
                     && !crate::TASKS.iter().any(|(name, _)| *name == task))
                 .then(|| format!("{file} names `{command}`, and {task} is not a task")),
-                Claim::Script(target) => (!self.present.contains(&target))
-                    .then(|| format!("{file} names `{command}`, and {target} is not here")),
+                // A relative path is resolved from the workspace root and
+                // from the directory of the file that names it, because both
+                // readings are ordinary and only one of them was accepted: a
+                // relative path written in `docs/specs/README.md` naming its
+                // neighbour was reported missing while the file sat beside it,
+                // which is prose bent to suit a tool. `docs.rs` resolves its
+                // links the second way, and a check that disagreed with the
+                // one next to it would be read as the documents being wrong.
+                Claim::Script(target) => {
+                    let here = file.rsplit_once('/').map_or("", |(dir, _)| dir);
+                    let beside = crate::docs::normalize(here, &target);
+                    (!self.present.contains(&target) && !self.present.contains(&beside))
+                        .then(|| format!("{file} names `{command}`, and {target} is not here"))
+                }
                 Claim::Package(package) => (!self.packages.contains(&package)).then(|| {
                     format!("{file} names `{command}`, and there is no package {package}")
                 }),
@@ -343,6 +434,31 @@ impl Prose {
     }
 }
 
+/// The package a manifest declares, if its `[package]` table names one.
+///
+/// Read by table rather than by the first `name` in the file, so that a
+/// `[lib]` or `[[bin]]` table declaring its own name above `[package]` is not
+/// mistaken for the package. No manifest here is written that way today.
+///
+/// Mutation: take the first `name` in the file instead, and
+/// `a_name_outside_the_package_table_is_not_the_package` fails.
+fn package_name(text: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in text.lines() {
+        if line.starts_with('[') {
+            in_package = line.trim_end() == "[package]";
+            continue;
+        }
+        if in_package && let Some(value) = line.strip_prefix("name") {
+            return value
+                .trim_start()
+                .strip_prefix('=')
+                .map(|value| value.trim().trim_matches('"').to_owned());
+        }
+    }
+    None
+}
+
 /// What a command says exists here.
 ///
 /// Three shapes carry a claim this repository can answer, and everything else
@@ -373,6 +489,14 @@ enum Claim {
 /// RK-001: the guard written to hold the gate's entry point list read the
 /// other file as text, and three ordinary comments defeated it.
 fn claim(command: &str) -> Option<Claim> {
+    // A command carrying a placeholder is a shape rather than a claim, and is
+    // not one of them: `dependency_direction.rs` names one to say which
+    // packages the gate's game row checks rather than to be typed. Excluded
+    // here rather than where the claims are judged, so that the count in the
+    // summary line is the claims this could answer and nothing else.
+    if command.contains('<') && command.contains('>') {
+        return None;
+    }
     let words: Vec<&str> = command.split_whitespace().collect();
     match words.as_slice() {
         ["cargo", "xtask", task, ..] => Some(Claim::Task((*task).to_owned())),
@@ -511,7 +635,8 @@ mod tests {
     /// a script under a directory that is not committed, and seven checks over
     /// the same documents said `problems: 0`.
     ///
-    /// Mutation: return `None` from `judge_script`, and this fails.
+    /// Mutation: stop looking at `present` in the `Claim::Script` arm of
+    /// `problems`, and this fails.
     #[test]
     fn a_command_naming_a_file_that_is_not_here_is_reported() {
         let mut files = base();
@@ -530,7 +655,7 @@ mod tests {
 
     /// The same, written with a leading `./` rather than an interpreter.
     ///
-    /// Mutation: drop the `./` arm from `judge`, and this fails.
+    /// Mutation: drop the `./` arm from `claim`, and this fails.
     #[test]
     fn a_relative_command_naming_a_file_that_is_not_here_is_reported() {
         let mut files = base();
@@ -556,7 +681,8 @@ mod tests {
     /// The acceptance criterion names this case: a document naming a task
     /// called `lint` has to fail, because the table does not have one.
     ///
-    /// Mutation: accept every task in `judge_task`, and this fails.
+    /// Mutation: accept every task in the `Claim::Task` arm of `problems`,
+    /// and this fails.
     #[test]
     fn a_task_that_is_not_in_the_table_is_reported() {
         let mut files = base();
@@ -574,8 +700,8 @@ mod tests {
     /// names out would make this pass while a document naming a newly added
     /// task failed, which is the check telling the truth about the wrong set.
     ///
-    /// Mutation: compare against a literal list in `judge_task`, and adding a
-    /// task makes this fail.
+    /// Mutation: compare against a literal list in the `Claim::Task` arm of
+    /// `problems`, and adding a task makes this fail.
     #[test]
     fn every_task_in_the_table_is_accepted() {
         let names: Vec<&str> = crate::TASKS.iter().map(|(name, _)| *name).collect();
@@ -600,7 +726,8 @@ mod tests {
     /// The live instance was an issue template naming `-p editor`, which the
     /// `b2d_` rename in `docs/specs/crates.md` §4 turned into `b2d_editor`.
     ///
-    /// Mutation: return `None` from `judge_package`, and this fails.
+    /// Mutation: stop looking at `packages` in the `Claim::Package` arm of
+    /// `problems`, and this fails.
     #[test]
     fn a_package_that_is_not_in_the_workspace_is_reported() {
         let mut files = base();
@@ -634,7 +761,7 @@ mod tests {
     /// `crates/editor/tests/dependency_direction.rs` names one to say which
     /// packages the gate's game row checks.
     ///
-    /// Mutation: drop the placeholder rule in `problems`, and this fails.
+    /// Mutation: drop the placeholder rule in `claim`, and this fails.
     #[test]
     fn a_shape_is_not_a_claim() {
         let mut files = base();
@@ -642,14 +769,24 @@ mod tests {
             "crates/editor/tests/dependency_direction.rs",
             "/// The other half is `cargo check -p <entry point>`.\n",
         ));
-        assert_eq!(Prose::of(&files, &[], &[]).problems(), Vec::<String>::new());
+        let prose = Prose::of(&files, &[], &[]);
+        assert_eq!(prose.problems(), Vec::<String>::new());
+        // Not merely unreported: never a claim at all, so the count in the
+        // summary line is the claims this could answer and nothing else.
+        assert!(
+            !prose
+                .claims()
+                .iter()
+                .any(|(_, command, _)| command.contains("entry point")),
+            "a shape was counted as a claim"
+        );
     }
 
     /// A directory is not a command.
     ///
     /// `xtask/src/docs.rs` names `./specs/` twice, as a link target.
     ///
-    /// Mutation: drop the trailing-slash condition in `judge`, and this fails.
+    /// Mutation: drop the trailing-slash condition in `claim`, and this fails.
     #[test]
     fn a_directory_is_not_a_command() {
         let mut files = base();
@@ -847,6 +984,140 @@ run `cargo xtask lint` here
                 .iter()
                 .map(|(file, command, _)| format!("{file}: {command}"))
                 .collect::<Vec<String>>()
+        );
+    }
+
+    /// A script named in a document may sit beside that document.
+    ///
+    /// Both readings of a relative path are ordinary, and accepting only the
+    /// one from the workspace root reported a file that was there. `docs.rs`
+    /// resolves its links from the naming file's directory, and a check that
+    /// disagreed with the one beside it would be read as the documents being
+    /// wrong rather than the check.
+    ///
+    /// Mutation: drop the `beside` lookup in the `Claim::Script` arm of
+    /// `problems`, and this fails.
+    #[test]
+    fn a_script_beside_the_document_that_names_it_resolves() {
+        let mut files = base();
+        files.push((
+            "docs/specs/README.md",
+            "# Specs
+
+Run `./build.sh`.
+",
+        ));
+        assert_eq!(
+            Prose::of(&files, &["docs/specs/build.sh"], &[]).problems(),
+            Vec::<String>::new()
+        );
+    }
+
+    /// And one that is nowhere is still reported.
+    ///
+    /// Without this, the arm above could accept everything and the test before
+    /// it would not notice.
+    #[test]
+    fn a_script_that_is_neither_beside_nor_at_the_root_is_reported() {
+        let mut files = base();
+        files.push((
+            "docs/specs/README.md",
+            "# Specs
+
+Run `./build.sh`.
+",
+        ));
+        let found = Prose::of(&files, &[], &[]).problems();
+        assert!(
+            found.iter().any(|p| p.contains("build.sh is not here")),
+            "got {found:?}"
+        );
+    }
+
+    /// A manifest that is not a workspace member declares no package.
+    ///
+    /// The live shape is a sample project under a fixture directory, which the
+    /// task template already points implementers at. Accepting its name would
+    /// excuse every command naming it, quietly, while the run went on printing
+    /// `problems: 0`.
+    ///
+    /// Mutation: accept a manifest anywhere in `read_packages`, and this
+    /// fails.
+    #[test]
+    fn a_manifest_outside_the_workspace_declares_no_package() {
+        let root = std::env::temp_dir().join("b2d-commands-members");
+        let _ = std::fs::remove_dir_all(&root);
+        let member = root.join("crates").join("core");
+        let fixture = root.join("crates").join("editor").join("tests").join("f");
+        std::fs::create_dir_all(&member).expect("a member directory");
+        std::fs::create_dir_all(&fixture).expect("a fixture directory");
+        std::fs::write(
+            root.join(".gitignore"),
+            "/target
+",
+        )
+        .expect("a .gitignore");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]
+members = [\"crates/*\"]
+",
+        )
+        .expect("a root manifest");
+        std::fs::write(
+            member.join("Cargo.toml"),
+            "[package]
+name = \"b2d_core\"
+",
+        )
+        .expect("a member manifest");
+        std::fs::write(
+            fixture.join("Cargo.toml"),
+            "[package]
+name = \"my_game\"
+",
+        )
+        .expect("a fixture manifest");
+        let prose = Prose::read(&root);
+        let packages = prose.packages.clone();
+        std::fs::remove_dir_all(&root).expect("the temporary tree goes away");
+        assert!(packages.contains("b2d_core"), "got {packages:?}");
+        assert!(
+            !packages.contains("my_game"),
+            "a manifest outside the members widened the package set: {packages:?}"
+        );
+    }
+
+    /// A `name` outside the `[package]` table is not the package.
+    ///
+    /// Mutation: take the first `name` in the file instead, and this fails.
+    #[test]
+    fn a_name_outside_the_package_table_is_not_the_package() {
+        let manifest = "[lib]
+name = \"not_it\"
+
+[package]
+name = \"b2d_core\"
+";
+        assert_eq!(super::package_name(manifest).as_deref(), Some("b2d_core"));
+    }
+
+    /// A directory that cannot be listed is reported, not skipped.
+    ///
+    /// A file that will not decode is already reported. The directory case was
+    /// the quieter half of the same failure: a whole subtree leaving the
+    /// corpus while the run printed `problems: 0`, which is RK-001. A root
+    /// that is not there is the portable way to reach that arm.
+    ///
+    /// Mutation: return from `walk` without pushing, and this fails.
+    #[test]
+    fn a_directory_that_cannot_be_listed_is_reported() {
+        let missing = std::env::temp_dir().join("b2d-commands-not-there");
+        let _ = std::fs::remove_dir_all(&missing);
+        let found = Prose::read(&missing).problems();
+        assert!(
+            found.iter().any(|p| p.contains("could not be listed")),
+            "got {found:?}"
         );
     }
 
