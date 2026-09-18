@@ -102,7 +102,7 @@ fn fmt_command() -> Command {
 /// written lists compared against each other is the shape RK-001 asks for: a
 /// list read out of the file it is checking agrees with that file however wrong
 /// both are.
-const GAME_ENTRY_POINTS: &[&str] = &["b2d_runtime"];
+pub(crate) const GAME_ENTRY_POINTS: &[&str] = &["b2d_runtime"];
 
 /// The `game` row's command, for one entry point.
 ///
