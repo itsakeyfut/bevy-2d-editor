@@ -94,10 +94,22 @@ Unity wins.
 **Bevy UI + `bevy_feathers`**, the same stack Jackdaw uses.
 
 ```toml
-bevy = { version = "0.19", features = ["bevy_feathers", ...] }
+bevy = { version = "0.19", default-features = false, features = [
+    "2d",
+    "ui",
+    "bevy_feathers",
+] }
 ```
 
 egui and bevy_egui are not used.
+
+The defaults are not taken. Bevy's `default` is `["2d", "3d", "ui", "audio"]`,
+and dropping the two this editor does not need costs `bevy_audio` and
+`bevy_gltf` and nothing else: gizmos, picking, sprites, text and Feathers all
+arrive through `2d` and `ui`. Measured cold on one machine, that is 511 crates
+against 552 and 3m18s against 4m20s, on every leg of a three-platform matrix on
+every push. `bevy_audio` comes back in the change that first needs it, which is
+what makes it a dependency with a caller rather than one kept in case.
 
 ### Rejected options
 
