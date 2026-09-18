@@ -425,7 +425,7 @@ fn prose(text: &str) -> String {
 ///
 /// Mutation: drop the `".." => { parts.pop(); }` arm, and
 /// `a_link_that_climbs_out_of_its_directory_resolves` fails.
-fn normalize(here: &str, rel: &str) -> String {
+pub(crate) fn normalize(here: &str, rel: &str) -> String {
     let mut parts: Vec<&str> = here.split('/').filter(|p| !p.is_empty()).collect();
     for part in rel.split('/') {
         match part {

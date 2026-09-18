@@ -17,6 +17,7 @@
 //! `crates/editor/tests/dependency_direction.rs`, which the `test` row runs,
 //! and a second copy of the graph is a second copy to disagree.
 
+mod commands;
 mod docs;
 mod gate;
 
@@ -82,7 +83,11 @@ type Task = (&'static str, fn() -> bool);
 ///
 /// Mutation: remove a row, and `the_tasks_are_the_ones_the_workflow_runs`
 /// fails.
-const TASKS: [Task; 2] = [("gate", gate::run), ("docs", docs::run)];
+pub(crate) const TASKS: [Task; 3] = [
+    ("gate", gate::run),
+    ("docs", docs::run),
+    ("commands", commands::run),
+];
 
 fn main() -> ExitCode {
     ExitCode::from(dispatch(std::env::args().nth(1).as_deref()))
@@ -155,7 +160,9 @@ fn exit_code(passed: bool) -> u8 {
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{TASKS, all, annotation, dispatch, docs, exit_code, gate, workspace_root};
+    use super::{
+        TASKS, all, annotation, commands, dispatch, docs, exit_code, gate, workspace_root,
+    };
 
     /// The workflow, read once for the tests that assert what it runs.
     fn workflow() -> String {
@@ -240,7 +247,7 @@ mod tests {
     #[test]
     fn the_tasks_are_the_ones_the_workflow_runs() {
         let tasks: Vec<&str> = TASKS.iter().map(|(task, _)| *task).collect();
-        assert_eq!(tasks, ["gate", "docs"]);
+        assert_eq!(tasks, ["gate", "docs", "commands"]);
     }
 
     /// Each task runs the check its name promises.
@@ -268,6 +275,10 @@ mod tests {
         assert!(
             std::ptr::fn_addr_eq(by_name("docs"), docs::run as fn() -> bool),
             "the docs task does not check the documents"
+        );
+        assert!(
+            std::ptr::fn_addr_eq(by_name("commands"), commands::run as fn() -> bool),
+            "the commands task does not check the commands"
         );
     }
 
