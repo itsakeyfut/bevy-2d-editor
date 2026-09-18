@@ -106,7 +106,7 @@ pub enum Region {
     MenuBar,
     /// Down the left.
     AssetBrowser,
-    /// The middle, where the viewport arrives with its own issue.
+    /// The middle, where `viewport::ViewportCamera` renders.
     Viewport,
     /// Down the right.
     Inspector,
@@ -176,8 +176,9 @@ fn spawn_regions(mut commands: Commands) {
     // camera to target is a node nothing draws: the window comes up and stays
     // empty, which is what this looked like before the camera was here.
     //
-    // Whether the viewport's own camera is this one or a second is #23's to
-    // decide; what this issue needs is that the panels can be seen at all.
+    // This is the panels' camera and it draws to the window. The viewport has a
+    // second one of its own, drawing to an image, which is why `viewport::attach`
+    // does not reach for this.
     commands.spawn(Camera2d);
 
     let root = commands
