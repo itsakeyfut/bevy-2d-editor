@@ -313,9 +313,12 @@ mod tests {
     };
     use bevy::app::PluginGroupBuilder;
     use bevy::feathers::theme::UiTheme;
+    use bevy::math::Vec2;
     use bevy::prelude::*;
     use bevy::render::RenderPlugin;
     use bevy::render::settings::{RenderCreation, WgpuSettings};
+    use bevy::sprite::BorderRect;
+    use bevy::ui::ComputedNode;
     use bevy::winit::WinitPlugin;
 
     /// A plugin no platform group carries, so that a test can tell one group
@@ -550,6 +553,127 @@ mod tests {
             of(Region::Status),
             of(Region::MenuBar),
             "the bars do not share the column"
+        );
+    }
+
+    /// What each region measures, after Bevy has laid it out.
+    ///
+    /// Returns the size and the border widths `ComputedNode` carries once
+    /// `ui_layout_system` has run, keyed by region, at the default window size
+    /// of 1280 by 720.
+    fn laid_out() -> Vec<(Region, Vec2, BorderRect)> {
+        let mut app = editor(headless());
+        app.update();
+        app.world_mut()
+            .query::<(&Region, &ComputedNode)>()
+            .iter(app.world())
+            .map(|(region, node)| (*region, node.size, node.border))
+            .collect()
+    }
+
+    /// The regions measure what `docs/specs/ui.md` §1 draws.
+    ///
+    /// The sizes and the edges are the layout. They were confirmed once by
+    /// measuring a screenshot of the running editor, which is a thing a person
+    /// did; this is the same claim made by a machine, so that changing 240 to
+    /// something else is caught rather than noticed later.
+    ///
+    /// The middle band spreading rather than stacking is part of it: the test
+    /// that says the three share a parent says nothing about which way that
+    /// parent lays them out, and an earlier version of this change had exactly
+    /// that gap.
+    ///
+    /// Mutation: change a width, drop a border, or make the middle band a
+    /// `Column`, and this fails.
+    #[test]
+    fn the_regions_measure_what_the_drawing_draws() {
+        let laid = laid_out();
+        let of = |wanted: Region| {
+            laid.iter()
+                .find(|(region, _, _)| *region == wanted)
+                .map(|(_, size, border)| (*size, *border))
+                .expect("every region is laid out")
+        };
+        let (menu, menu_border) = of(Region::MenuBar);
+        assert_eq!(menu.x, 1280.0, "the menu bar does not span the window");
+        assert_eq!(menu.y, 28.0, "the menu bar is not 28 high");
+        assert_eq!(
+            menu_border.max_inset.y, 1.0,
+            "the menu bar has no edge below it"
+        );
+
+        let (assets, assets_border) = of(Region::AssetBrowser);
+        assert_eq!(assets.x, 240.0, "the asset browser is not 240 wide");
+        assert_eq!(
+            assets_border.max_inset.x, 1.0,
+            "the asset browser has no edge"
+        );
+
+        let (inspector, inspector_border) = of(Region::Inspector);
+        assert_eq!(inspector.x, 300.0, "the inspector is not 300 wide");
+        assert_eq!(
+            inspector_border.min_inset.x, 1.0,
+            "the inspector has no edge"
+        );
+
+        let (status, status_border) = of(Region::Status);
+        assert_eq!(status.y, 22.0, "the status bar is not 22 high");
+        assert_eq!(
+            status_border.min_inset.y, 1.0,
+            "the status bar has no edge above it"
+        );
+
+        // The middle band spreads: the three sit side by side and fill the
+        // width between them. Stacked, each would be the full width.
+        let viewport = of(Region::Viewport).0;
+        assert_eq!(
+            assets.x + viewport.x + inspector.x,
+            1280.0,
+            "the three middle regions do not share the width"
+        );
+        assert_eq!(
+            viewport.y, assets.y,
+            "the three middle regions are not the same height"
+        );
+    }
+
+    /// The root is declared to fill whatever it is drawn to.
+    ///
+    /// This is as far as a test here reaches into the issue's "resizing the
+    /// window does not lose one". Setting `Window::resolution` in a headless
+    /// app does not move the layout: what `ui_layout_system` measures against
+    /// is the camera's render target, and without winit nothing updates that
+    /// from the window. Three update cycles after a resize left the menu bar
+    /// at its old width, measured.
+    ///
+    /// So this asserts the declaration rather than the behaviour: a root that
+    /// fills its target is what makes the layout follow a resize, and a root
+    /// with pixels written into it is what stops it. **That it does follow is
+    /// still a person's to check**, and the pull request says so rather than
+    /// implying this test covers it.
+    ///
+    /// Mutation: write `px(1280)` and `px(720)` on the root instead of
+    /// `percent(100)`, and this fails.
+    #[test]
+    fn the_root_is_declared_to_fill_whatever_it_is_drawn_to() {
+        let mut app = editor(headless());
+        app.update();
+        let root = app
+            .world_mut()
+            .query_filtered::<&Node, Without<Region>>()
+            .iter(app.world())
+            .find(|node| node.flex_direction == FlexDirection::Column)
+            .expect("the root is a column")
+            .clone();
+        assert_eq!(
+            root.width,
+            percent(100),
+            "the root does not fill its target"
+        );
+        assert_eq!(
+            root.height,
+            percent(100),
+            "the root does not fill its target"
         );
     }
 
