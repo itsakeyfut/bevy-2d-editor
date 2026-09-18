@@ -11,6 +11,7 @@
 //! on `editor`.
 
 use bevy::app::{PluginGroup, PluginGroupBuilder};
+use bevy::feathers::FeathersPlugins;
 use bevy::prelude::*;
 
 /// A member of the editor's plugin group: the name a test names it by, and the
@@ -28,16 +29,6 @@ type Member = (&'static str, fn(PluginGroupBuilder) -> PluginGroupBuilder);
 /// what `a_rows_name_is_the_plugin_it_adds` reads that column as. A plugin that
 /// needs configuring is a reason to widen this deliberately, not to write one
 /// through by accident.
-///
-/// The expectation retires itself: the table is empty today, and the first row
-/// added to it makes this attribute unfulfilled and asks to be deleted.
-#[cfg_attr(
-    not(test),
-    expect(
-        unused_macros,
-        reason = "the table is empty until the first editor plugin arrives"
-    )
-)]
 macro_rules! member {
     ($plugin:expr) => {
         (stringify!($plugin), |group: PluginGroupBuilder| {
@@ -95,6 +86,70 @@ impl Plugin for SecondProbe {
     }
 }
 
+/// Which of `docs/specs/ui.md` §1's regions an entity is.
+///
+/// One component carrying a name rather than five marker types: the regions
+/// are a list in a drawing, and a test that asks for all of them wants to
+/// compare a list rather than write five separate queries.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Region {
+    /// Across the top.
+    MenuBar,
+    /// Down the left.
+    AssetBrowser,
+    /// The middle, where the viewport arrives with its own issue.
+    Viewport,
+    /// Down the right.
+    Inspector,
+    /// Along the bottom.
+    Status,
+}
+
+/// The regions, in the order `docs/specs/ui.md` §1 draws them.
+///
+/// Written out rather than derived, so that the drawing and the code are two
+/// things which can disagree and be caught doing it.
+///
+/// Mutation: drop a region or reorder two, and
+/// `the_regions_declared_are_the_five_the_drawing_names` fails.
+pub(crate) const REGIONS: [Region; 5] = [
+    Region::MenuBar,
+    Region::AssetBrowser,
+    Region::Viewport,
+    Region::Inspector,
+    Region::Status,
+];
+
+/// The five regions, drawn with this project's colours.
+///
+/// Feathers supplies the pane and this project supplies the appearance, which
+/// is the split `docs/specs/ui.md` §3 decided. The arrangement is fixed:
+/// docking is deferred with a trigger in `docs/specs/open-questions.md` §1,
+/// because the engine has none and what it should do is undecided.
+///
+/// Mutation: drop `ThemePlugin` from what this adds, and
+/// `the_panels_carry_this_projects_theme` fails.
+pub struct PanelsPlugin;
+
+impl Plugin for PanelsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(FeathersPlugins)
+            .add_plugins(b2d_editor_ui::ThemePlugin)
+            .add_systems(Startup, spawn_regions);
+    }
+}
+
+/// Put one entity on screen for each region, in the order §1 draws them.
+///
+/// The regions are empty. What goes in them is each its own issue, and an
+/// empty region is what lets the arrangement land before there is anything to
+/// arrange.
+fn spawn_regions(mut commands: Commands) {
+    for region in REGIONS {
+        commands.spawn(region);
+    }
+}
+
 /// Every plugin the editor is composed of, in the order they are built.
 ///
 /// Written out as a table because [`EditorPlugins`] builds the table rather
@@ -104,11 +159,9 @@ impl Plugin for SecondProbe {
 /// set. `docs/adr/0001-compose-the-editor-from-a-table-a-test-can-read.md` has
 /// what that costs and what was turned down for it.
 ///
-/// It is empty. The editor's first plugin arrives with the panel layout.
-///
-/// Mutation: give it the row `member!(Probe)`, and
+/// Mutation: remove the row, and
 /// `the_group_carries_the_members_the_table_names` fails.
-pub(crate) const MEMBERS: [Member; 0] = [];
+pub(crate) const MEMBERS: [Member; 1] = [member!(PanelsPlugin)];
 
 /// Fold a table of members into the group they compose.
 ///
@@ -176,11 +229,15 @@ pub fn editor(platform: impl PluginGroup) -> App {
 #[cfg(test)]
 mod tests {
     use super::{
-        BuiltInOrder, EditorPlugins, MEMBERS, Member, Probe, ProbeMark, SecondProbe, compose,
+        BuiltInOrder, MEMBERS, Member, Probe, ProbeMark, REGIONS, Region, SecondProbe, compose,
         editor,
     };
     use bevy::app::PluginGroupBuilder;
+    use bevy::feathers::theme::UiTheme;
     use bevy::prelude::*;
+    use bevy::render::RenderPlugin;
+    use bevy::render::settings::{RenderCreation, WgpuSettings};
+    use bevy::winit::WinitPlugin;
 
     /// A plugin no platform group carries, so that a test can tell one group
     /// from another.
@@ -190,10 +247,41 @@ mod tests {
         fn build(&self, _app: &mut App) {}
     }
 
-    /// A platform group that is not `MinimalPlugins` and is not
-    /// `DefaultPlugins`.
+    /// A platform group that is not `headless` and is not `DefaultPlugins`.
     fn marked() -> PluginGroupBuilder {
-        MinimalPlugins.build().add(Marker)
+        headless().add(Marker)
+    }
+
+    /// The platform a test hands in.
+    ///
+    /// `MinimalPlugins` stopped being enough the moment the group had a
+    /// member: `FeathersCorePlugin::build` calls `embedded_asset!` eight times,
+    /// which needs `AssetPlugin`'s resources and panics without them. So the
+    /// platform is the real one with the two parts a test cannot have.
+    ///
+    /// `WinitPlugin` goes because winit refuses to build an event loop off the
+    /// main thread, which is what `editor` takes a parameter for at all.
+    ///
+    /// The GPU goes because a runner has none. Measured on this machine: with
+    /// an adapter the suite took 3.24s and named an RTX 3070 Ti, and with
+    /// `backends: None` it took 0.72s and named nothing. A test that passes
+    /// here and fails on a runner is the failure
+    /// `docs/specs/dev-environment.md` §3 put three platforms in the matrix to
+    /// catch.
+    ///
+    /// It logs one `ERROR` and one `WARN` about the render app being absent.
+    /// Both are this setting working, not a failure.
+    fn headless() -> PluginGroupBuilder {
+        DefaultPlugins
+            .build()
+            .disable::<WinitPlugin>()
+            .set(RenderPlugin {
+                render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+                    backends: None,
+                    ..default()
+                })),
+                ..default()
+            })
     }
 
     /// The editor is built on a thread that is not the main one.
@@ -207,7 +295,7 @@ mod tests {
     /// panics.
     #[test]
     fn the_editor_is_built_off_the_main_thread() {
-        let app = editor(MinimalPlugins);
+        let app = editor(headless());
         assert!(
             app.is_plugin_added::<bevy::app::TaskPoolPlugin>(),
             "the app did not come back with the platform it was handed"
@@ -229,7 +317,7 @@ mod tests {
     #[test]
     fn the_platform_handed_in_is_the_one_the_app_carries() {
         assert!(
-            !editor(MinimalPlugins).is_plugin_added::<Marker>(),
+            !editor(headless()).is_plugin_added::<Marker>(),
             "the marker is in a platform group, so it cannot tell them apart"
         );
         assert!(
@@ -253,7 +341,7 @@ mod tests {
     #[test]
     fn the_group_carries_the_members_the_table_names() {
         let names: Vec<&str> = MEMBERS.iter().map(|member| member.0).collect();
-        assert_eq!(names, Vec::<&str>::new());
+        assert_eq!(names, ["PanelsPlugin"]);
     }
 
     /// A member is a row and nothing else.
@@ -293,8 +381,10 @@ mod tests {
     /// so that the plugin is in the group without being a row, and this fails.
     #[test]
     fn a_member_left_out_of_the_group_leaves_nothing_behind() {
-        let mut app = App::new();
-        app.add_plugins(EditorPlugins);
+        // `editor` adds the group, and the group needs a platform now that a
+        // member of it does: `PanelsPlugin` adds Feathers, which reaches for
+        // `AssetPlugin`.
+        let app = editor(headless());
         assert!(
             !app.is_plugin_added::<Probe>(),
             "a plugin the table does not name is in the app"
@@ -302,6 +392,85 @@ mod tests {
         assert!(
             !app.world().contains_resource::<ProbeMark>(),
             "a plugin the table does not name left its registration behind"
+        );
+    }
+
+    /// The regions this editor declares are the five the drawing names.
+    ///
+    /// Spelled out here rather than read from `REGIONS`, because a test that
+    /// compares the table with itself passes whatever the table says. An
+    /// earlier version of this test did exactly that: it asserted the entities
+    /// against `REGIONS`, and `spawn_regions` builds them from `REGIONS`, so
+    /// removing a row changed both sides and nothing failed. That is RK-001,
+    /// and it was found by applying the mutation this comment names.
+    ///
+    /// Mutation: drop a region from `REGIONS`, or swap two of them, and this
+    /// fails.
+    #[test]
+    fn the_regions_declared_are_the_five_the_drawing_names() {
+        assert_eq!(
+            REGIONS,
+            [
+                Region::MenuBar,
+                Region::AssetBrowser,
+                Region::Viewport,
+                Region::Inspector,
+                Region::Status,
+            ]
+        );
+    }
+
+    /// Every region the editor declares is on screen.
+    ///
+    /// The app is run for one update, because the regions are spawned by a
+    /// `Startup` system and a built app has not run one yet.
+    ///
+    /// The set rather than the order: what a query returns is not the order
+    /// things were spawned in, so an ordering claim here would be about the
+    /// ECS rather than about the layout. Order is the test above's, where it
+    /// is a list against a list.
+    ///
+    /// Mutation: spawn all but the last of `REGIONS` in `spawn_regions`, and
+    /// this fails.
+    #[test]
+    fn every_region_declared_is_on_screen() {
+        let mut app = editor(headless());
+        app.update();
+        let found: Vec<Region> = app
+            .world_mut()
+            .query::<&Region>()
+            .iter(app.world())
+            .copied()
+            .collect();
+        for region in REGIONS {
+            assert!(found.contains(&region), "{region:?} is not on screen");
+        }
+        assert_eq!(found.len(), REGIONS.len(), "got {found:?}");
+    }
+
+    /// The panels carry this project's theme, not the one Feathers ships.
+    ///
+    /// `FeathersCorePlugin` initialises `UiTheme` itself, so the claim is that
+    /// what ends up in the resource is this project's map. Asserted against
+    /// `b2d_editor_ui::unity_theme`, which is where that decision lives.
+    ///
+    /// Mutation: drop `ThemePlugin` from `PanelsPlugin::build`, and this fails
+    /// with Feathers' own theme in place.
+    #[test]
+    fn the_panels_carry_this_projects_theme() {
+        let app = editor(headless());
+        let theme = app.world().resource::<UiTheme>();
+        let ours = b2d_editor_ui::unity_theme();
+        assert_eq!(theme.0.color.len(), ours.color.len());
+        let differing: Vec<String> = ours
+            .color
+            .iter()
+            .filter(|(token, colour)| theme.0.color.get(*token) != Some(*colour))
+            .map(|(token, _)| token.to_string())
+            .collect();
+        assert!(
+            differing.is_empty(),
+            "the editor draws {differing:?} differently"
         );
     }
 
