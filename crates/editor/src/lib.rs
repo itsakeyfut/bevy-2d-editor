@@ -10,8 +10,130 @@
 //! lives in the library is this crate's own decision and the reason is below,
 //! on `editor`.
 
-use bevy::app::PluginGroup;
+use bevy::app::{PluginGroup, PluginGroupBuilder};
 use bevy::prelude::*;
+
+/// A member of the editor's plugin group: the name a test names it by, and the
+/// one line that adds it.
+type Member = (&'static str, fn(PluginGroupBuilder) -> PluginGroupBuilder);
+
+/// Write a row of [`MEMBERS`].
+///
+/// Both columns come out of one token, so the name cannot drift from the plugin
+/// it names. `core::any::type_name` would say it better and is not a `const fn`,
+/// which a row of a `const` table has to be.
+///
+/// A row is a plugin **type**. `$plugin` is an `expr`, so `member!(P { x: 1 })`
+/// would compile and put the whole expression in the name column, which is not
+/// what `a_rows_name_is_the_plugin_it_adds` reads that column as. A plugin that
+/// needs configuring is a reason to widen this deliberately, not to write one
+/// through by accident.
+///
+/// The expectation retires itself: the table is empty today, and the first row
+/// added to it makes this attribute unfulfilled and asks to be deleted.
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_macros,
+        reason = "the table is empty until the first editor plugin arrives"
+    )
+)]
+macro_rules! member {
+    ($plugin:expr) => {
+        (stringify!($plugin), |group: PluginGroupBuilder| {
+            group.add($plugin)
+        })
+    };
+}
+
+/// What a member leaves behind, so that a test can tell a plugin that is absent
+/// from one that is present and does nothing.
+#[cfg(test)]
+#[derive(Resource)]
+struct ProbeMark;
+
+/// The members that were built, in the order they were built in.
+#[cfg(test)]
+#[derive(Resource, Default)]
+struct BuiltInOrder(Vec<&'static str>);
+
+/// Say that a member was built, so that a test can read the order back.
+#[cfg(test)]
+fn record(app: &mut App, member: &'static str) {
+    app.init_resource::<BuiltInOrder>();
+    app.world_mut()
+        .resource_mut::<BuiltInOrder>()
+        .0
+        .push(member);
+}
+
+/// A plugin the editor does not have, standing in for one it will.
+///
+/// It lives here rather than in the tests so that the mutations named below are
+/// ones somebody can actually apply: both `MEMBERS` and `compose` are out of
+/// reach of a type declared inside `mod tests`, and a doc comment naming a
+/// mutation nobody can carry out is worse than one naming none.
+#[cfg(test)]
+struct Probe;
+
+#[cfg(test)]
+impl Plugin for Probe {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(ProbeMark);
+        record(app, "Probe");
+    }
+}
+
+/// A second one, because order is not a property one member has.
+#[cfg(test)]
+struct SecondProbe;
+
+#[cfg(test)]
+impl Plugin for SecondProbe {
+    fn build(&self, app: &mut App) {
+        record(app, "SecondProbe");
+    }
+}
+
+/// Every plugin the editor is composed of, in the order they are built.
+///
+/// Written out as a table because [`EditorPlugins`] builds the table rather
+/// than naming its members a second time, and because a `PluginGroupBuilder`
+/// cannot be enumerated: it answers `contains::<T>()` one named type at a time,
+/// so a group written as a list of `add` calls is a group no test can read as a
+/// set. `docs/adr/0001-compose-the-editor-from-a-table-a-test-can-read.md` has
+/// what that costs and what was turned down for it.
+///
+/// It is empty. The editor's first plugin arrives with the panel layout.
+///
+/// Mutation: give it the row `member!(Probe)`, and
+/// `the_group_carries_the_members_the_table_names` fails.
+pub(crate) const MEMBERS: [Member; 0] = [];
+
+/// Fold a table of members into the group they compose.
+///
+/// Takes the table rather than reading [`MEMBERS`] itself, so that a test can
+/// hand it a row and watch that row reach the built app. While `MEMBERS` is
+/// empty that is the only way any of this is exercised at all.
+fn compose(members: &[Member]) -> PluginGroupBuilder {
+    members.iter().fold(
+        PluginGroupBuilder::start::<EditorPlugins>(),
+        |group, member| member.1(group),
+    )
+}
+
+/// The editor's own plugins.
+///
+/// `docs/specs/architecture.md` §3 settles that editor features are added as
+/// plugins and composed as a compile-time group. This is that group; what is in
+/// it is `MEMBERS`, the table below it.
+pub struct EditorPlugins;
+
+impl PluginGroup for EditorPlugins {
+    fn build(self) -> PluginGroupBuilder {
+        compose(&MEMBERS)
+    }
+}
 
 /// The editor, built and not running.
 ///
@@ -35,20 +157,28 @@ use bevy::prelude::*;
 /// `.github/workflows/ci.yml` runs `macos-latest`. The parameter is what
 /// covers the platform the switch does not.
 ///
-/// It composes nothing of its own yet. The editor's own plugins hang off this
-/// same seam and arrive with the plugin group.
+/// What the editor is composed of is [`EditorPlugins`], added here rather than
+/// in `main` for the same reason: `main` is not somewhere a test can reach.
+/// While that group is empty, nothing observable distinguishes an editor that
+/// adds it from one that does not, because Bevy records a group's plugins and
+/// not the group. The first member makes that line assertable and is where the
+/// test for it belongs.
 ///
 /// Mutation: add `DefaultPlugins` here instead of taking it, and
 /// `the_editor_is_built_off_the_main_thread` panics naming winit's event loop.
 pub fn editor(platform: impl PluginGroup) -> App {
     let mut app = App::new();
     app.add_plugins(platform);
+    app.add_plugins(EditorPlugins);
     app
 }
 
 #[cfg(test)]
 mod tests {
-    use super::editor;
+    use super::{
+        BuiltInOrder, EditorPlugins, MEMBERS, Member, Probe, ProbeMark, SecondProbe, compose,
+        editor,
+    };
     use bevy::app::PluginGroupBuilder;
     use bevy::prelude::*;
 
@@ -105,6 +235,119 @@ mod tests {
         assert!(
             editor(marked()).is_plugin_added::<Marker>(),
             "the app came back without the group it was handed"
+        );
+    }
+
+    /// The group carries the members the table names.
+    ///
+    /// `MEMBERS` is what `EditorPlugins` is built from, so a member that
+    /// quietly leaves it leaves the editor without saying so, and a member that
+    /// quietly joins it arrives with nothing asserting anything about it. That
+    /// is the shape RK-001 is about, and asserting the table against a literal
+    /// written here is what stops it being a table that agrees with itself.
+    ///
+    /// It is empty today. The assertion is still the real claim: the editor is
+    /// composed of nothing yet.
+    ///
+    /// Mutation: give `MEMBERS` the row `member!(Probe)`, and this fails.
+    #[test]
+    fn the_group_carries_the_members_the_table_names() {
+        let names: Vec<&str> = MEMBERS.iter().map(|member| member.0).collect();
+        assert_eq!(names, Vec::<&str>::new());
+    }
+
+    /// A member is a row and nothing else.
+    ///
+    /// This is the whole of "adding a plugin is one line in the group": a row
+    /// handed to `compose` reaches the built app, with nothing written anywhere
+    /// else. It is also what exercises the table's columns while the table has
+    /// no rows, which RK-001 says is otherwise where a written table quietly
+    /// means nothing.
+    ///
+    /// Mutation: fold `&MEMBERS` in `compose` instead of the argument, and this
+    /// fails.
+    #[test]
+    fn a_member_is_a_row_and_nothing_else() {
+        let row: Member = member!(Probe);
+        let mut app = App::new();
+        app.add_plugins(compose(&[row]));
+        assert!(
+            app.is_plugin_added::<Probe>(),
+            "the row's plugin did not reach the app"
+        );
+        assert!(
+            app.world().contains_resource::<ProbeMark>(),
+            "the row's plugin reached the app without being built"
+        );
+    }
+
+    /// A member left out of the group leaves nothing behind.
+    ///
+    /// The pair this makes with `a_member_is_a_row_and_nothing_else` is the
+    /// point. Either alone is satisfied by a group that does nothing at all:
+    /// together they say that a row's plugin is built, and that a plugin which
+    /// is not a row is absent rather than present and inactive, which is the
+    /// distinction `docs/specs/architecture.md` §3 decided.
+    ///
+    /// Mutation: start `compose` from `...start::<EditorPlugins>().add(Probe)`,
+    /// so that the plugin is in the group without being a row, and this fails.
+    #[test]
+    fn a_member_left_out_of_the_group_leaves_nothing_behind() {
+        let mut app = App::new();
+        app.add_plugins(EditorPlugins);
+        assert!(
+            !app.is_plugin_added::<Probe>(),
+            "a plugin the table does not name is in the app"
+        );
+        assert!(
+            !app.world().contains_resource::<ProbeMark>(),
+            "a plugin the table does not name left its registration behind"
+        );
+    }
+
+    /// A row's name is the plugin it adds.
+    ///
+    /// The name column is the whole of what
+    /// `the_group_carries_the_members_the_table_names` reads, so a `member!`
+    /// that wrote the same name for every row would leave that test agreeing
+    /// with a table that means something else. RK-001 in its narrowest form: a
+    /// column added to a table that has no rows yet is a column nothing has
+    /// looked at.
+    ///
+    /// Asserted against the type's own name rather than against the literal
+    /// alone, so that the two columns are held to each other and not to a third
+    /// copy of the same string.
+    ///
+    /// Mutation: write a literal in place of `stringify!($plugin)` in
+    /// `member!`, and this fails.
+    #[test]
+    fn a_rows_name_is_the_plugin_it_adds() {
+        let row: Member = member!(Probe);
+        assert_eq!(row.0, "Probe", "the name column is not the plugin's name");
+        assert!(
+            core::any::type_name::<Probe>().ends_with(row.0),
+            "the name column does not name the plugin the row adds"
+        );
+    }
+
+    /// The table is built in the order it is written.
+    ///
+    /// `MEMBERS` says it holds its members in the order they are built, and a
+    /// plugin that inserts a resource a later one reads depends on that being
+    /// true. Nothing could check it while the table had fewer than two rows,
+    /// which is why the rows are handed to `compose` here rather than taken
+    /// from `MEMBERS`.
+    ///
+    /// Mutation: fold `members.iter().rev()` in `compose`, and this fails.
+    #[test]
+    fn the_table_is_built_in_the_order_it_is_written() {
+        let rows: [Member; 2] = [member!(Probe), member!(SecondProbe)];
+        let mut app = App::new();
+        app.add_plugins(compose(&rows));
+        assert_eq!(
+            app.world().resource::<BuiltInOrder>().0,
+            ["Probe", "SecondProbe"],
+            "the members were not built in the order the table writes them"
         );
     }
 }
