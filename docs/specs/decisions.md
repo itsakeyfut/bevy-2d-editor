@@ -50,6 +50,7 @@ Quotations are left in the language of their source.
 | Package names carry a `b2d_` prefix; directory names do not | [crates.md §4](./crates.md) |
 | Unity is the design target, Jackdaw the implementation reference | [ui.md §2](./ui.md) |
 | The UI stack is Bevy UI + `bevy_feathers` | [ui.md §3](./ui.md) |
+| Viewport navigation: the middle button pans, the wheel zooms on the cursor | [ui.md §4](./ui.md) |
 | Tilemaps ride on Bevy's own `TilemapChunk` | [level-editor.md §2](./level-editor.md) |
 | Colliders: a physics-neutral shape, avian2d behind a default-on feature | [level-editor.md §3](./level-editor.md) |
 | Sprite animation | [level-editor.md §4](./level-editor.md) |

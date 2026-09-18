@@ -19,6 +19,10 @@ use bevy::prelude::*;
 use bevy::scene::bsn;
 use bevy::ui::{UiRect, percent, px};
 
+mod viewport;
+
+pub use viewport::{ViewportCamera, ViewportPlugin};
+
 /// A member of the editor's plugin group: the name a test names it by, and the
 /// one line that adds it.
 type Member = (&'static str, fn(PluginGroupBuilder) -> PluginGroupBuilder);
@@ -102,7 +106,7 @@ pub enum Region {
     MenuBar,
     /// Down the left.
     AssetBrowser,
-    /// The middle, where the viewport arrives with its own issue.
+    /// The middle, where `viewport::ViewportCamera` renders.
     Viewport,
     /// Down the right.
     Inspector,
@@ -172,8 +176,9 @@ fn spawn_regions(mut commands: Commands) {
     // camera to target is a node nothing draws: the window comes up and stays
     // empty, which is what this looked like before the camera was here.
     //
-    // Whether the viewport's own camera is this one or a second is #23's to
-    // decide; what this issue needs is that the panels can be seen at all.
+    // This is the panels' camera and it draws to the window. The viewport has a
+    // second one of its own, drawing to an image, which is why `viewport::attach`
+    // does not reach for this.
     commands.spawn(Camera2d);
 
     let root = commands
@@ -255,7 +260,7 @@ fn spawn_regions(mut commands: Commands) {
 ///
 /// Mutation: remove the row, and
 /// `the_group_carries_the_members_the_table_names` fails.
-pub(crate) const MEMBERS: [Member; 1] = [member!(PanelsPlugin)];
+pub(crate) const MEMBERS: [Member; 2] = [member!(PanelsPlugin), member!(ViewportPlugin)];
 
 /// Fold a table of members into the group they compose.
 ///
@@ -320,20 +325,61 @@ pub fn editor(platform: impl PluginGroup) -> App {
     app
 }
 
+/// The platform a test hands in.
+///
+/// `MinimalPlugins` stopped being enough the moment the group had a
+/// member: `FeathersCorePlugin::build` calls `embedded_asset!` ten times,
+/// which needs `AssetPlugin`'s resources and panics without them. So the
+/// platform is the real one with the two parts a test cannot have.
+///
+/// `WinitPlugin` goes because winit refuses to build an event loop off the
+/// main thread, which is what `editor` takes a parameter for at all.
+///
+/// The GPU goes because a runner has none. Measured on this machine: with
+/// an adapter the suite took 3.24s and named an RTX 3070 Ti, and with
+/// `backends: None` it took 0.72s and named nothing. A test that passes
+/// here and fails on a runner is the failure
+/// `docs/specs/dev-environment.md` §3 put three platforms in the matrix to
+/// catch.
+///
+/// It logs one `ERROR` and one `WARN` about the render app being absent.
+/// Both are this setting working, not a failure.
+///
+/// It sits outside `mod tests` so that `viewport`'s tests hand in the same
+/// platform rather than a second copy of it, which would be a second thing to
+/// keep in step with what the engine needs.
+#[cfg(test)]
+pub(crate) fn headless() -> PluginGroupBuilder {
+    use bevy::render::RenderPlugin;
+    use bevy::render::settings::{RenderCreation, WgpuSettings};
+    use bevy::winit::WinitPlugin;
+
+    DefaultPlugins
+        .build()
+        .disable::<WinitPlugin>()
+        .set(RenderPlugin {
+            render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+                backends: None,
+                ..default()
+            })),
+            ..default()
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BuiltInOrder, MEMBERS, Member, Probe, ProbeMark, Region, SecondProbe, compose, editor,
+        headless,
     };
     use bevy::app::PluginGroupBuilder;
+    use bevy::camera::RenderTarget;
     use bevy::feathers::theme::UiTheme;
     use bevy::math::Vec2;
     use bevy::prelude::*;
-    use bevy::render::RenderPlugin;
-    use bevy::render::settings::{RenderCreation, WgpuSettings};
     use bevy::sprite::BorderRect;
     use bevy::ui::ComputedNode;
-    use bevy::winit::WinitPlugin;
+    use bevy::window::WindowRef;
 
     /// A plugin no platform group carries, so that a test can tell one group
     /// from another.
@@ -346,38 +392,6 @@ mod tests {
     /// A platform group that is not `headless` and is not `DefaultPlugins`.
     fn marked() -> PluginGroupBuilder {
         headless().add(Marker)
-    }
-
-    /// The platform a test hands in.
-    ///
-    /// `MinimalPlugins` stopped being enough the moment the group had a
-    /// member: `FeathersCorePlugin::build` calls `embedded_asset!` ten times,
-    /// which needs `AssetPlugin`'s resources and panics without them. So the
-    /// platform is the real one with the two parts a test cannot have.
-    ///
-    /// `WinitPlugin` goes because winit refuses to build an event loop off the
-    /// main thread, which is what `editor` takes a parameter for at all.
-    ///
-    /// The GPU goes because a runner has none. Measured on this machine: with
-    /// an adapter the suite took 3.24s and named an RTX 3070 Ti, and with
-    /// `backends: None` it took 0.72s and named nothing. A test that passes
-    /// here and fails on a runner is the failure
-    /// `docs/specs/dev-environment.md` §3 put three platforms in the matrix to
-    /// catch.
-    ///
-    /// It logs one `ERROR` and one `WARN` about the render app being absent.
-    /// Both are this setting working, not a failure.
-    fn headless() -> PluginGroupBuilder {
-        DefaultPlugins
-            .build()
-            .disable::<WinitPlugin>()
-            .set(RenderPlugin {
-                render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
-                    backends: None,
-                    ..default()
-                })),
-                ..default()
-            })
     }
 
     /// The editor is built on a thread that is not the main one.
@@ -430,14 +444,11 @@ mod tests {
     /// is the shape RK-001 is about, and asserting the table against a literal
     /// written here is what stops it being a table that agrees with itself.
     ///
-    /// It is empty today. The assertion is still the real claim: the editor is
-    /// composed of nothing yet.
-    ///
     /// Mutation: give `MEMBERS` the row `member!(Probe)`, and this fails.
     #[test]
     fn the_group_carries_the_members_the_table_names() {
         let names: Vec<&str> = MEMBERS.iter().map(|member| member.0).collect();
-        assert_eq!(names, ["PanelsPlugin"]);
+        assert_eq!(names, ["PanelsPlugin", "ViewportPlugin"]);
     }
 
     /// A member is a row and nothing else.
@@ -691,7 +702,7 @@ mod tests {
         );
     }
 
-    /// There is a camera for the panels to be drawn to.
+    /// There is one camera for the panels to be drawn to.
     ///
     /// Bevy UI is drawn through `ComputedUiTargetCamera`, and a node with no
     /// camera to target is a node nothing draws. Without this the editor came
@@ -699,16 +710,30 @@ mod tests {
     /// visible, and every other test here passed: they ask the world what it
     /// holds, and the world held them.
     ///
-    /// That is the gap this closes. It is not a claim that the layout looks
-    /// right, which is a person's to make.
+    /// Counted over the cameras that render to the primary window rather than
+    /// over all of them, because the viewport's camera renders to an image and
+    /// is a second one. That is the same set `DefaultUiCamera::get` chooses
+    /// from, so this is what "the panels have a camera, and only one" means.
+    ///
+    /// It is not a claim that the layout looks right, which is a person's to
+    /// make.
     ///
     /// Mutation: drop the `Camera2d` from `spawn_regions`, and this fails.
+    /// Mutation: give the viewport's camera a window target, and this fails.
     #[test]
-    fn there_is_a_camera_for_the_panels_to_be_drawn_to() {
+    fn there_is_one_camera_for_the_panels_to_be_drawn_to() {
         let mut app = editor(headless());
         app.update();
-        let cameras = app.world_mut().query::<&Camera>().iter(app.world()).count();
-        assert_eq!(cameras, 1, "the panels have no camera to be drawn to");
+        let to_the_window = app
+            .world_mut()
+            .query::<(&Camera, &RenderTarget)>()
+            .iter(app.world())
+            .filter(|(_, target)| matches!(target, RenderTarget::Window(WindowRef::Primary)))
+            .count();
+        assert_eq!(
+            to_the_window, 1,
+            "the panels have no camera to be drawn to, or more than one"
+        );
     }
 
     /// The panels carry this project's theme, not the one Feathers ships.
