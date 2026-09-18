@@ -12,7 +12,12 @@
 
 use bevy::app::{PluginGroup, PluginGroupBuilder};
 use bevy::feathers::FeathersPlugins;
+use bevy::feathers::containers::pane;
+use bevy::feathers::theme::ThemeBackgroundColor;
+use bevy::feathers::tokens;
 use bevy::prelude::*;
+use bevy::scene::bsn;
+use bevy::ui::{percent, px};
 
 /// A member of the editor's plugin group: the name a test names it by, and the
 /// one line that adds it.
@@ -105,21 +110,6 @@ pub enum Region {
     Status,
 }
 
-/// The regions, in the order `docs/specs/ui.md` §1 draws them.
-///
-/// Written out rather than derived, so that the drawing and the code are two
-/// things which can disagree and be caught doing it.
-///
-/// Mutation: drop a region or reorder two, and
-/// `the_regions_declared_are_the_five_the_drawing_names` fails.
-pub(crate) const REGIONS: [Region; 5] = [
-    Region::MenuBar,
-    Region::AssetBrowser,
-    Region::Viewport,
-    Region::Inspector,
-    Region::Status,
-];
-
 /// The five regions, drawn with this project's colours.
 ///
 /// Feathers supplies the pane and this project supplies the appearance, which
@@ -139,15 +129,86 @@ impl Plugin for PanelsPlugin {
     }
 }
 
-/// Put one entity on screen for each region, in the order §1 draws them.
+/// Put the regions on screen, arranged the way `docs/specs/ui.md` §1 draws
+/// them.
 ///
-/// The regions are empty. What goes in them is each its own issue, and an
-/// empty region is what lets the arrangement land before there is anything to
-/// arrange.
+/// A column of three: the menu bar, a row of three panes, and the status bar.
+/// Each region is a Feathers `pane`, which is where the widget structure comes
+/// from, with this project's colours on it, which is the split §3 decided.
+///
+/// The regions are empty. What goes in each is its own issue, and an empty
+/// pane is what lets the arrangement land before there is anything to arrange.
+///
+/// `Region` is inserted after the scene rather than written inside it. `bsn!`
+/// requires a component to implement `Default`, and an enum of five named
+/// places has no default that means anything; inventing one to satisfy a macro
+/// would put a wrong answer in the type rather than in the call.
+///
+/// Mutation: spawn all but the last of these, and
+/// `every_region_declared_is_on_screen` fails.
 fn spawn_regions(mut commands: Commands) {
-    for region in REGIONS {
-        commands.spawn(region);
-    }
+    let root = commands
+        .spawn_scene(bsn! {
+            Node {
+                width: percent(100),
+                height: percent(100),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+            }
+            ThemeBackgroundColor(tokens::WINDOW_BG)
+        })
+        .id();
+
+    commands
+        .spawn_scene(bsn! {
+            pane()
+            ThemeBackgroundColor(tokens::PANE_BODY_BG)
+            Node { height: px(28) }
+        })
+        .insert((Region::MenuBar, ChildOf(root)));
+
+    let middle = commands
+        .spawn_scene(bsn! {
+            Node {
+                flex_grow: 1.0,
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+            }
+        })
+        .insert(ChildOf(root))
+        .id();
+
+    commands
+        .spawn_scene(bsn! {
+            pane()
+            ThemeBackgroundColor(tokens::PANE_BODY_BG)
+            Node { width: px(240) }
+        })
+        .insert((Region::AssetBrowser, ChildOf(middle)));
+
+    commands
+        .spawn_scene(bsn! {
+            pane()
+            ThemeBackgroundColor(tokens::PANE_BODY_BG)
+            Node { flex_grow: 1.0 }
+        })
+        .insert((Region::Viewport, ChildOf(middle)));
+
+    commands
+        .spawn_scene(bsn! {
+            pane()
+            ThemeBackgroundColor(tokens::PANE_BODY_BG)
+            Node { width: px(300) }
+        })
+        .insert((Region::Inspector, ChildOf(middle)));
+
+    commands
+        .spawn_scene(bsn! {
+            pane()
+            ThemeBackgroundColor(tokens::PANE_BODY_BG)
+            Node { height: px(22) }
+        })
+        .insert((Region::Status, ChildOf(root)));
 }
 
 /// Every plugin the editor is composed of, in the order they are built.
@@ -229,8 +290,7 @@ pub fn editor(platform: impl PluginGroup) -> App {
 #[cfg(test)]
 mod tests {
     use super::{
-        BuiltInOrder, MEMBERS, Member, Probe, ProbeMark, REGIONS, Region, SecondProbe, compose,
-        editor,
+        BuiltInOrder, MEMBERS, Member, Probe, ProbeMark, Region, SecondProbe, compose, editor,
     };
     use bevy::app::PluginGroupBuilder;
     use bevy::feathers::theme::UiTheme;
@@ -395,45 +455,19 @@ mod tests {
         );
     }
 
-    /// The regions this editor declares are the five the drawing names.
+    /// The five regions the drawing names are on screen.
     ///
-    /// Spelled out here rather than read from `REGIONS`, because a test that
-    /// compares the table with itself passes whatever the table says. An
-    /// earlier version of this test did exactly that: it asserted the entities
-    /// against `REGIONS`, and `spawn_regions` builds them from `REGIONS`, so
-    /// removing a row changed both sides and nothing failed. That is RK-001,
-    /// and it was found by applying the mutation this comment names.
-    ///
-    /// Mutation: drop a region from `REGIONS`, or swap two of them, and this
-    /// fails.
-    #[test]
-    fn the_regions_declared_are_the_five_the_drawing_names() {
-        assert_eq!(
-            REGIONS,
-            [
-                Region::MenuBar,
-                Region::AssetBrowser,
-                Region::Viewport,
-                Region::Inspector,
-                Region::Status,
-            ]
-        );
-    }
-
-    /// Every region the editor declares is on screen.
+    /// Spelled out here rather than read from a constant the spawning also
+    /// reads: a test that compares a table with itself passes whatever the
+    /// table says, which is RK-001 and which an earlier version of this test
+    /// had.
     ///
     /// The app is run for one update, because the regions are spawned by a
     /// `Startup` system and a built app has not run one yet.
     ///
-    /// The set rather than the order: what a query returns is not the order
-    /// things were spawned in, so an ordering claim here would be about the
-    /// ECS rather than about the layout. Order is the test above's, where it
-    /// is a list against a list.
-    ///
-    /// Mutation: spawn all but the last of `REGIONS` in `spawn_regions`, and
-    /// this fails.
+    /// Mutation: stop spawning any one of the five, and this fails naming it.
     #[test]
-    fn every_region_declared_is_on_screen() {
+    fn the_five_regions_the_drawing_names_are_on_screen() {
         let mut app = editor(headless());
         app.update();
         let found: Vec<Region> = app
@@ -442,10 +476,62 @@ mod tests {
             .iter(app.world())
             .copied()
             .collect();
-        for region in REGIONS {
+        for region in [
+            Region::MenuBar,
+            Region::AssetBrowser,
+            Region::Viewport,
+            Region::Inspector,
+            Region::Status,
+        ] {
             assert!(found.contains(&region), "{region:?} is not on screen");
         }
-        assert_eq!(found.len(), REGIONS.len(), "got {found:?}");
+        assert_eq!(found.len(), 5, "got {found:?}");
+    }
+
+    /// The three middle regions share a row, and the bars do not.
+    ///
+    /// This is the arrangement `docs/specs/ui.md` §1 draws, and it is the part
+    /// a list of five cannot say: the same five regions stacked in a column
+    /// would satisfy the test above. Asserted through the parent each one
+    /// hangs from rather than through positions, which are not decided until a
+    /// layout pass has run.
+    ///
+    /// Mutation: give the asset browser the root as its parent, so the three
+    /// no longer share a row, and this fails.
+    #[test]
+    fn the_three_middle_regions_share_a_row_and_the_bars_do_not() {
+        let mut app = editor(headless());
+        app.update();
+        let parents: Vec<(Region, Entity)> = app
+            .world_mut()
+            .query::<(&Region, &ChildOf)>()
+            .iter(app.world())
+            .map(|(region, parent)| (*region, parent.parent()))
+            .collect();
+        let of = |wanted: Region| {
+            parents
+                .iter()
+                .find(|(region, _)| *region == wanted)
+                .map(|(_, parent)| *parent)
+                .expect("every region has a parent")
+        };
+        let row = of(Region::Viewport);
+        assert_eq!(
+            of(Region::AssetBrowser),
+            row,
+            "the asset browser is not in the row"
+        );
+        assert_eq!(
+            of(Region::Inspector),
+            row,
+            "the inspector is not in the row"
+        );
+        assert_ne!(of(Region::MenuBar), row, "the menu bar is in the row");
+        assert_eq!(
+            of(Region::Status),
+            of(Region::MenuBar),
+            "the bars do not share the column"
+        );
     }
 
     /// The panels carry this project's theme, not the one Feathers ships.
