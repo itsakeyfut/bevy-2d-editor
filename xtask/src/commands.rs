@@ -693,6 +693,33 @@ mod tests {
         );
     }
 
+    /// An exemption belongs to the file it was written for.
+    ///
+    /// Without this, a row excuses its command everywhere: any document could
+    /// name the misspelling and be waved through, which is the acceptance
+    /// criterion's "turn the check off" arriving quietly.
+    ///
+    /// Mutation: drop the file comparison from the `NOT_RUNNABLE` lookup, and
+    /// this fails.
+    #[test]
+    fn an_exemption_does_not_travel_to_another_file() {
+        let mut files = base();
+        files.push((
+            "docs/specs/ui.md",
+            "# UI
+
+Run `cargo xtask gates`.
+",
+        ));
+        let found = Prose::of(&files, &[], &[]).problems();
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("docs/specs/ui.md") && p.contains("gates is not a task")),
+            "got {found:?}"
+        );
+    }
+
     /// Prose naming the alias needs the alias to be there.
     ///
     /// Mutation: return `true` from `defines_the_xtask_alias`, and this fails.
@@ -750,6 +777,24 @@ mod tests {
         assert!(commands("docs/specs/ui.md", text).is_empty());
     }
 
+    /// A backticked span inside a fenced block is not read.
+    ///
+    /// `docs/` holds 71 blocks tagged `text` and 11 tagged `rust`, and a tree
+    /// or a signature drawn in one of them may contain anything. `docs.rs`
+    /// strips fences before it reads prose for the same reason.
+    ///
+    /// Mutation: stop stripping fences in `commands`, and this fails.
+    #[test]
+    fn a_span_inside_a_fence_is_not_read() {
+        let text = "# Tree
+
+```text
+run `cargo xtask lint` here
+```
+";
+        assert!(commands("docs/specs/ui.md", text).is_empty());
+    }
+
     /// A failing run names this check to the Checks page.
     ///
     /// Mutation: drop the annotation in `closing`, and this fails.
@@ -769,6 +814,40 @@ mod tests {
     #[test]
     fn the_summary_says_how_much_was_read() {
         assert_eq!(summary(41, 23, 0), "files: 41  commands: 23  problems: 0");
+    }
+
+    /// The count in the summary is the claims this could answer.
+    ///
+    /// It is the number a person reads to decide the check examined anything,
+    /// so counting every backticked span would have it say a thousand things
+    /// were read when a dozen were. That is RK-001 in the one place the whole
+    /// check reports about itself.
+    ///
+    /// Mutation: count every span in `claims`, and this fails.
+    #[test]
+    fn the_count_is_the_claims_this_could_answer() {
+        let files = [
+            (".cargo/config.toml", ALIAS),
+            ("xtask/src/main.rs", MAIN),
+            (
+                "docs/specs/ui.md",
+                "# UI
+
+`TilemapChunk`, `Handle<Image>`, and `cargo xtask docs`.
+",
+            ),
+        ];
+        let prose = Prose::of(&files, &[], &[]);
+        assert_eq!(
+            prose.claims().len(),
+            2,
+            "got {:?}",
+            prose
+                .claims()
+                .iter()
+                .map(|(file, command, _)| format!("{file}: {command}"))
+                .collect::<Vec<String>>()
+        );
     }
 
     /// A `.gitignore` line this cannot interpret is reported.
