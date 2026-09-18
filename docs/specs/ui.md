@@ -15,7 +15,11 @@ The candidates were:
 Jackdaw's UI architecture is the reference for how to build one.
 **§3 settles the stack: Bevy UI + `bevy_feathers`.**
 
-The panels the editor needs:
+The panels the editor needs. **The names in this drawing are the names the
+code uses**: `Region` in `b2d_editor` has one variant per region here, and the
+bottom one is a panel with room for what this drawing puts in it rather than a
+status strip. An earlier implementation called it a status bar and gave it 22
+pixels, which a scenario graph does not fit in.
 
 ```text
 ┌─────────────────────────────────────────┐

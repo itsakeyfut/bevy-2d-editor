@@ -106,11 +106,24 @@ pub enum Region {
     Viewport,
     /// Down the right.
     Inspector,
-    /// Along the bottom.
-    Status,
+    /// Along the bottom, where `docs/specs/ui.md` §1 draws the timeline, the
+    /// scenario graph and the console.
+    ///
+    /// Not a status strip. It was called one, and drawn as one at 22 pixels
+    /// with the menu bar's tokens, which contradicted the drawing this layout
+    /// cites: a scenario graph does not fit in 22 pixels. `roadmap.md` puts
+    /// the graph view in phase 5 and the timeline in phase 10, and both attach
+    /// here.
+    Bottom,
 }
 
 /// The five regions, drawn with this project's colours.
+///
+/// They live in this crate rather than in `b2d_editor_ui`, which issue #22's
+/// body first said. The regions are named after what this editor edits, and
+/// that crate's own documentation says it knows nothing about that; the theme
+/// went there instead, because a colour table knows nothing either. The
+/// decision and what it turned down are in #22's design comment.
 ///
 /// Feathers supplies the pane and this project supplies the appearance, which
 /// is the split `docs/specs/ui.md` §3 decided. The arrangement is fixed:
@@ -132,7 +145,8 @@ impl Plugin for PanelsPlugin {
 /// Put the regions on screen, arranged the way `docs/specs/ui.md` §1 draws
 /// them.
 ///
-/// A column of three: the menu bar, a row of three panes, and the status bar.
+/// A column of three: the menu bar, a row of three panes, and the bottom
+/// panel.
 /// Each region is a Feathers `pane`, which is where the widget structure comes
 /// from, with this project's colours on it, which is the split §3 decided.
 ///
@@ -223,11 +237,11 @@ fn spawn_regions(mut commands: Commands) {
     commands
         .spawn_scene(bsn! {
             pane()
-            ThemeBackgroundColor(tokens::PANE_HEADER_BG)
+            ThemeBackgroundColor(tokens::PANE_BODY_BG)
             ThemeBorderColor(tokens::PANE_HEADER_BORDER)
-            Node { height: px(22), border: UiRect::top(px(1)) }
+            Node { height: px(180), border: UiRect::top(px(1)) }
         })
-        .insert((Region::Status, ChildOf(root)));
+        .insert((Region::Bottom, ChildOf(root)));
 }
 
 /// Every plugin the editor is composed of, in the order they are built.
@@ -337,7 +351,7 @@ mod tests {
     /// The platform a test hands in.
     ///
     /// `MinimalPlugins` stopped being enough the moment the group had a
-    /// member: `FeathersCorePlugin::build` calls `embedded_asset!` eight times,
+    /// member: `FeathersCorePlugin::build` calls `embedded_asset!` ten times,
     /// which needs `AssetPlugin`'s resources and panics without them. So the
     /// platform is the real one with the two parts a test cannot have.
     ///
@@ -503,7 +517,7 @@ mod tests {
             Region::AssetBrowser,
             Region::Viewport,
             Region::Inspector,
-            Region::Status,
+            Region::Bottom,
         ] {
             assert!(found.contains(&region), "{region:?} is not on screen");
         }
@@ -550,7 +564,7 @@ mod tests {
         );
         assert_ne!(of(Region::MenuBar), row, "the menu bar is in the row");
         assert_eq!(
-            of(Region::Status),
+            of(Region::Bottom),
             of(Region::MenuBar),
             "the bars do not share the column"
         );
@@ -616,11 +630,11 @@ mod tests {
             "the inspector has no edge"
         );
 
-        let (status, status_border) = of(Region::Status);
-        assert_eq!(status.y, 22.0, "the status bar is not 22 high");
+        let (bottom, bottom_border) = of(Region::Bottom);
+        assert_eq!(bottom.y, 180.0, "the bottom panel is not 180 high");
         assert_eq!(
-            status_border.min_inset.y, 1.0,
-            "the status bar has no edge above it"
+            bottom_border.min_inset.y, 1.0,
+            "the bottom panel has no edge above it"
         );
 
         // The middle band spreads: the three sit side by side and fill the
