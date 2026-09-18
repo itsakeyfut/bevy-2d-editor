@@ -30,6 +30,19 @@ WSL2
 **The product itself is not Windows-only.** Bevy and Rust are cross-platform and
 this project keeps that property, with CI covering Linux and macOS.
 
+**What the gate costs on that machine, now that Bevy is in the workspace.**
+Sampled once a second through six `cargo xtask all` runs, each preceded by
+touching `core`, `editor_ui` and `editor`, which is enough for the two crates
+that take the engine to be rebuilt and relinked: physical memory
+in use peaked at 16307 MiB of 16309 MiB and stayed there for most of every run,
+while commit charge peaked at 32036 MiB against a limit of 43957 MiB. The
+concurrency at this size is the dependency graph's rather than `-j`'s: two to
+five `rustc.exe`, and up to eight `link.exe` at about 1 GiB resident each. So a
+16 GiB machine runs the gate with nothing to spare, and a full run is not
+something to start beside work whose unsaved state matters. The number is here
+because it is measured rather than estimated, and because §3's accepted risk
+said the cost would be revisited once the engine arrived.
+
 ---
 
 ## 2. Documentation

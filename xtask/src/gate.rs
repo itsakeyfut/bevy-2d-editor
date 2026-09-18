@@ -252,6 +252,43 @@ fn test_command() -> Command {
 }
 
 /// Run one row, printing `ok` or `FAIL` and what it said.
+///
+/// # What a Windows exit code of `0xC0000409` in the log below means
+///
+/// It means a compiler process aborted, and nothing more than that. Windows
+/// spells the code `STATUS_STACK_BUFFER_OVERRUN`, which is the report code
+/// attached to `__fastfail`, and `__fastfail` is how `abort` is implemented on
+/// `x86_64-pc-windows-msvc`. **The name is a spelling, not a diagnosis**, and
+/// reading it as one cost a session here: see #27, where the cause of the one
+/// confirmed occurrence is still open.
+///
+/// Two commands measure it, which is why they are written here rather than the
+/// conclusion alone:
+///
+/// ```text
+/// fn main() { std::process::abort(); }                   -> 0xC0000409, silently
+/// Vec::<u8>::with_capacity(400 * 1024 * 1024 * 1024)     -> "memory allocation of ... failed"
+///                                                        -> 0xC0000409
+/// ```
+///
+/// So the log printed below separates the two cases on its own: an allocation
+/// failure says `memory allocation of N bytes failed` before it goes, and a
+/// bare `0xC0000409` came from somewhere that aborted without a word. Keeping
+/// the log is therefore the whole of the evidence, and
+/// `cargo xtask all > run.log 2>&1` is how.
+///
+/// **A rustc stack overflow does not look like this**, whatever the name
+/// suggests. Measured on the crate that carries the `bsn!` invocations:
+///
+/// ```text
+/// RUST_MIN_STACK=1048576 cargo build -p b2d_editor --bin b2d_editor -j1
+///   -> exit 101, "thread ... has overflowed its stack"
+/// RUST_MIN_STACK=2097152 cargo build -p b2d_editor --bin b2d_editor -j1
+///   -> exit 0
+/// ```
+///
+/// Exit 101 and a sentence, rather than a code and silence. Whatever else is
+/// wrong when this appears, the rustc stack is not the thing to reach for.
 fn row(name: &str, cmd: &mut Command) -> bool {
     let out = match cmd.output() {
         Ok(out) => out,
