@@ -28,6 +28,13 @@
 //! was extended to catch lives in an issue template's `placeholder` block
 //! rather than in a comment.
 //!
+//! **This file is in its own corpus, and its comments are prose.** A comment
+//! here that names a command as an example is a claim like any other, and
+//! naming one that cannot be run fails the check while it is being written.
+//! That happened twice on the way in. Say the example without the shape of a
+//! command, or give it a row in [`NOT_RUNNABLE`] with the reason. Its string
+//! literals are exempt already, which is the point of the paragraph above.
+//!
 //! # What it deliberately does not do
 //!
 //! It answers only what this repository can answer: whether a task, a package
