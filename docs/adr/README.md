@@ -36,10 +36,11 @@ code to look at, it is a record.
 
 | # | Decision | Status | Confirmed by |
 | --- | --- | --- | --- |
+| [0001](./0001-compose-the-editor-from-a-table-a-test-can-read.md) | Compose the editor from a table a test can read, not from Bevy's `plugin_group!` | accepted | `the_group_carries_the_members_the_table_names` |
 
-**By status**: accepted: none · proposed: none · superseded: none
+**By status**: accepted: 0001 · proposed: none · superseded: none
 
-Records are numbered consecutively from `0001`. There are none yet.
+Records are numbered consecutively from `0001`.
 
 ## Where each kind of writing belongs
 
