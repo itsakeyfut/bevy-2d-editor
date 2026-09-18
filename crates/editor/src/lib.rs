@@ -4,9 +4,11 @@
 //! document types in `b2d_data`, which is what keeps the widgets from knowing
 //! the model. See `docs/specs/crates.md` §3.
 //!
-//! The composition seam `docs/specs/architecture.md` §1 describes belongs here
-//! rather than in the binary, so that a test can build the editor without
-//! going through `main`.
+//! The editor is composed here rather than in the binary, so that a test can
+//! build it without going through `main`. `docs/specs/architecture.md` §3
+//! settles what the composition is, a compile-time `PluginGroup`; that it
+//! lives in the library is this crate's own decision and the reason is below,
+//! on `editor`.
 
 use bevy::app::PluginGroup;
 use bevy::prelude::*;
