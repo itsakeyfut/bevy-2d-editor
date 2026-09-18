@@ -209,7 +209,9 @@ fn pan(
 /// `a_zoom_holds_the_world_point_under_the_cursor_still` fails. Mutation: take
 /// the ratio before clamping, and `zoom_stops_at_the_ends_of_its_range` fails.
 /// Mutation: read `orthographic.area.size()` instead of [`visible`], and
-/// `a_burst_of_scrolling_in_one_frame_holds_the_cursor_still` fails.
+/// `a_burst_of_scrolling_in_one_frame_holds_the_cursor_still` fails. Mutation:
+/// take the ratio before clamping, and `zoom_at_the_end_of_its_range_stays_put`
+/// fails.
 fn zoom(
     scroll: On<Pointer<Scroll>>,
     regions: Query<(&ComputedNode, &UiGlobalTransform)>,
@@ -748,6 +750,44 @@ mod tests {
             scroll(&mut app, cursor, -1.0);
         }
         assert_eq!(camera(&mut app).1, ZOOM_MAX, "zooming out did not stop");
+    }
+
+    /// Zoom at the end of its range stays put.
+    ///
+    /// The clamp has two halves and the test above it only holds one. That
+    /// `scale` stops at the bound survives taking the ratio before clamping,
+    /// because the clamp is still there; what does not survive is the camera
+    /// standing still. With the ratio taken from the zoom that was refused,
+    /// every further notch translates the camera towards the cursor while the
+    /// view it is translating for never changes, so the world slides away under
+    /// a wheel that is doing nothing.
+    ///
+    /// The cursor is off centre, because a cursor at the centre has nothing to
+    /// translate towards and passes either way.
+    ///
+    /// Mutation: compute `ratio` from the unclamped scale, and this fails while
+    /// `zoom_stops_at_the_ends_of_its_range` and every other test stay green.
+    /// That was claimed of the other test and was not true of it, measured.
+    #[test]
+    fn zoom_at_the_end_of_its_range_stays_put() {
+        let mut app = viewport_editor();
+        let cursor = Vec2::new(300.0, 98.0);
+
+        for _ in 0..100 {
+            scroll(&mut app, cursor, 1.0);
+        }
+        assert_eq!(camera(&mut app).1, ZOOM_MIN, "the camera is not at the end");
+
+        let pinned = camera(&mut app).0;
+        for _ in 0..5 {
+            scroll(&mut app, cursor, 1.0);
+        }
+
+        assert_eq!(
+            camera(&mut app).0,
+            pinned,
+            "the camera kept moving after the zoom stopped"
+        );
     }
 
     /// There is something in the world for the viewport to show.
