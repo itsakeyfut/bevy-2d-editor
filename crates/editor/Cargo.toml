@@ -9,6 +9,16 @@ b2d_data.workspace = true
 b2d_editor_ui.workspace = true
 b2d_runtime.workspace = true
 
+# The stack is settled in docs/specs/ui.md §3. The defaults are not
+# taken: dropping them costs bevy_audio and bevy_gltf and nothing this
+# milestone needs, measured at 41 fewer crates and about a minute of cold
+# build.
+bevy = { version = "0.19", default-features = false, features = [
+    "2d",
+    "ui",
+    "bevy_feathers",
+] }
+
 # Only `tests/dependency_direction.rs` uses this: it reads the workspace
 # through `cargo metadata`, whose output is JSON.
 [dev-dependencies]
