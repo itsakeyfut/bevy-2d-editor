@@ -5,8 +5,8 @@ edition.workspace = true
 
 [dependencies]
 # The same line the editor carries, which docs/specs/ui.md §3 settles and
-# xtask's the_manifest_asks_for_the_features_the_specification_settled holds
-# against that section.
+# xtask's every_manifest_asks_for_the_features_the_specification_settled holds
+# against that section, this manifest included.
 bevy = { version = "0.19", default-features = false, features = [
     "2d",
     "ui",

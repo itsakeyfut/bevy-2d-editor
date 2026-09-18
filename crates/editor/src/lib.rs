@@ -166,7 +166,7 @@ impl Plugin for PanelsPlugin {
 /// would put a wrong answer in the type rather than in the call.
 ///
 /// Mutation: spawn all but the last of these, and
-/// `every_region_declared_is_on_screen` fails.
+/// `the_five_regions_the_drawing_names_are_on_screen` fails.
 fn spawn_regions(mut commands: Commands) {
     // Bevy UI is drawn through `ComputedUiTargetCamera`, so a node with no
     // camera to target is a node nothing draws: the window comes up and stays

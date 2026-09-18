@@ -14,6 +14,7 @@ use bevy::app::{App, Plugin};
 use bevy::color::Color;
 use bevy::feathers::dark_theme::create_dark_theme;
 use bevy::feathers::theme::{ThemeProps, ThemeToken, UiTheme};
+use bevy::feathers::tokens;
 use bevy::platform::collections::HashMap;
 
 /// The greys and the accent this editor is drawn from.
@@ -77,15 +78,19 @@ mod palette {
 /// Mutation: return `Some(palette::WINDOW)` for the unmatched arm, and that
 /// test can no longer fail.
 fn role(token: &ThemeToken) -> Option<Color> {
-    let name = token.to_string();
     // Two tokens name a thing rather than a role, and the suffix rules below
     // would answer for them wrongly: a window's background is not a panel's,
-    // and a focus ring is not a border.
-    match name.as_str() {
-        "feathers.window.bg" => return Some(palette::WINDOW),
-        "feathers.focus" => return Some(palette::ACCENT_HOVER),
-        _ => {}
+    // and a focus ring is not a border. They go through Feathers' own
+    // constants rather than the strings behind them, so that dropping either
+    // one upstream stops this compiling instead of quietly changing what it
+    // answers.
+    if *token == tokens::WINDOW_BG {
+        return Some(palette::WINDOW);
     }
+    if *token == tokens::FOCUS_RING {
+        return Some(palette::ACCENT_HOVER);
+    }
+    let name = token.to_string();
     let role = name
         .strip_prefix("feathers.")
         .and_then(|rest| rest.split_once('.').map(|(_widget, role)| role))
