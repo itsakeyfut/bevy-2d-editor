@@ -23,6 +23,12 @@ type Member = (&'static str, fn(PluginGroupBuilder) -> PluginGroupBuilder);
 /// it names. `core::any::type_name` would say it better and is not a `const fn`,
 /// which a row of a `const` table has to be.
 ///
+/// A row is a plugin **type**. `$plugin` is an `expr`, so `member!(P { x: 1 })`
+/// would compile and put the whole expression in the name column, which is not
+/// what `a_rows_name_is_the_plugin_it_adds` reads that column as. A plugin that
+/// needs configuring is a reason to widen this deliberately, not to write one
+/// through by accident.
+///
 /// The expectation retires itself: the table is empty today, and the first row
 /// added to it makes this attribute unfulfilled and asks to be deleted.
 #[cfg_attr(

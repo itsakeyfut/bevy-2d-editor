@@ -24,7 +24,11 @@ chosen here is the shape they inherit.
   engine has a mechanism before building one. Bevy has one, so anything else is
   a deviation that has to pay for itself.
 * A member that quietly leaves the group, or quietly joins it, must fail a named
-  test. This is RK-001's shape, which has cost this repository five times.
+  test. This is the shape the knowledge bank's RK-001 records, and it has
+  recurred here rather than being a hazard read about somewhere else. How many
+  times is not a number this record should assert: the entry's own headline and
+  the incidents it narrates do not agree, and reconciling that belongs to the
+  entry.
 * Bevy 0.19.1's `PluginGroupBuilder` cannot be enumerated. `order` and `plugins`
   are private, there is no iterator, and `contains::<T>()` answers about one
   named type at a time. `App` is the same: `plugin_registry` is `pub(crate)` and
