@@ -163,6 +163,7 @@ mod tests {
     use super::{
         TASKS, all, annotation, commands, dispatch, docs, exit_code, gate, workspace_root,
     };
+    use regex::Regex;
 
     /// The workflow, read once for the tests that assert what it runs.
     fn workflow() -> String {
@@ -314,6 +315,108 @@ mod tests {
         );
     }
 
+    /// The step a workflow runs, as a line rather than as a substring.
+    ///
+    /// A commented-out step still contains every substring the live one did,
+    /// and disabling a step is the ordinary way somebody turns it off while
+    /// debugging. Matching the list item is what tells the two apart: a
+    /// comment trims to `# - uses:` and fails the prefix.
+    ///
+    /// Mutation: use `contains` on the action instead, and
+    /// `a_commented_out_step_is_not_a_step` fails.
+    fn step_using(workflow: &str, action: &str) -> Option<usize> {
+        workflow
+            .lines()
+            .position(|line| line.trim_start().starts_with(&format!("- uses: {action}")))
+    }
+
+    /// The workflow caches what an engine costs to build.
+    ///
+    /// `docs/specs/dev-environment.md` §3 decided against a build cache and
+    /// made the reversal conditional on the change that brings Bevy into the
+    /// workspace. A trigger that fires and is not acted on is the thing
+    /// `docs/specs/open-questions.md` §1 calls the same as forgetting, and
+    /// nothing else here would notice the step going missing: the legs stay
+    /// green and only the minutes change.
+    ///
+    /// The action is pinned to an exact tag, the way the checkout above is, so
+    /// that the version this ran with is readable from the repository.
+    ///
+    /// Mutation: remove the step, or loosen the pin to a major tag, and this
+    /// fails.
+    #[test]
+    fn the_workflow_caches_what_an_engine_costs_to_build() {
+        let workflow = workflow();
+        assert!(
+            step_using(&workflow, "Swatinem/rust-cache@v2.9.2").is_some(),
+            "the workflow does not cache the build, or does not pin the action"
+        );
+    }
+
+    /// A commented-out step is not a step.
+    ///
+    /// The cheapest way to disable a workflow step is to comment it out, and
+    /// it leaves every substring a `contains` check was looking for. This is
+    /// the guard on the matcher itself rather than on the workflow.
+    ///
+    /// Mutation: match with `contains` in `step_using`, and this fails.
+    #[test]
+    fn a_commented_out_step_is_not_a_step() {
+        let live = "    steps:
+      - uses: some/action@v1
+";
+        let disabled = "    steps:
+      # - uses: some/action@v1
+";
+        assert_eq!(step_using(live, "some/action@v1"), Some(1));
+        assert_eq!(step_using(disabled, "some/action@v1"), None);
+    }
+
+    /// The engine features a file asks for, as that file writes them.
+    ///
+    /// Both the manifest and the specification write the same list, in the
+    /// same shape, and neither is generated from the other.
+    fn features_in(text: &str) -> Vec<String> {
+        let list = Regex::new(r"(?s)features = \[([^\]]*)\]").expect("a literal pattern");
+        let entry = Regex::new(r#""([^"]+)""#).expect("a literal pattern");
+        list.captures(text).map_or_else(Vec::new, |caps| {
+            entry
+                .captures_iter(&caps[1])
+                .map(|found| found[1].to_owned())
+                .collect()
+        })
+    }
+
+    /// The manifest asks for the features the specification settled.
+    ///
+    /// `docs/specs/ui.md` §3 writes the list and says what dropping the rest
+    /// costs, measured. The manifest writes it again because that is where
+    /// cargo reads it. Neither is derived from the other, so they are a real
+    /// cross-check rather than a file agreeing with itself.
+    ///
+    /// The lockfile cannot stand in for this. `bevy_feathers` is still
+    /// resolved with the feature removed, measured, so an assertion about the
+    /// lock would be one that cannot fail.
+    ///
+    /// Mutation: drop a feature from either file, and this fails.
+    #[test]
+    fn the_manifest_asks_for_the_features_the_specification_settled() {
+        let read = |path: [&str; 3]| {
+            std::fs::read_to_string(workspace_root().join(path[0]).join(path[1]).join(path[2]))
+                .expect("the file is in the repository")
+        };
+        let manifest = features_in(&read(["crates", "editor", "Cargo.toml"]));
+        let spec = features_in(&read(["docs", "specs", "ui.md"]));
+        assert!(
+            !manifest.is_empty(),
+            "no feature list was read from the manifest, so this asserts nothing"
+        );
+        assert_eq!(
+            manifest, spec,
+            "the manifest and docs/specs/ui.md §3 ask for different features"
+        );
+    }
+
     /// A leg that did not succeed fails the check branch protection requires.
     ///
     /// `needs.<job>.result` has four values, so a condition that enumerates
@@ -330,6 +433,61 @@ mod tests {
             workflow.contains("if: needs.gate.result != 'success'"),
             "the required check does not insist that every leg succeeded"
         );
+    }
+
+    /// The cache runs after the toolchain it is keyed on.
+    ///
+    /// `Swatinem/rust-cache` builds its key from the installed toolchain, so a
+    /// step that runs before the toolchain is installed keys the cache on
+    /// whatever the runner happened to ship with. Every leg stays green and
+    /// the cache quietly stops matching, which is the whole of what the step
+    /// was added for.
+    ///
+    /// Both positions are line numbers of live steps, so the prose above
+    /// either of them cannot be mistaken for the step itself.
+    ///
+    /// Mutation: move the cache step above the toolchain step, and this fails.
+    #[test]
+    fn the_cache_runs_after_the_toolchain_it_is_keyed_on() {
+        let workflow = workflow();
+        let toolchain = workflow
+            .lines()
+            .position(|line| line.trim_start() == "run: rustup show")
+            .expect("the workflow installs the toolchain it pins");
+        let cache =
+            step_using(&workflow, "Swatinem/rust-cache@").expect("the workflow caches the build");
+        assert!(
+            cache > toolchain,
+            "the cache step runs before the toolchain is installed, so its key is the runner's"
+        );
+    }
+
+    /// The engine arrives without the features it was taken without.
+    ///
+    /// `docs/specs/ui.md` §3 takes Bevy without its defaults and records what
+    /// that costs, measured. Nothing else notices a dropped feature coming
+    /// back: the build stays green and only the minutes change.
+    ///
+    /// Read from the lockfile, which is the resolved set rather than the
+    /// manifest that asks for it, so a feature arriving through something
+    /// else is caught as well. The first assertion is the vacuity guard: a
+    /// lockfile this could not read would otherwise pass every line below it.
+    ///
+    /// Mutation: add `audio` to the editor's feature list, and this fails.
+    #[test]
+    fn the_engine_arrives_without_the_features_it_was_taken_without() {
+        let lock = std::fs::read_to_string(workspace_root().join("Cargo.lock"))
+            .expect("the lockfile is in the repository");
+        assert!(
+            lock.contains("name = \"bevy\""),
+            "the engine is not in the lockfile, so this asserts nothing"
+        );
+        for absent in ["bevy_audio", "bevy_gltf"] {
+            assert!(
+                !lock.contains(&format!("name = \"{absent}\"")),
+                "{absent} is resolved, and docs/specs/ui.md §3 says it is not taken"
+            );
+        }
     }
 
     /// A failed check is said again where the Checks page reads it.

@@ -76,6 +76,17 @@ Linux.
 workflow being touched. Putting the gate in the repository was for exactly
 that, and a workflow that enumerated the rows would undo it.
 
+**The Linux leg installs what the engine links against.** Bevy's `2d` feature
+pulls `default_platform`, which names x11, wayland and gamepad support, so
+`wayland-sys` and `libudev-sys` probe for their libraries through `pkg-config`
+and panic when they are absent. An `ubuntu-latest` runner does not carry them.
+The list in the workflow is derived from `Cargo.lock` rather than copied from
+elsewhere: everything else Linux-facing there opens its library at run time and
+needs nothing at build time, and no alsa package appears because §3 of
+[ui.md](./ui.md) does not take the audio feature. The alternative, dropping
+`wayland` and shipping an x11-only editor, is a decision about what Linux users
+get rather than a way to make a build pass, and it is not taken here.
+
 **No third-party action other than `actions/checkout`, for now.** The toolchain
 comes from `rust-toolchain.toml` through `rustup show`, so the pin in the
 repository is the only place a version is written. There is no build cache:

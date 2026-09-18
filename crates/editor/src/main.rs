@@ -4,6 +4,8 @@
 //! library beside it, where a test can reach it; see `b2d_editor`'s module
 //! documentation.
 
+use bevy::prelude::DefaultPlugins;
+
 fn main() {
-    println!("Hello, world!");
+    b2d_editor::editor(DefaultPlugins).run();
 }
