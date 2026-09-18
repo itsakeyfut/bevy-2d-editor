@@ -11,7 +11,13 @@
 //! on `editor`.
 
 use bevy::app::{PluginGroup, PluginGroupBuilder};
+use bevy::feathers::FeathersPlugins;
+use bevy::feathers::containers::pane;
+use bevy::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor};
+use bevy::feathers::tokens;
 use bevy::prelude::*;
+use bevy::scene::bsn;
+use bevy::ui::{UiRect, percent, px};
 
 /// A member of the editor's plugin group: the name a test names it by, and the
 /// one line that adds it.
@@ -28,16 +34,6 @@ type Member = (&'static str, fn(PluginGroupBuilder) -> PluginGroupBuilder);
 /// what `a_rows_name_is_the_plugin_it_adds` reads that column as. A plugin that
 /// needs configuring is a reason to widen this deliberately, not to write one
 /// through by accident.
-///
-/// The expectation retires itself: the table is empty today, and the first row
-/// added to it makes this attribute unfulfilled and asks to be deleted.
-#[cfg_attr(
-    not(test),
-    expect(
-        unused_macros,
-        reason = "the table is empty until the first editor plugin arrives"
-    )
-)]
 macro_rules! member {
     ($plugin:expr) => {
         (stringify!($plugin), |group: PluginGroupBuilder| {
@@ -95,6 +91,159 @@ impl Plugin for SecondProbe {
     }
 }
 
+/// Which of `docs/specs/ui.md` §1's regions an entity is.
+///
+/// One component carrying a name rather than five marker types: the regions
+/// are a list in a drawing, and a test that asks for all of them wants to
+/// compare a list rather than write five separate queries.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Region {
+    /// Across the top.
+    MenuBar,
+    /// Down the left.
+    AssetBrowser,
+    /// The middle, where the viewport arrives with its own issue.
+    Viewport,
+    /// Down the right.
+    Inspector,
+    /// Along the bottom, where `docs/specs/ui.md` §1 draws the timeline, the
+    /// scenario graph and the console.
+    ///
+    /// Not a status strip. It was called one, and drawn as one at 22 pixels
+    /// with the menu bar's tokens, which contradicted the drawing this layout
+    /// cites: a scenario graph does not fit in 22 pixels. `roadmap.md` puts
+    /// the graph view in phase 5 and the timeline in phase 10, and both attach
+    /// here.
+    Bottom,
+}
+
+/// The five regions, drawn with this project's colours.
+///
+/// They live in this crate rather than in `b2d_editor_ui`, which issue #22's
+/// body first said. The regions are named after what this editor edits, and
+/// that crate's own documentation says it knows nothing about that; the theme
+/// went there instead, because a colour table knows nothing either. The
+/// decision and what it turned down are in #22's design comment.
+///
+/// Feathers supplies the pane and this project supplies the appearance, which
+/// is the split `docs/specs/ui.md` §3 decided. The arrangement is fixed:
+/// docking is deferred with a trigger in `docs/specs/open-questions.md` §1,
+/// because the engine has none and what it should do is undecided.
+///
+/// Mutation: drop `ThemePlugin` from what this adds, and
+/// `the_panels_carry_this_projects_theme` fails.
+pub struct PanelsPlugin;
+
+impl Plugin for PanelsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(FeathersPlugins)
+            .add_plugins(b2d_editor_ui::ThemePlugin)
+            .add_systems(Startup, spawn_regions);
+    }
+}
+
+/// Put the regions on screen, arranged the way `docs/specs/ui.md` §1 draws
+/// them.
+///
+/// A column of three: the menu bar, a row of three panes, and the bottom
+/// panel.
+/// Each region is a Feathers `pane`, which is where the widget structure comes
+/// from, with this project's colours on it, which is the split §3 decided.
+///
+/// The regions are given three different tokens on purpose. The first version
+/// gave all five `PANE_BODY_BG`, and the window came up as one flat rectangle:
+/// every pixel measured `(61, 61, 61)`, the layout was drawing correctly and
+/// nothing in it could be told apart. §1 draws lines between the regions, so
+/// the bars recede, the viewport is the window's own colour, and every edge §1
+/// draws is a border.
+///
+/// The regions are empty. What goes in each is its own issue, and an empty
+/// pane is what lets the arrangement land before there is anything to arrange.
+///
+/// `Region` is inserted after the scene rather than written inside it. `bsn!`
+/// requires a component to implement `Default`, and an enum of five named
+/// places has no default that means anything; inventing one to satisfy a macro
+/// would put a wrong answer in the type rather than in the call.
+///
+/// Mutation: spawn all but the last of these, and
+/// `the_five_regions_the_drawing_names_are_on_screen` fails.
+fn spawn_regions(mut commands: Commands) {
+    // Bevy UI is drawn through `ComputedUiTargetCamera`, so a node with no
+    // camera to target is a node nothing draws: the window comes up and stays
+    // empty, which is what this looked like before the camera was here.
+    //
+    // Whether the viewport's own camera is this one or a second is #23's to
+    // decide; what this issue needs is that the panels can be seen at all.
+    commands.spawn(Camera2d);
+
+    let root = commands
+        .spawn_scene(bsn! {
+            Node {
+                width: percent(100),
+                height: percent(100),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+            }
+            ThemeBackgroundColor(tokens::WINDOW_BG)
+        })
+        .id();
+
+    commands
+        .spawn_scene(bsn! {
+            pane()
+            ThemeBackgroundColor(tokens::PANE_HEADER_BG)
+            ThemeBorderColor(tokens::PANE_HEADER_BORDER)
+            Node { height: px(28), border: UiRect::bottom(px(1)) }
+        })
+        .insert((Region::MenuBar, ChildOf(root)));
+
+    let middle = commands
+        .spawn_scene(bsn! {
+            Node {
+                flex_grow: 1.0,
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+            }
+        })
+        .insert(ChildOf(root))
+        .id();
+
+    commands
+        .spawn_scene(bsn! {
+            pane()
+            ThemeBackgroundColor(tokens::PANE_BODY_BG)
+            ThemeBorderColor(tokens::PANE_HEADER_BORDER)
+            Node { width: px(240), border: UiRect::right(px(1)) }
+        })
+        .insert((Region::AssetBrowser, ChildOf(middle)));
+
+    commands
+        .spawn_scene(bsn! {
+            pane()
+            ThemeBackgroundColor(tokens::WINDOW_BG)
+            Node { flex_grow: 1.0 }
+        })
+        .insert((Region::Viewport, ChildOf(middle)));
+
+    commands
+        .spawn_scene(bsn! {
+            pane()
+            ThemeBackgroundColor(tokens::PANE_BODY_BG)
+            ThemeBorderColor(tokens::PANE_HEADER_BORDER)
+            Node { width: px(300), border: UiRect::left(px(1)) }
+        })
+        .insert((Region::Inspector, ChildOf(middle)));
+
+    commands
+        .spawn_scene(bsn! {
+            pane()
+            ThemeBackgroundColor(tokens::PANE_BODY_BG)
+            ThemeBorderColor(tokens::PANE_HEADER_BORDER)
+            Node { height: px(180), border: UiRect::top(px(1)) }
+        })
+        .insert((Region::Bottom, ChildOf(root)));
+}
+
 /// Every plugin the editor is composed of, in the order they are built.
 ///
 /// Written out as a table because [`EditorPlugins`] builds the table rather
@@ -104,11 +253,9 @@ impl Plugin for SecondProbe {
 /// set. `docs/adr/0001-compose-the-editor-from-a-table-a-test-can-read.md` has
 /// what that costs and what was turned down for it.
 ///
-/// It is empty. The editor's first plugin arrives with the panel layout.
-///
-/// Mutation: give it the row `member!(Probe)`, and
+/// Mutation: remove the row, and
 /// `the_group_carries_the_members_the_table_names` fails.
-pub(crate) const MEMBERS: [Member; 0] = [];
+pub(crate) const MEMBERS: [Member; 1] = [member!(PanelsPlugin)];
 
 /// Fold a table of members into the group they compose.
 ///
@@ -176,11 +323,17 @@ pub fn editor(platform: impl PluginGroup) -> App {
 #[cfg(test)]
 mod tests {
     use super::{
-        BuiltInOrder, EditorPlugins, MEMBERS, Member, Probe, ProbeMark, SecondProbe, compose,
-        editor,
+        BuiltInOrder, MEMBERS, Member, Probe, ProbeMark, Region, SecondProbe, compose, editor,
     };
     use bevy::app::PluginGroupBuilder;
+    use bevy::feathers::theme::UiTheme;
+    use bevy::math::Vec2;
     use bevy::prelude::*;
+    use bevy::render::RenderPlugin;
+    use bevy::render::settings::{RenderCreation, WgpuSettings};
+    use bevy::sprite::BorderRect;
+    use bevy::ui::ComputedNode;
+    use bevy::winit::WinitPlugin;
 
     /// A plugin no platform group carries, so that a test can tell one group
     /// from another.
@@ -190,10 +343,41 @@ mod tests {
         fn build(&self, _app: &mut App) {}
     }
 
-    /// A platform group that is not `MinimalPlugins` and is not
-    /// `DefaultPlugins`.
+    /// A platform group that is not `headless` and is not `DefaultPlugins`.
     fn marked() -> PluginGroupBuilder {
-        MinimalPlugins.build().add(Marker)
+        headless().add(Marker)
+    }
+
+    /// The platform a test hands in.
+    ///
+    /// `MinimalPlugins` stopped being enough the moment the group had a
+    /// member: `FeathersCorePlugin::build` calls `embedded_asset!` ten times,
+    /// which needs `AssetPlugin`'s resources and panics without them. So the
+    /// platform is the real one with the two parts a test cannot have.
+    ///
+    /// `WinitPlugin` goes because winit refuses to build an event loop off the
+    /// main thread, which is what `editor` takes a parameter for at all.
+    ///
+    /// The GPU goes because a runner has none. Measured on this machine: with
+    /// an adapter the suite took 3.24s and named an RTX 3070 Ti, and with
+    /// `backends: None` it took 0.72s and named nothing. A test that passes
+    /// here and fails on a runner is the failure
+    /// `docs/specs/dev-environment.md` §3 put three platforms in the matrix to
+    /// catch.
+    ///
+    /// It logs one `ERROR` and one `WARN` about the render app being absent.
+    /// Both are this setting working, not a failure.
+    fn headless() -> PluginGroupBuilder {
+        DefaultPlugins
+            .build()
+            .disable::<WinitPlugin>()
+            .set(RenderPlugin {
+                render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+                    backends: None,
+                    ..default()
+                })),
+                ..default()
+            })
     }
 
     /// The editor is built on a thread that is not the main one.
@@ -207,7 +391,7 @@ mod tests {
     /// panics.
     #[test]
     fn the_editor_is_built_off_the_main_thread() {
-        let app = editor(MinimalPlugins);
+        let app = editor(headless());
         assert!(
             app.is_plugin_added::<bevy::app::TaskPoolPlugin>(),
             "the app did not come back with the platform it was handed"
@@ -229,7 +413,7 @@ mod tests {
     #[test]
     fn the_platform_handed_in_is_the_one_the_app_carries() {
         assert!(
-            !editor(MinimalPlugins).is_plugin_added::<Marker>(),
+            !editor(headless()).is_plugin_added::<Marker>(),
             "the marker is in a platform group, so it cannot tell them apart"
         );
         assert!(
@@ -253,7 +437,7 @@ mod tests {
     #[test]
     fn the_group_carries_the_members_the_table_names() {
         let names: Vec<&str> = MEMBERS.iter().map(|member| member.0).collect();
-        assert_eq!(names, Vec::<&str>::new());
+        assert_eq!(names, ["PanelsPlugin"]);
     }
 
     /// A member is a row and nothing else.
@@ -293,8 +477,10 @@ mod tests {
     /// so that the plugin is in the group without being a row, and this fails.
     #[test]
     fn a_member_left_out_of_the_group_leaves_nothing_behind() {
-        let mut app = App::new();
-        app.add_plugins(EditorPlugins);
+        // `editor` adds the group, and the group needs a platform now that a
+        // member of it does: `PanelsPlugin` adds Feathers, which reaches for
+        // `AssetPlugin`.
+        let app = editor(headless());
         assert!(
             !app.is_plugin_added::<Probe>(),
             "a plugin the table does not name is in the app"
@@ -302,6 +488,252 @@ mod tests {
         assert!(
             !app.world().contains_resource::<ProbeMark>(),
             "a plugin the table does not name left its registration behind"
+        );
+    }
+
+    /// The five regions the drawing names are on screen.
+    ///
+    /// Spelled out here rather than read from a constant the spawning also
+    /// reads: a test that compares a table with itself passes whatever the
+    /// table says, which is RK-001 and which an earlier version of this test
+    /// had.
+    ///
+    /// The app is run for one update, because the regions are spawned by a
+    /// `Startup` system and a built app has not run one yet.
+    ///
+    /// Mutation: stop spawning any one of the five, and this fails naming it.
+    #[test]
+    fn the_five_regions_the_drawing_names_are_on_screen() {
+        let mut app = editor(headless());
+        app.update();
+        let found: Vec<Region> = app
+            .world_mut()
+            .query::<&Region>()
+            .iter(app.world())
+            .copied()
+            .collect();
+        for region in [
+            Region::MenuBar,
+            Region::AssetBrowser,
+            Region::Viewport,
+            Region::Inspector,
+            Region::Bottom,
+        ] {
+            assert!(found.contains(&region), "{region:?} is not on screen");
+        }
+        assert_eq!(found.len(), 5, "got {found:?}");
+    }
+
+    /// The three middle regions share a row, and the bars do not.
+    ///
+    /// This is the arrangement `docs/specs/ui.md` §1 draws, and it is the part
+    /// a list of five cannot say: the same five regions stacked in a column
+    /// would satisfy the test above. Asserted through the parent each one
+    /// hangs from rather than through positions, which are not decided until a
+    /// layout pass has run.
+    ///
+    /// Mutation: give the asset browser the root as its parent, so the three
+    /// no longer share a row, and this fails.
+    #[test]
+    fn the_three_middle_regions_share_a_row_and_the_bars_do_not() {
+        let mut app = editor(headless());
+        app.update();
+        let parents: Vec<(Region, Entity)> = app
+            .world_mut()
+            .query::<(&Region, &ChildOf)>()
+            .iter(app.world())
+            .map(|(region, parent)| (*region, parent.parent()))
+            .collect();
+        let of = |wanted: Region| {
+            parents
+                .iter()
+                .find(|(region, _)| *region == wanted)
+                .map(|(_, parent)| *parent)
+                .expect("every region has a parent")
+        };
+        let row = of(Region::Viewport);
+        assert_eq!(
+            of(Region::AssetBrowser),
+            row,
+            "the asset browser is not in the row"
+        );
+        assert_eq!(
+            of(Region::Inspector),
+            row,
+            "the inspector is not in the row"
+        );
+        assert_ne!(of(Region::MenuBar), row, "the menu bar is in the row");
+        assert_eq!(
+            of(Region::Bottom),
+            of(Region::MenuBar),
+            "the bars do not share the column"
+        );
+    }
+
+    /// What each region measures, after Bevy has laid it out.
+    ///
+    /// Returns the size and the border widths `ComputedNode` carries once
+    /// `ui_layout_system` has run, keyed by region, at the default window size
+    /// of 1280 by 720.
+    fn laid_out() -> Vec<(Region, Vec2, BorderRect)> {
+        let mut app = editor(headless());
+        app.update();
+        app.world_mut()
+            .query::<(&Region, &ComputedNode)>()
+            .iter(app.world())
+            .map(|(region, node)| (*region, node.size, node.border))
+            .collect()
+    }
+
+    /// The regions measure what `docs/specs/ui.md` §1 draws.
+    ///
+    /// The sizes and the edges are the layout. They were confirmed once by
+    /// measuring a screenshot of the running editor, which is a thing a person
+    /// did; this is the same claim made by a machine, so that changing 240 to
+    /// something else is caught rather than noticed later.
+    ///
+    /// The middle band spreading rather than stacking is part of it: the test
+    /// that says the three share a parent says nothing about which way that
+    /// parent lays them out, and an earlier version of this change had exactly
+    /// that gap.
+    ///
+    /// Mutation: change a width, drop a border, or make the middle band a
+    /// `Column`, and this fails.
+    #[test]
+    fn the_regions_measure_what_the_drawing_draws() {
+        let laid = laid_out();
+        let of = |wanted: Region| {
+            laid.iter()
+                .find(|(region, _, _)| *region == wanted)
+                .map(|(_, size, border)| (*size, *border))
+                .expect("every region is laid out")
+        };
+        let (menu, menu_border) = of(Region::MenuBar);
+        assert_eq!(menu.x, 1280.0, "the menu bar does not span the window");
+        assert_eq!(menu.y, 28.0, "the menu bar is not 28 high");
+        assert_eq!(
+            menu_border.max_inset.y, 1.0,
+            "the menu bar has no edge below it"
+        );
+
+        let (assets, assets_border) = of(Region::AssetBrowser);
+        assert_eq!(assets.x, 240.0, "the asset browser is not 240 wide");
+        assert_eq!(
+            assets_border.max_inset.x, 1.0,
+            "the asset browser has no edge"
+        );
+
+        let (inspector, inspector_border) = of(Region::Inspector);
+        assert_eq!(inspector.x, 300.0, "the inspector is not 300 wide");
+        assert_eq!(
+            inspector_border.min_inset.x, 1.0,
+            "the inspector has no edge"
+        );
+
+        let (bottom, bottom_border) = of(Region::Bottom);
+        assert_eq!(bottom.y, 180.0, "the bottom panel is not 180 high");
+        assert_eq!(
+            bottom_border.min_inset.y, 1.0,
+            "the bottom panel has no edge above it"
+        );
+
+        // The middle band spreads: the three sit side by side and fill the
+        // width between them. Stacked, each would be the full width.
+        let viewport = of(Region::Viewport).0;
+        assert_eq!(
+            assets.x + viewport.x + inspector.x,
+            1280.0,
+            "the three middle regions do not share the width"
+        );
+        assert_eq!(
+            viewport.y, assets.y,
+            "the three middle regions are not the same height"
+        );
+    }
+
+    /// The root is declared to fill whatever it is drawn to.
+    ///
+    /// This is as far as a test here reaches into the issue's "resizing the
+    /// window does not lose one". Setting `Window::resolution` in a headless
+    /// app does not move the layout: what `ui_layout_system` measures against
+    /// is the camera's render target, and without winit nothing updates that
+    /// from the window. Three update cycles after a resize left the menu bar
+    /// at its old width, measured.
+    ///
+    /// So this asserts the declaration rather than the behaviour: a root that
+    /// fills its target is what makes the layout follow a resize, and a root
+    /// with pixels written into it is what stops it. **That it does follow is
+    /// still a person's to check**, and the pull request says so rather than
+    /// implying this test covers it.
+    ///
+    /// Mutation: write `px(1280)` and `px(720)` on the root instead of
+    /// `percent(100)`, and this fails.
+    #[test]
+    fn the_root_is_declared_to_fill_whatever_it_is_drawn_to() {
+        let mut app = editor(headless());
+        app.update();
+        let root = app
+            .world_mut()
+            .query_filtered::<&Node, Without<Region>>()
+            .iter(app.world())
+            .find(|node| node.flex_direction == FlexDirection::Column)
+            .expect("the root is a column")
+            .clone();
+        assert_eq!(
+            root.width,
+            percent(100),
+            "the root does not fill its target"
+        );
+        assert_eq!(
+            root.height,
+            percent(100),
+            "the root does not fill its target"
+        );
+    }
+
+    /// There is a camera for the panels to be drawn to.
+    ///
+    /// Bevy UI is drawn through `ComputedUiTargetCamera`, and a node with no
+    /// camera to target is a node nothing draws. Without this the editor came
+    /// up as an empty window with five regions in the world and none of them
+    /// visible, and every other test here passed: they ask the world what it
+    /// holds, and the world held them.
+    ///
+    /// That is the gap this closes. It is not a claim that the layout looks
+    /// right, which is a person's to make.
+    ///
+    /// Mutation: drop the `Camera2d` from `spawn_regions`, and this fails.
+    #[test]
+    fn there_is_a_camera_for_the_panels_to_be_drawn_to() {
+        let mut app = editor(headless());
+        app.update();
+        let cameras = app.world_mut().query::<&Camera>().iter(app.world()).count();
+        assert_eq!(cameras, 1, "the panels have no camera to be drawn to");
+    }
+
+    /// The panels carry this project's theme, not the one Feathers ships.
+    ///
+    /// `FeathersCorePlugin` initialises `UiTheme` itself, so the claim is that
+    /// what ends up in the resource is this project's map. Asserted against
+    /// `b2d_editor_ui::unity_theme`, which is where that decision lives.
+    ///
+    /// Mutation: drop `ThemePlugin` from `PanelsPlugin::build`, and this fails
+    /// with Feathers' own theme in place.
+    #[test]
+    fn the_panels_carry_this_projects_theme() {
+        let app = editor(headless());
+        let theme = app.world().resource::<UiTheme>();
+        let ours = b2d_editor_ui::unity_theme();
+        assert_eq!(theme.0.color.len(), ours.color.len());
+        let differing: Vec<String> = ours
+            .color
+            .iter()
+            .filter(|(token, colour)| theme.0.color.get(*token) != Some(*colour))
+            .map(|(token, _)| token.to_string())
+            .collect();
+        assert!(
+            differing.is_empty(),
+            "the editor draws {differing:?} differently"
         );
     }
 

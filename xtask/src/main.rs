@@ -387,33 +387,57 @@ mod tests {
         })
     }
 
-    /// The manifest asks for the features the specification settled.
+    /// Every manifest asks for the features the specification settled.
     ///
     /// `docs/specs/ui.md` §3 writes the list and says what dropping the rest
-    /// costs, measured. The manifest writes it again because that is where
-    /// cargo reads it. Neither is derived from the other, so they are a real
+    /// costs, measured. A manifest writes it again because that is where cargo
+    /// reads it. Neither is derived from the other, so they are a real
     /// cross-check rather than a file agreeing with itself.
+    ///
+    /// It walks `crates/` rather than naming the crates that take the engine.
+    /// Two do now and a third will, and a guard that has to be widened by hand
+    /// is one that holds whichever manifest somebody remembered.
     ///
     /// The lockfile cannot stand in for this. `bevy_feathers` is still
     /// resolved with the feature removed, measured, so an assertion about the
     /// lock would be one that cannot fail.
     ///
-    /// Mutation: drop a feature from either file, and this fails.
+    /// Mutation: drop a feature from any of those files, and this fails.
     #[test]
-    fn the_manifest_asks_for_the_features_the_specification_settled() {
-        let read = |path: [&str; 3]| {
-            std::fs::read_to_string(workspace_root().join(path[0]).join(path[1]).join(path[2]))
-                .expect("the file is in the repository")
-        };
-        let manifest = features_in(&read(["crates", "editor", "Cargo.toml"]));
-        let spec = features_in(&read(["docs", "specs", "ui.md"]));
-        assert!(
-            !manifest.is_empty(),
-            "no feature list was read from the manifest, so this asserts nothing"
+    fn every_manifest_asks_for_the_features_the_specification_settled() {
+        let spec = features_in(
+            &std::fs::read_to_string(workspace_root().join("docs/specs/ui.md"))
+                .expect("the file is in the repository"),
         );
-        assert_eq!(
-            manifest, spec,
-            "the manifest and docs/specs/ui.md §3 ask for different features"
+        assert!(
+            !spec.is_empty(),
+            "no feature list was read from the specification, so this asserts nothing"
+        );
+
+        let mut checked = Vec::new();
+        for crate_dir in std::fs::read_dir(workspace_root().join("crates"))
+            .expect("the directory is in the repository")
+        {
+            let manifest = crate_dir
+                .expect("the entry is readable")
+                .path()
+                .join("Cargo.toml");
+            let text = std::fs::read_to_string(&manifest).expect("every crate has a manifest");
+            if !text.contains("\nbevy = ") {
+                continue;
+            }
+            assert_eq!(
+                features_in(&text),
+                spec,
+                "{} and docs/specs/ui.md §3 ask for different features",
+                manifest.display()
+            );
+            checked.push(manifest);
+        }
+        assert!(
+            checked.len() >= 2,
+            "only {} manifest(s) were examined, so this holds less than it reads as",
+            checked.len()
         );
     }
 
