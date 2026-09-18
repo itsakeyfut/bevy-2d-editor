@@ -46,6 +46,21 @@ macro_rules! member {
 #[derive(Resource)]
 struct ProbeMark;
 
+/// The members that were built, in the order they were built in.
+#[cfg(test)]
+#[derive(Resource, Default)]
+struct BuiltInOrder(Vec<&'static str>);
+
+/// Say that a member was built, so that a test can read the order back.
+#[cfg(test)]
+fn record(app: &mut App, member: &'static str) {
+    app.init_resource::<BuiltInOrder>();
+    app.world_mut()
+        .resource_mut::<BuiltInOrder>()
+        .0
+        .push(member);
+}
+
 /// A plugin the editor does not have, standing in for one it will.
 ///
 /// It lives here rather than in the tests so that the mutations named below are
@@ -59,6 +74,18 @@ struct Probe;
 impl Plugin for Probe {
     fn build(&self, app: &mut App) {
         app.insert_resource(ProbeMark);
+        record(app, "Probe");
+    }
+}
+
+/// A second one, because order is not a property one member has.
+#[cfg(test)]
+struct SecondProbe;
+
+#[cfg(test)]
+impl Plugin for SecondProbe {
+    fn build(&self, app: &mut App) {
+        record(app, "SecondProbe");
     }
 }
 
@@ -142,7 +169,10 @@ pub fn editor(platform: impl PluginGroup) -> App {
 
 #[cfg(test)]
 mod tests {
-    use super::{EditorPlugins, MEMBERS, Member, Probe, ProbeMark, compose, editor};
+    use super::{
+        BuiltInOrder, EditorPlugins, MEMBERS, Member, Probe, ProbeMark, SecondProbe, compose,
+        editor,
+    };
     use bevy::app::PluginGroupBuilder;
     use bevy::prelude::*;
 
@@ -266,6 +296,52 @@ mod tests {
         assert!(
             !app.world().contains_resource::<ProbeMark>(),
             "a plugin the table does not name left its registration behind"
+        );
+    }
+
+    /// A row's name is the plugin it adds.
+    ///
+    /// The name column is the whole of what
+    /// `the_group_carries_the_members_the_table_names` reads, so a `member!`
+    /// that wrote the same name for every row would leave that test agreeing
+    /// with a table that means something else. RK-001 in its narrowest form: a
+    /// column added to a table that has no rows yet is a column nothing has
+    /// looked at.
+    ///
+    /// Asserted against the type's own name rather than against the literal
+    /// alone, so that the two columns are held to each other and not to a third
+    /// copy of the same string.
+    ///
+    /// Mutation: write a literal in place of `stringify!($plugin)` in
+    /// `member!`, and this fails.
+    #[test]
+    fn a_rows_name_is_the_plugin_it_adds() {
+        let row: Member = member!(Probe);
+        assert_eq!(row.0, "Probe", "the name column is not the plugin's name");
+        assert!(
+            core::any::type_name::<Probe>().ends_with(row.0),
+            "the name column does not name the plugin the row adds"
+        );
+    }
+
+    /// The table is built in the order it is written.
+    ///
+    /// `MEMBERS` says it holds its members in the order they are built, and a
+    /// plugin that inserts a resource a later one reads depends on that being
+    /// true. Nothing could check it while the table had fewer than two rows,
+    /// which is why the rows are handed to `compose` here rather than taken
+    /// from `MEMBERS`.
+    ///
+    /// Mutation: fold `members.iter().rev()` in `compose`, and this fails.
+    #[test]
+    fn the_table_is_built_in_the_order_it_is_written() {
+        let rows: [Member; 2] = [member!(Probe), member!(SecondProbe)];
+        let mut app = App::new();
+        app.add_plugins(compose(&rows));
+        assert_eq!(
+            app.world().resource::<BuiltInOrder>().0,
+            ["Probe", "SecondProbe"],
+            "the members were not built in the order the table writes them"
         );
     }
 }
