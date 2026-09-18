@@ -36,6 +36,15 @@ jobs:
       # the pin in the repository stays the only place a version is written.
       - name: Install the toolchain named by rust-toolchain.toml
         run: rustup show
+      # docs/specs/dev-environment.md §3 decided against a cache and
+      # made the reversal conditional on the change that brings Bevy into the
+      # workspace, which is this one. Before it, a cold build was seconds and a
+      # pinned action to keep current cost more than it saved. After it, a cold
+      # build of the engine alone measured 3m18s locally, on every leg of a
+      # three-platform matrix, on every push.
+      #
+      # After `rustup show`, because the cache key includes the toolchain.
+      - uses: Swatinem/rust-cache@v2.9.2
       # One command, because xtask is where the checks are defined. A row added
       # there runs here without this file being touched, which is the split
       # that putting the gate in the repository was for. A failed check names

@@ -314,6 +314,29 @@ mod tests {
         );
     }
 
+    /// The workflow caches what an engine costs to build.
+    ///
+    /// `docs/specs/dev-environment.md` §3 decided against a build cache and
+    /// made the reversal conditional on the change that brings Bevy into the
+    /// workspace. A trigger that fires and is not acted on is the thing
+    /// `docs/specs/open-questions.md` §1 calls the same as forgetting, and
+    /// nothing else here would notice the step going missing: the legs stay
+    /// green and only the minutes change.
+    ///
+    /// The action is pinned to an exact tag, the way the checkout above is, so
+    /// that the version this ran with is readable from the repository.
+    ///
+    /// Mutation: remove the step, or loosen the pin to a major tag, and this
+    /// fails.
+    #[test]
+    fn the_workflow_caches_what_an_engine_costs_to_build() {
+        let workflow = workflow();
+        assert!(
+            workflow.contains("Swatinem/rust-cache@v2.9.2"),
+            "the workflow does not cache the build, or does not pin the action"
+        );
+    }
+
     /// A leg that did not succeed fails the check branch protection requires.
     ///
     /// `needs.<job>.result` has four values, so a condition that enumerates
