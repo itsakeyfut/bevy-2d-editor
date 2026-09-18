@@ -13,11 +13,11 @@
 use bevy::app::{PluginGroup, PluginGroupBuilder};
 use bevy::feathers::FeathersPlugins;
 use bevy::feathers::containers::pane;
-use bevy::feathers::theme::ThemeBackgroundColor;
+use bevy::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor};
 use bevy::feathers::tokens;
 use bevy::prelude::*;
 use bevy::scene::bsn;
-use bevy::ui::{percent, px};
+use bevy::ui::{UiRect, percent, px};
 
 /// A member of the editor's plugin group: the name a test names it by, and the
 /// one line that adds it.
@@ -136,6 +136,13 @@ impl Plugin for PanelsPlugin {
 /// Each region is a Feathers `pane`, which is where the widget structure comes
 /// from, with this project's colours on it, which is the split §3 decided.
 ///
+/// The regions are given three different tokens on purpose. The first version
+/// gave all five `PANE_BODY_BG`, and the window came up as one flat rectangle:
+/// every pixel measured `(61, 61, 61)`, the layout was drawing correctly and
+/// nothing in it could be told apart. §1 draws lines between the regions, so
+/// the bars recede, the viewport is the window's own colour, and every edge §1
+/// draws is a border.
+///
 /// The regions are empty. What goes in each is its own issue, and an empty
 /// pane is what lets the arrangement land before there is anything to arrange.
 ///
@@ -147,6 +154,14 @@ impl Plugin for PanelsPlugin {
 /// Mutation: spawn all but the last of these, and
 /// `every_region_declared_is_on_screen` fails.
 fn spawn_regions(mut commands: Commands) {
+    // Bevy UI is drawn through `ComputedUiTargetCamera`, so a node with no
+    // camera to target is a node nothing draws: the window comes up and stays
+    // empty, which is what this looked like before the camera was here.
+    //
+    // Whether the viewport's own camera is this one or a second is #23's to
+    // decide; what this issue needs is that the panels can be seen at all.
+    commands.spawn(Camera2d);
+
     let root = commands
         .spawn_scene(bsn! {
             Node {
@@ -162,8 +177,9 @@ fn spawn_regions(mut commands: Commands) {
     commands
         .spawn_scene(bsn! {
             pane()
-            ThemeBackgroundColor(tokens::PANE_BODY_BG)
-            Node { height: px(28) }
+            ThemeBackgroundColor(tokens::PANE_HEADER_BG)
+            ThemeBorderColor(tokens::PANE_HEADER_BORDER)
+            Node { height: px(28), border: UiRect::bottom(px(1)) }
         })
         .insert((Region::MenuBar, ChildOf(root)));
 
@@ -182,14 +198,15 @@ fn spawn_regions(mut commands: Commands) {
         .spawn_scene(bsn! {
             pane()
             ThemeBackgroundColor(tokens::PANE_BODY_BG)
-            Node { width: px(240) }
+            ThemeBorderColor(tokens::PANE_HEADER_BORDER)
+            Node { width: px(240), border: UiRect::right(px(1)) }
         })
         .insert((Region::AssetBrowser, ChildOf(middle)));
 
     commands
         .spawn_scene(bsn! {
             pane()
-            ThemeBackgroundColor(tokens::PANE_BODY_BG)
+            ThemeBackgroundColor(tokens::WINDOW_BG)
             Node { flex_grow: 1.0 }
         })
         .insert((Region::Viewport, ChildOf(middle)));
@@ -198,15 +215,17 @@ fn spawn_regions(mut commands: Commands) {
         .spawn_scene(bsn! {
             pane()
             ThemeBackgroundColor(tokens::PANE_BODY_BG)
-            Node { width: px(300) }
+            ThemeBorderColor(tokens::PANE_HEADER_BORDER)
+            Node { width: px(300), border: UiRect::left(px(1)) }
         })
         .insert((Region::Inspector, ChildOf(middle)));
 
     commands
         .spawn_scene(bsn! {
             pane()
-            ThemeBackgroundColor(tokens::PANE_BODY_BG)
-            Node { height: px(22) }
+            ThemeBackgroundColor(tokens::PANE_HEADER_BG)
+            ThemeBorderColor(tokens::PANE_HEADER_BORDER)
+            Node { height: px(22), border: UiRect::top(px(1)) }
         })
         .insert((Region::Status, ChildOf(root)));
 }
@@ -532,6 +551,26 @@ mod tests {
             of(Region::MenuBar),
             "the bars do not share the column"
         );
+    }
+
+    /// There is a camera for the panels to be drawn to.
+    ///
+    /// Bevy UI is drawn through `ComputedUiTargetCamera`, and a node with no
+    /// camera to target is a node nothing draws. Without this the editor came
+    /// up as an empty window with five regions in the world and none of them
+    /// visible, and every other test here passed: they ask the world what it
+    /// holds, and the world held them.
+    ///
+    /// That is the gap this closes. It is not a claim that the layout looks
+    /// right, which is a person's to make.
+    ///
+    /// Mutation: drop the `Camera2d` from `spawn_regions`, and this fails.
+    #[test]
+    fn there_is_a_camera_for_the_panels_to_be_drawn_to() {
+        let mut app = editor(headless());
+        app.update();
+        let cameras = app.world_mut().query::<&Camera>().iter(app.world()).count();
+        assert_eq!(cameras, 1, "the panels have no camera to be drawn to");
     }
 
     /// The panels carry this project's theme, not the one Feathers ships.
