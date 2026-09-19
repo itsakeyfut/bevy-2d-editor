@@ -217,13 +217,12 @@ fn forget_what_is_gone(remove: On<Remove, Selectable>, mut selection: ResMut<Sel
 #[cfg(test)]
 mod tests {
     use super::{Selectable, Selection};
+    use crate::pointer::{click_at, in_window, write_input};
     use crate::viewport::PLACEHOLDERS;
     use crate::{editor, headless};
-    use bevy::camera::NormalizedRenderTarget;
     use bevy::picking::Pickable;
-    use bevy::picking::pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput};
+    use bevy::picking::pointer::{PointerAction, PointerButton};
     use bevy::prelude::*;
-    use bevy::window::{PrimaryWindow, WindowRef};
 
     /// How many frames the editor needs before a test can look at the world.
     ///
@@ -246,56 +245,6 @@ mod tests {
             app.update();
         }
         app
-    }
-
-    /// Where a world position sits in the window, in logical pixels.
-    ///
-    /// The viewport region starts 240 across and 28 down and measures 740 by
-    /// 512, and its camera shows one world unit per pixel centred on the
-    /// origin, so its middle is the world's. Spelled out here rather than read
-    /// from the code that lays it out, because a test that computes a position
-    /// the same way the editor does agrees with the editor rather than with the
-    /// drawing in `docs/specs/ui.md` §1.
-    fn in_window(world: Vec2) -> Vec2 {
-        Vec2::new(240.0 + 370.0 + world.x, 28.0 + 256.0 - world.y)
-    }
-
-    /// Press and release a button at a window position.
-    ///
-    /// Written as `PointerInput` for the window's own pointer, which is one
-    /// layer earlier than triggering a `Pointer` event: what is being claimed
-    /// is that a click in the middle of the window reaches the world through
-    /// `viewport_picking` and then `sprite_picking`, and triggering the last
-    /// event in that chain would assume the thing under test.
-    fn click_at(app: &mut App, position: Vec2, button: PointerButton) {
-        for action in [
-            PointerAction::Move { delta: Vec2::ONE },
-            PointerAction::Press(button),
-            PointerAction::Release(button),
-        ] {
-            write_input(app, position, action);
-            app.update();
-            app.update();
-        }
-    }
-
-    /// Write one pointer input for the window's own pointer.
-    fn write_input(app: &mut App, position: Vec2, action: PointerAction) {
-        let window = app
-            .world_mut()
-            .query_filtered::<Entity, With<PrimaryWindow>>()
-            .single(app.world())
-            .expect("there is a primary window");
-        let location = Location {
-            position,
-            target: NormalizedRenderTarget::Window(
-                WindowRef::Primary
-                    .normalize(Some(window))
-                    .expect("the primary window normalises"),
-            ),
-        };
-        app.world_mut()
-            .write_message(PointerInput::new(PointerId::Mouse, location, action));
     }
 
     /// Press at one place and let go at another, a frame apart.
