@@ -177,25 +177,40 @@ than new.
 
 ---
 
-## 4. Viewport navigation: the middle button pans, the wheel zooms
+## 4. What the mouse does in the viewport
 
 ### Decision
 
-**The middle mouse button drags the view. The wheel zooms, on the cursor.**
-
-The left and right buttons do nothing in the viewport, and are being kept:
-the left for selection and for every tool that paints, the right for a context
-menu.
+| Gesture | What it does |
+| --- | --- |
+| Middle button, dragged | Drags the view |
+| Wheel | Zooms, on the cursor |
+| Left button, released over an entity | Selects it |
+| Left button, released over empty space | Clears the selection |
+| Right button | Nothing yet, and kept for a context menu |
 
 Zoom is clamped, from 1/32 to 32 world units per pixel.
 
+**Selection happens when the button is released, not when it is pressed.** A
+press that was a mistake is taken back by moving off the entity before letting
+go, which is the ordinary way out of a misclick everywhere else.
+
+The left button is still what every tool that paints will want. What is decided
+here is what it does when no tool has been chosen, which is the state the editor
+is in and will stay in until phase 2.
+
 ### Rationale
 
-§2 makes Unity the design target, and this is Unity's Scene view. It is also
-what leaves the left button free, which matters more here than it looks: the
-level editor in [level-editor.md](./level-editor.md) is a sequence of tools that
-all want a drag with the left button, and a viewport that took it for panning
-would have to hand it back.
+§2 makes Unity the design target, and this is Unity's Scene view. Keeping
+panning off the left button matters more here than it looks: the level editor in
+[level-editor.md](./level-editor.md) is a sequence of tools that all want a drag
+with the left button, and a viewport that took it for panning would have to hand
+it back.
+
+Releasing rather than pressing is not Unity's, which selects on the press. It is
+taken because the cost of the difference is small and what it buys is a misclick
+the user can still escape from. Bevy gives it for free: its click event fires
+only when the press and the release share a target.
 
 Zooming on the cursor rather than on the centre is Unity again, and it is the
 difference between reaching a corner of a large level in one gesture and
@@ -218,6 +233,12 @@ button a context menu will want, and §2 says Unity wins where the two disagree.
 **Zooming on the viewport's centre.** Two lines rather than four, and it makes
 the viewport tiring to use at exactly the moment a level gets big enough to
 need it.
+
+**Selecting on the press**, which is Unity's and which composes more easily with
+a rubber band: a press on empty space clears, and the drag that follows builds a
+new selection, with no question about what the release meant. It was turned down
+for the misclick above. What it costs is written where it lands, on the issue
+for the rubber band.
 
 ### Accepted risk
 
