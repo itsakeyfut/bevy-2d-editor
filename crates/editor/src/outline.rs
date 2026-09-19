@@ -21,12 +21,13 @@ use crate::Selection;
 /// nobody here has measured.
 pub(crate) const SELECTION_LAYER: usize = 1;
 
-/// The colour of the outline.
+/// The colour of the outline, and of the box drag in `selection.rs`.
 ///
 /// A constant rather than a Feathers token: its themes carry colour only and
 /// have none for an editor overlay drawn in the world. `docs/specs/ui.md` §5
-/// accepts that, and what to do if it disappears over real artwork.
-const OUTLINE: Color = Color::srgb(1.0, 0.61, 0.16);
+/// accepts that, and what to do if it disappears over real artwork. The same
+/// section is why the box drag draws in it rather than in one of its own.
+pub(crate) const OUTLINE: Color = Color::srgb(1.0, 0.61, 0.16);
 
 /// The gizmo group the outline is drawn in.
 ///
@@ -122,11 +123,9 @@ mod tests {
     use crate::{Selectable, editor, headless};
     use bevy::camera::visibility::RenderLayers;
     use bevy::gizmos::config::GizmoConfigStore;
-    use bevy::gizmos::{GizmoAsset, GizmoHandles};
     use bevy::picking::pointer::{PointerAction, PointerButton};
     use bevy::prelude::*;
     use bevy::sprite::Anchor;
-    use core::any::TypeId;
     use core::f32::consts::FRAC_PI_4;
 
     /// The editor, run until a test can look at the world.
@@ -141,75 +140,18 @@ mod tests {
 
     /// Every rectangle the outline drew, one per strip.
     ///
-    /// `rect_2d` emits a line loop, which arrives as a repeated vertex and a
-    /// `NaN` separator, so a strip is a run of finite positions and the count
-    /// of runs is the count of rectangles. Reading the runs apart rather than
-    /// together is what lets a test tell two outlines from one: their extents
-    /// taken together are a single rectangle covering both, which is what a
-    /// selection of two would look like if only one were drawn around
-    /// everything.
+    /// Reading the runs apart rather than together is what lets a test tell two
+    /// outlines from one: their extents taken together are a single rectangle
+    /// covering both, which is what a selection of two would look like if only
+    /// one were drawn around everything. How a run is told from the next is
+    /// `drawn::rectangles_of`.
     fn outlined_each(app: &App) -> Vec<Rect> {
-        let Some(handle) = app
-            .world()
-            .resource::<GizmoHandles>()
-            .handles()
-            .get(&TypeId::of::<SelectionGizmos>())
-            .cloned()
-            .flatten()
-        else {
-            return Vec::new();
-        };
-        let mut rectangles = Vec::new();
-        let mut strip: Vec<Vec2> = Vec::new();
-        let mut close = |strip: &mut Vec<Vec2>| {
-            if let (Some(min), Some(max)) = (
-                strip.iter().copied().reduce(Vec2::min),
-                strip.iter().copied().reduce(Vec2::max),
-            ) {
-                rectangles.push(Rect::from_corners(min, max));
-            }
-            strip.clear();
-        };
-        for position in &app
-            .world()
-            .resource::<Assets<GizmoAsset>>()
-            .get(&handle)
-            .expect("the group's handle names an asset")
-            .strip_positions
-        {
-            if position.is_finite() {
-                strip.push(position.truncate());
-            } else {
-                close(&mut strip);
-            }
-        }
-        close(&mut strip);
-        rectangles
+        crate::drawn::rectangles_of::<SelectionGizmos>(app)
     }
 
     /// What the outline covers, or `None` when nothing was drawn.
-    ///
-    /// `update_gizmo_meshes` puts the group's handle back to `None` in a frame
-    /// where nothing reached its storage, so "nothing is drawn" is a state that
-    /// can be read rather than an absence that has to be inferred.
     fn outlined(app: &App) -> Option<Rect> {
-        app.world()
-            .resource::<GizmoHandles>()
-            .handles()
-            .get(&TypeId::of::<SelectionGizmos>())
-            .cloned()
-            .flatten()?;
-        let drawn = outlined_each(app);
-        assert!(
-            !drawn.is_empty(),
-            "a handle exists with nothing drawn in it"
-        );
-        Some(
-            drawn
-                .into_iter()
-                .reduce(|covered, rectangle| covered.union(rectangle))
-                .expect("something was drawn"),
-        )
+        crate::drawn::covered_by::<SelectionGizmos>(app)
     }
 
     /// Where an entity is, worked out from its sprite rather than from its

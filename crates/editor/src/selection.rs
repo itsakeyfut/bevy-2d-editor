@@ -1,19 +1,26 @@
-//! What the editor is currently acting on, and the click that sets it.
+//! What the editor is currently acting on, and the gestures that set it: a
+//! click, and a box dragged over empty space.
 //!
 //! The inspector shows it, transform editing moves it, gizmos draw on it and
 //! delete acts on it, so this is one answer rather than one per panel that
 //! wants to know. The button it is bound to is
 //! [`docs/specs/ui.md` §4](../../../docs/specs/ui.md).
 
+use bevy::camera::primitives::Aabb;
+use bevy::camera::visibility::RenderLayers;
 use bevy::ecs::lifecycle::Remove;
-use bevy::picking::events::{Click, Pointer, Press};
+use bevy::gizmos::AppGizmoBuilder;
+use bevy::gizmos::config::{GizmoConfig, GizmoConfigGroup};
+use bevy::picking::events::{Click, DragEnd, DragStart, Pointer, Press};
 use bevy::picking::hover::HoverMap;
-use bevy::picking::pointer::{PointerButton, PointerId};
+use bevy::picking::pointer::{PointerButton, PointerId, PointerLocation};
 use bevy::picking::{Pickable, PickingSystems};
 use bevy::prelude::*;
 use bevy::ui::widget::ViewportNode;
 
 use crate::Region;
+use crate::outline::{OUTLINE, SELECTION_LAYER};
+use crate::viewport::ViewportCamera;
 
 /// What the editor is currently acting on.
 ///
@@ -28,11 +35,15 @@ use crate::Region;
 ///   chosen. That is the one Unity calls active.
 /// * removing one leaves the rest in the order they were chosen in.
 /// * an entity appears at most once.
+/// * several added by one gesture go on the end together, in the order the
+///   world iterates them. Nothing in a box drag ranks what it covers, so only
+///   the boundary between gestures is meaningful, and a test that reads this
+///   after one compares it sorted.
 ///
 /// Those are conditions on this type, not a description of who writes it
-/// today. `select` below is the only writer as this stands, and the next one, a
-/// rubber band that adds a whole rectangle at once, either keeps them or
-/// breaks the inspector that reads the last element.
+/// today. `select` and `finish` below are the writers as this stands, and
+/// anything that joins them either keeps the conditions or breaks the
+/// inspector that reads the last element.
 ///
 /// **The field is private and there is no setter.** That is what makes "one
 /// place decides what is selected" a thing the compiler holds rather than a
@@ -63,6 +74,10 @@ impl Selection {
 /// begins and commits it when it ends. Reading the keyboard at the release
 /// instead would turn letting the key go a moment early into a selection of
 /// six replaced by one.
+/// **The box drag lives here too**, because it is the same gesture rather than
+/// a second one: [`remember`] overwrites the whole of this at every press, so a
+/// box whose `DragEnd` never arrives, which is what a window losing focus
+/// mid-drag produces, is cleared by the next press rather than drawn for ever.
 #[derive(Resource, Default)]
 struct Pressed {
     /// What the viewport's pointer was over.
@@ -72,6 +87,19 @@ struct Pressed {
     over: Option<Entity>,
     /// Whether the modifier that adds and removes was held.
     additive: bool,
+    /// Where the press was, in world units.
+    ///
+    /// `None` when the viewport or its camera could not be read, which is the
+    /// same state as "this gesture cannot become a box".
+    ///
+    /// Recorded here rather than at [`begin`], **which is too late**:
+    /// `Pointer<DragStart>` fires on the first move after the press, so by the
+    /// time it arrives the viewport's pointer is already at the moved-to
+    /// position. Measured: a press at `(-300, -180)` dragged to `(300, 180)`
+    /// reads as `(300, 180)` in a `DragStart` observer.
+    at: Option<Vec2>,
+    /// Where a box drag began, once the press turned into one.
+    band: Option<Vec2>,
 }
 
 /// An entity the user can select by clicking it.
@@ -82,7 +110,7 @@ struct Pressed {
 /// without one is a thing that cannot be selected, which would read as a defect
 /// in this file rather than as a missing component over there.
 ///
-/// It also names the set a later rubber band has to hit-test against, and
+/// It also names the set the box drag below hit-tests against, and
 /// leaves room for the thing that is pickable and not selectable, which is a
 /// gizmo handle.
 #[derive(Component, Default)]
@@ -116,6 +144,14 @@ impl Plugin for SelectionPlugin {
         )
         .init_resource::<Selection>()
         .init_resource::<Pressed>()
+        .insert_gizmo_config(
+            BandGizmos,
+            GizmoConfig {
+                render_layers: RenderLayers::layer(SELECTION_LAYER),
+                ..default()
+            },
+        )
+        .add_systems(Update, draw_band)
         .add_observer(attach)
         .add_observer(forget_what_is_gone);
     }
@@ -134,7 +170,9 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
     commands
         .entity(add.entity)
         .observe(remember)
-        .observe(select);
+        .observe(select)
+        .observe(begin)
+        .observe(finish);
 }
 
 /// Set the selection to what the left button was released over.
@@ -156,6 +194,15 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
 /// nothing then leaves the selection alone: adding nothing to a selection is
 /// not the same gesture as abandoning it, and the user who misses with the
 /// seventh click keeps the six.
+///
+/// **A release that ended a box drag also arrives here, and nothing suppresses
+/// it.** `bevy_picking` triggers `Click` before `DragEnd` for one release, and
+/// a box begins on empty space, so all this can do during one is clear the
+/// selection, which [`finish`] then overwrites in the same frame; with the
+/// modifier held it does not even do that. A flag saying "this was a box" would
+/// be code no mutation could make a test fail on. What is real is the order, so
+/// that is what is held, by
+/// `a_release_that_ended_a_band_clicks_before_it_ends_the_drag`.
 ///
 /// Every branch here has a mutation, and the test it fails:
 ///
@@ -231,10 +278,14 @@ fn select(
 /// `clicking_an_entity_selects_it` fails, because every press would then look
 /// like a press on empty space. Mutation: read the keyboard in [`select`]
 /// instead of here, and `the_modifier_is_read_when_the_button_goes_down` fails.
+/// Mutation: record `None` for [`Pressed::at`], and
+/// `a_band_over_two_entities_selects_both` fails, because no press could then
+/// anchor a box.
 fn remember(
     press: On<Pointer<Press>>,
-    viewport: Query<&PointerId, With<ViewportNode>>,
+    viewport: Query<(&PointerId, &PointerLocation), With<ViewportNode>>,
     selectable: Query<(), With<Selectable>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
     hover: Res<HoverMap>,
     keys: Res<ButtonInput<KeyCode>>,
     mut pressed: ResMut<Pressed>,
@@ -242,13 +293,103 @@ fn remember(
     if press.event().button != PointerButton::Primary {
         return;
     }
-    let Ok(pointer) = viewport.single() else {
+    let Ok((pointer, location)) = viewport.single() else {
         return;
     };
     *pressed = Pressed {
         over: under(&hover, pointer, &selectable),
         additive: additive(&keys),
+        at: pointer_world(location, &cameras),
+        band: None,
     };
+}
+
+/// Take the press for a box drag, if it began on empty space.
+///
+/// `Pressed::over` being `Some` is the whole of "a drag that begins on an
+/// entity is not a box": that gesture belongs to moving things, and taking it
+/// here would mean taking it back. It also leaves such a drag reaching
+/// [`select`], so pressing an entity, wandering off and coming back still
+/// selects it, which is what `docs/specs/ui.md` §4 asks for.
+///
+/// Mutation: drop the `pressed.over.is_some()` check, and
+/// `a_drag_that_begins_on_an_entity_is_not_a_band` fails. Mutation: drop the
+/// button check, and `a_drag_with_any_other_button_does_not_band` fails.
+fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
+    if start.event().button != PointerButton::Primary {
+        return;
+    }
+    if pressed.over.is_some() {
+        return;
+    }
+    pressed.band = pressed.at;
+}
+
+/// Select what the box covers, when the button is let go.
+///
+/// The rectangle is built with [`Rect::from_corners`], which orders the corners
+/// itself, so a box dragged up and to the left is the same box as one dragged
+/// down and to the right.
+///
+/// **Touched, not covered**, which `docs/specs/ui.md` §4 decided.
+/// `Rect::intersect` collapses a non-overlap to a zero-sized rectangle and
+/// `Rect::is_empty` is `min.x >= max.x || min.y >= max.y`, so two of this
+/// issue's conditions fall out of that pair rather than out of a branch written
+/// for them: a box with no area touches nothing, and an entity sharing an edge
+/// with the box and no area with it is not selected.
+///
+/// Mutation: return before writing the selection, and
+/// `a_band_over_two_entities_selects_both` fails. Mutation: `Rect::contains` in
+/// place of the intersection, and
+/// `a_band_selects_an_entity_it_only_half_covers` fails. Mutation:
+/// `Rect { min: anchor, max: now }` in place of `from_corners`, and
+/// `a_band_dragged_up_and_to_the_left_selects_the_same_things` fails.
+/// Mutation: take every entity rather than the ones the box touches, and
+/// `a_band_that_ends_where_it_started_selects_nothing` fails. Mutation: ignore
+/// [`Pressed::additive`], and
+/// `a_band_with_the_modifier_adds_to_what_was_already_selected` fails.
+/// Mutation: drop the `clear`, and
+/// `a_band_replaces_the_selection_when_the_modifier_is_not_held` fails.
+/// Mutation: read [`Pressed::band`] instead of taking it, and
+/// `the_band_is_gone_once_the_button_is_let_go` fails. Mutation: drop the
+/// `!selection.0.contains(&entity)`, and
+/// `a_modifier_box_over_something_already_selected_leaves_it_in_once` fails.
+///
+/// **The button check is the one line here no test holds.** Reaching it means
+/// letting go of a second button during a box drag, which takes two buttons at
+/// once and which no test drives. Measured: deleting it leaves the whole suite
+/// green. What it costs if it goes is a middle button released mid-drag ending
+/// the box early, at wherever the pointer was.
+fn finish(
+    end: On<Pointer<DragEnd>>,
+    viewport: Query<&PointerLocation, With<ViewportNode>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
+    bounds: Query<(Entity, &GlobalTransform, &Aabb), With<Selectable>>,
+    mut pressed: ResMut<Pressed>,
+    mut selection: ResMut<Selection>,
+) {
+    if end.event().button != PointerButton::Primary {
+        return;
+    }
+    let Some(anchor) = pressed.band.take() else {
+        return;
+    };
+    let Ok(location) = viewport.single() else {
+        return;
+    };
+    let Some(now) = pointer_world(location, &cameras) else {
+        return;
+    };
+    let band = Rect::from_corners(anchor, now);
+
+    if !pressed.additive {
+        selection.0.clear();
+    }
+    for (entity, at, aabb) in &bounds {
+        if !band.intersect(world_bounds(at, aabb)).is_empty() && !selection.0.contains(&entity) {
+            selection.0.push(entity);
+        }
+    }
 }
 
 /// Whether the modifier that adds to and removes from the selection is held.
@@ -292,6 +433,119 @@ fn under(
         .map(|(entity, _)| *entity)
 }
 
+/// The axis-aligned rectangle an entity occupies in the world.
+///
+/// The [`Aabb`] that `bevy_sprite`'s `calculate_bounds_2d` already computes,
+/// put where the entity is, which is `docs/specs/architecture.md` §5 and the
+/// same bounds `outline::outline` draws on. **All four corners are
+/// transformed**, rather than the centre alone with the half extents left as
+/// they are, so a turned or scaled entity is tested against where it actually
+/// is; RK-006 in the knowledge bank is why that needs saying, and
+/// `a_band_selects_a_turned_and_scaled_entity_it_touches` is why deleting it
+/// fails.
+///
+/// The outline draws those bounds turned rather than axis-aligned, so for a
+/// turned sprite the box here is very slightly generous. That is the direction
+/// `docs/specs/ui.md` §4 already leans.
+fn world_bounds(at: &GlobalTransform, aabb: &Aabb) -> Rect {
+    let centre = Vec3::from(aabb.center);
+    let half = Vec3::from(aabb.half_extents);
+    let corners = [
+        Vec3::new(-half.x, -half.y, 0.0),
+        Vec3::new(half.x, -half.y, 0.0),
+        Vec3::new(-half.x, half.y, 0.0),
+        Vec3::new(half.x, half.y, 0.0),
+    ]
+    .map(|corner| at.transform_point(centre + corner).truncate());
+
+    Rect::from_corners(
+        corners.iter().copied().fold(corners[0], Vec2::min),
+        corners.iter().copied().fold(corners[0], Vec2::max),
+    )
+}
+
+/// Where the viewport's pointer is, in world units, clamped to what the
+/// viewport shows.
+///
+/// **The clamp is a decision, not tidying.** `viewport_picking` keeps
+/// forwarding the pointer while the region is being dragged, wherever it goes,
+/// and the position it forwards is extrapolated past the region's edge:
+/// releasing over the right-hand pane reads as world `(540, 184)` in a viewport
+/// showing `740 x 512` centred on the origin, measured. Without this an entity
+/// the user cannot see joins the selection, and what happens to it next is a
+/// delete or a transform. `docs/specs/ui.md` §4 records it.
+///
+/// Both sides are the engine's own logical pixels, `logical_viewport_rect`
+/// against a `PointerLocation` that `viewport_picking` wrote in the same units,
+/// so nothing here multiplies by a scale factor and RK-005 has nothing to bite.
+///
+/// Mutation: drop the clamp, and
+/// `a_band_stops_at_the_edge_of_what_the_viewport_shows` fails.
+fn pointer_world(
+    location: &PointerLocation,
+    cameras: &Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
+) -> Option<Vec2> {
+    let location = location.location.as_ref()?;
+    let (camera, at) = cameras.single().ok()?;
+    let rect = camera.logical_viewport_rect()?;
+    camera
+        .viewport_to_world_2d(at, location.position.clamp(rect.min, rect.max))
+        .ok()
+}
+
+/// The gizmo group the box drag is drawn in.
+///
+/// Its own group rather than `outline::SelectionGizmos`, on the same layer:
+/// the outline's tests read whether that group has a handle at all to mean
+/// "nothing is drawn", and a box sharing it would make that read something
+/// else.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+#[reflect(Default)]
+pub(crate) struct BandGizmos;
+
+/// Draw the box while the drag is happening.
+///
+/// In the outline's colour, for the reason `docs/specs/ui.md` §5 gives.
+///
+/// **It cannot see the world.** A resource, the viewport's pointer and the
+/// camera, and nothing else, so the work it does per frame cannot grow with the
+/// level; the one pass over every `Selectable` is [`finish`], once, at the
+/// release. What that keeps away is row 5 of `CLAUDE.md`'s list, the viewport
+/// no longer answering during a stroke. Nothing holds it but this signature:
+/// a query over the world added here is visible in the parameters and nowhere
+/// else, so it is a thing a reader can see rather than a thing a test can
+/// fail.
+///
+/// `Update` rather than `PostUpdate`: everything it reads is written in
+/// `PreUpdate`, by the observers above and by `viewport_picking`, and unlike
+/// the outline it needs no bounds, so it has nothing to order after.
+///
+/// Mutation: return before drawing, and
+/// `the_band_is_drawn_between_the_corners_it_was_dragged_between` fails.
+fn draw_band(
+    pressed: Res<Pressed>,
+    viewport: Query<&PointerLocation, With<ViewportNode>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
+    mut gizmos: Gizmos<BandGizmos>,
+) {
+    let Some(anchor) = pressed.band else {
+        return;
+    };
+    let Ok(location) = viewport.single() else {
+        return;
+    };
+    let Some(now) = pointer_world(location, &cameras) else {
+        return;
+    };
+
+    let band = Rect::from_corners(anchor, now);
+    gizmos.rect_2d(
+        Isometry2d::from_translation(band.center()),
+        band.size(),
+        OUTLINE,
+    );
+}
+
 /// Drop an entity from the selection when it stops being selectable.
 ///
 /// An `Entity` held past the despawn of what it named is not an error in Rust
@@ -318,13 +572,19 @@ fn forget_what_is_gone(remove: On<Remove, Selectable>, mut selection: ResMut<Sel
 
 #[cfg(test)]
 mod tests {
-    use super::{Selectable, Selection};
+    use super::{BandGizmos, SELECTION_LAYER, Selectable, Selection};
+    use crate::drawn::covered_by;
     use crate::pointer::{click_at, hold_key, in_window, release_key, write_input};
     use crate::viewport::PLACEHOLDERS;
-    use crate::{editor, headless};
+    use crate::{Region, editor, headless};
+    use bevy::camera::visibility::RenderLayers;
+    use bevy::gizmos::config::GizmoConfigStore;
+    use bevy::picking::events::{Click, DragEnd, Pointer};
     use bevy::picking::pointer::{PointerAction, PointerButton};
     use bevy::picking::{Pickable, PickingSystems};
     use bevy::prelude::*;
+    use bevy::sprite::Anchor;
+    use core::f32::consts::FRAC_PI_4;
 
     /// How many frames the editor needs before a test can look at the world.
     ///
@@ -366,16 +626,38 @@ mod tests {
 
     /// Press at one place and let go at another, a frame apart.
     fn press_then_release(app: &mut App, press: Vec2, release: Vec2) {
+        press_and_hold(app, press, release);
+        write_input(app, release, PointerAction::Release(PointerButton::Primary));
+        app.update();
+        app.update();
+    }
+
+    /// Press at one place, move to another, and keep the button down.
+    ///
+    /// The half of a box drag a test can look at while it is happening. Two
+    /// moves and a press rather than one of each, because `bevy_picking` turns
+    /// a press into a drag on the first move after it.
+    fn press_and_hold(app: &mut App, press: Vec2, to: Vec2) {
         for (position, action) in [
             (press, PointerAction::Move { delta: Vec2::ONE }),
             (press, PointerAction::Press(PointerButton::Primary)),
-            (release, PointerAction::Move { delta: Vec2::ONE }),
-            (release, PointerAction::Release(PointerButton::Primary)),
+            (to, PointerAction::Move { delta: Vec2::ONE }),
         ] {
             write_input(app, position, action);
             app.update();
             app.update();
         }
+    }
+
+    /// What is selected, in an order a test can compare.
+    ///
+    /// `Selection` says the entities one gesture added have no order among
+    /// themselves, so a test over a box drag asks what is in it and not what
+    /// order the world iterated in.
+    fn sorted(app: &App) -> Vec<Entity> {
+        let mut entities = selected(app);
+        entities.sort();
+        entities
     }
 
     /// Press, then move and let go in one frame, with no update between them.
@@ -1074,5 +1356,461 @@ mod tests {
             bevy::input::InputSystems.after(PickingSystems::Last),
         );
         app.update();
+    }
+
+    /// A box drag over two entities selects both.
+    ///
+    /// The box from `(-300, -100)` to `(60, 100)` covers the left placeholder
+    /// and the middle one and leaves the right one alone, so it is also the
+    /// claim that a box selects what it covers and not everything.
+    ///
+    /// Two rather than one, which is RK-007 in the knowledge bank: a loop over
+    /// a selection that has only ever held one thing guards none of its
+    /// plurals, and this is the first gesture that adds several at once.
+    ///
+    /// Mutation: return from `finish` before writing the selection, and this
+    /// fails. Mutation: take the first entity the box touches rather than every
+    /// one, and this fails while every other box test passes.
+    #[test]
+    fn a_band_over_two_entities_selects_both() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-300.0, -100.0)),
+            in_window(Vec2::new(60.0, 100.0)),
+        );
+
+        let mut wanted = vec![left, middle];
+        wanted.sort();
+        assert_eq!(sorted(&app), wanted);
+    }
+
+    /// A box drag selects an entity it only half covers.
+    ///
+    /// `docs/specs/ui.md` §4 decided touched rather than covered. The box ends
+    /// at world x `-200`, which is the middle of the left placeholder: it
+    /// overlaps half of it and encloses none of it.
+    ///
+    /// Mutation: ask whether the box contains the entity's bounds rather than
+    /// whether it intersects them, and this fails.
+    #[test]
+    fn a_band_selects_an_entity_it_only_half_covers() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-300.0, -100.0)),
+            in_window(Vec2::new(-200.0, 100.0)),
+        );
+
+        assert_eq!(selected(&app), [left]);
+    }
+
+    /// A box dragged up and to the left selects the same things.
+    ///
+    /// The same rectangle as `a_band_over_two_entities_selects_both`, dragged
+    /// from the other corner. A sign error is invisible to a test that only
+    /// ever drags one way.
+    ///
+    /// Mutation: build the rectangle as `Rect { min: anchor, max: now }` in
+    /// place of `Rect::from_corners`, and this fails while the test that drags
+    /// the other way passes.
+    #[test]
+    fn a_band_dragged_up_and_to_the_left_selects_the_same_things() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(60.0, 100.0)),
+            in_window(Vec2::new(-300.0, -100.0)),
+        );
+
+        let mut wanted = vec![left, middle];
+        wanted.sort();
+        assert_eq!(sorted(&app), wanted);
+    }
+
+    /// A box that ends where it started selects nothing.
+    ///
+    /// It ends the selection empty rather than leaving it alone: a box replaces
+    /// the selection, and a box with no area replaces it with nothing, which is
+    /// what the click on empty space it grew out of already did.
+    ///
+    /// The fear this guards is the opposite, a box with no area matching
+    /// everything, which is what a hit test that stops consulting the rectangle
+    /// produces.
+    ///
+    /// **Whether `finish` short-circuits a box with no area cannot be seen from
+    /// here, and no test holds it.** A box begins on empty space by definition,
+    /// so one that ends where it started ends on empty space too, and the click
+    /// that accompanies it has already cleared the selection by the time
+    /// `finish` runs. Measured: an early return for an empty box leaves every
+    /// test green.
+    ///
+    /// Mutation: take every entity rather than the ones the box touches, and
+    /// this fails.
+    #[test]
+    fn a_band_that_ends_where_it_started_selects_nothing() {
+        let mut app = selection_editor();
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+        assert_eq!(selected(&app).len(), 1, "nothing was selected to lose");
+
+        press_then_release(&mut app, in_window(EMPTY), in_window(EMPTY));
+
+        assert!(selected(&app).is_empty(), "{:?}", selected(&app));
+    }
+
+    /// A box drag with the modifier adds to what was already selected.
+    ///
+    /// `docs/specs/ui.md` §4's rule for the modifier, asked with a rectangle
+    /// instead of a point.
+    ///
+    /// Mutation: ignore `Pressed::additive` in `finish`, and this fails.
+    #[test]
+    fn a_band_with_the_modifier_adds_to_what_was_already_selected() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        hold_key(&mut app, KeyCode::ControlLeft);
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-300.0, -100.0)),
+            in_window(Vec2::new(-150.0, 100.0)),
+        );
+        release_key(&mut app, KeyCode::ControlLeft);
+
+        let mut wanted = vec![left, middle];
+        wanted.sort();
+        assert_eq!(sorted(&app), wanted);
+    }
+
+    /// A box drag replaces the selection when the modifier is not held.
+    ///
+    /// **It ends over an entity**, which is where the `clear` in `finish` is
+    /// the only one. A box that ends on empty space is also a click on empty
+    /// space, and that click clears the selection before `finish` runs, so a
+    /// test written that way passes with the `clear` deleted. Measured.
+    ///
+    /// Mutation: drop the `clear` in `finish`, and this fails, because the
+    /// right placeholder stays selected beside the two the box took.
+    #[test]
+    fn a_band_replaces_the_selection_when_the_modifier_is_not_held() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        click_at(&mut app, in_window(RIGHT), PointerButton::Primary);
+        assert_eq!(selected(&app).len(), 1, "nothing was selected to replace");
+
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-300.0, -100.0)),
+            in_window(MIDDLE),
+        );
+
+        let mut wanted = vec![left, middle];
+        wanted.sort();
+        assert_eq!(sorted(&app), wanted);
+    }
+
+    /// A drag that begins on an entity is not a box.
+    ///
+    /// That gesture belongs to moving what is selected, which is a later chunk
+    /// of this milestone, and taking it here would mean taking it back. The
+    /// press is on the middle placeholder and the drag ends past the left one,
+    /// so a box would have caught it.
+    ///
+    /// Mutation: drop the `pressed.over.is_some()` check in `begin`, and this
+    /// fails.
+    #[test]
+    fn a_drag_that_begins_on_an_entity_is_not_a_band() {
+        let mut app = selection_editor();
+
+        press_then_release(
+            &mut app,
+            in_window(MIDDLE),
+            in_window(Vec2::new(-300.0, -100.0)),
+        );
+
+        assert!(selected(&app).is_empty(), "{:?}", selected(&app));
+    }
+
+    /// A box drag stops at the edge of what the viewport shows.
+    ///
+    /// `viewport_picking` keeps forwarding the pointer while the region is
+    /// being dragged, and extrapolates past the region's edge, so a release
+    /// over the right-hand pane reads as a world position outside what the
+    /// camera draws. The entity this spawns at world x `500` is off screen;
+    /// what the box may take is what the user can see.
+    ///
+    /// Mutation: drop the clamp in `pointer_world`, and this fails, because the
+    /// release reads as world x `540` and reaches it.
+    #[test]
+    fn a_band_stops_at_the_edge_of_what_the_viewport_shows() {
+        let mut app = selection_editor();
+        let off_screen = app
+            .world_mut()
+            .spawn((
+                Sprite::from_color(Color::WHITE, Vec2::splat(64.0)),
+                Transform::from_xyz(500.0, 0.0, 0.0),
+                Selectable,
+            ))
+            .id();
+        app.update();
+
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-300.0, -100.0)),
+            Vec2::new(1150.0, 284.0),
+        );
+
+        let selection = selected(&app);
+        assert!(
+            !selection.contains(&off_screen),
+            "the box reached an entity the viewport does not show"
+        );
+        assert_eq!(
+            selection.len(),
+            PLACEHOLDERS.len(),
+            "the box took {selection:?} rather than everything on screen"
+        );
+    }
+
+    /// A box drag selects a turned and scaled entity it touches.
+    ///
+    /// RK-006 in the knowledge bank: every `Selectable` the editor spawns is an
+    /// axis-aligned square at the centre of its own sprite, so the transform in
+    /// `world_bounds` is otherwise free to delete. This one is turned an eighth
+    /// of a turn, twice the size, and anchored at its top left, which puts its
+    /// bounds at world x `0` to `181` and y `-240` to `-60`, while the naive
+    /// reading, the entity's position plus the `Aabb` as it stands, puts them
+    /// at x `0` to `64` and y `-214` to `-150`. The box covers x `150` to `175`
+    /// and y `-230` to `-210`, which is inside the first and outside the
+    /// second.
+    ///
+    /// That corner of the bounds is not sprite, which is the generosity
+    /// `world_bounds` documents: the box takes what the axis-aligned bounds
+    /// cover, and a turned sprite's bounds cover more than it does. The press
+    /// is outside the sprite itself, which is what makes this a box at all
+    /// rather than a click on it.
+    ///
+    /// Mutation: take the `Aabb`'s centre and half extents without putting them
+    /// through the `GlobalTransform`, and this fails.
+    #[test]
+    fn a_band_selects_a_turned_and_scaled_entity_it_touches() {
+        let mut app = selection_editor();
+        let turned = app
+            .world_mut()
+            .spawn((
+                Sprite::from_color(Color::WHITE, Vec2::splat(64.0)),
+                Anchor::TOP_LEFT,
+                Transform::from_xyz(0.0, -150.0, 0.0)
+                    .with_rotation(Quat::from_rotation_z(FRAC_PI_4))
+                    .with_scale(Vec3::splat(2.0)),
+                Selectable,
+            ))
+            .id();
+        app.update();
+
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(150.0, -230.0)),
+            in_window(Vec2::new(175.0, -210.0)),
+        );
+
+        assert_eq!(selected(&app), [turned]);
+    }
+
+    /// A pan does not draw a box.
+    ///
+    /// The middle button drags the view, and `docs/specs/ui.md` §4 keeps the
+    /// two apart. Something is selected first, because the anchor a box would
+    /// use is recorded at the last press with the left button: without one
+    /// there is nothing for the mutation below to draw.
+    ///
+    /// Mutation: drop the button check in `begin`, and this fails, because the
+    /// pan then draws a rubber band across the viewport.
+    #[test]
+    fn a_pan_does_not_draw_a_box() {
+        let mut app = selection_editor();
+        click_at(&mut app, in_window(EMPTY), PointerButton::Primary);
+
+        for (position, action) in [
+            (in_window(EMPTY), PointerAction::Move { delta: Vec2::ONE }),
+            (
+                in_window(EMPTY),
+                PointerAction::Press(PointerButton::Middle),
+            ),
+            (
+                in_window(Vec2::new(100.0, 100.0)),
+                PointerAction::Move { delta: Vec2::ONE },
+            ),
+        ] {
+            write_input(&mut app, position, action);
+            app.update();
+            app.update();
+        }
+
+        assert_eq!(covered_by::<BandGizmos>(&app), None);
+    }
+
+    /// The release that ends a box drag clicks before it ends the drag.
+    ///
+    /// Nothing suppresses that click, because `finish` overwrites whatever it
+    /// did in the same frame. That argument is only true while `bevy_picking`
+    /// emits the two in this order, so the order is what is held here: if a
+    /// later engine swaps them, this fails by name rather than the box quietly
+    /// leaving the selection it just made empty.
+    ///
+    /// Measured in `bevy_picking` 0.19.1, whose `pointer_events` triggers
+    /// `Click` and `Release` for the previously hovered entities and then the
+    /// drops and `DragEnd`.
+    #[test]
+    fn a_release_that_ended_a_band_clicks_before_it_ends_the_drag() {
+        #[derive(Resource, Default)]
+        struct Order(Vec<&'static str>);
+
+        let mut app = selection_editor();
+        app.init_resource::<Order>();
+        let region = app
+            .world_mut()
+            .query::<(Entity, &Region)>()
+            .iter(app.world())
+            .find(|(_, region)| **region == Region::Viewport)
+            .map(|(entity, _)| entity)
+            .expect("there is a viewport region");
+        app.world_mut()
+            .entity_mut(region)
+            .observe(|_: On<Pointer<Click>>, mut order: ResMut<Order>| {
+                order.0.push("Click");
+            })
+            .observe(|_: On<Pointer<DragEnd>>, mut order: ResMut<Order>| {
+                order.0.push("DragEnd");
+            });
+
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-300.0, -100.0)),
+            in_window(Vec2::new(60.0, 100.0)),
+        );
+
+        assert_eq!(app.world().resource::<Order>().0, ["Click", "DragEnd"]);
+    }
+
+    /// The box is drawn between the corners it was dragged between.
+    ///
+    /// While the button is still down, which is the state the user spends the
+    /// gesture in.
+    ///
+    /// Mutation: return from `draw_band` before drawing, and this fails.
+    /// Mutation: draw from the pointer's position rather than from the anchor,
+    /// and this fails.
+    #[test]
+    fn the_band_is_drawn_between_the_corners_it_was_dragged_between() {
+        let mut app = selection_editor();
+        let from = Vec2::new(-300.0, -100.0);
+        let to = Vec2::new(60.0, 100.0);
+
+        press_and_hold(&mut app, in_window(from), in_window(to));
+
+        assert_eq!(
+            covered_by::<BandGizmos>(&app),
+            Some(Rect::from_corners(from, to))
+        );
+    }
+
+    /// A modifier box over something already selected leaves it in once.
+    ///
+    /// `Selection` says an entity appears at most once, and the box is the
+    /// first writer that can reach one that is already there: a modifier click
+    /// takes such an entity out, and a modifier box adds without toggling, so
+    /// the box has to notice. What a duplicate costs is the inspector showing
+    /// one thing twice and a delete acting on it twice.
+    ///
+    /// Mutation: drop the `!selection.0.contains(&entity)` in `finish`, and
+    /// this fails with three entries where there should be two.
+    #[test]
+    fn a_modifier_box_over_something_already_selected_leaves_it_in_once() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        hold_key(&mut app, KeyCode::ControlLeft);
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-300.0, -100.0)),
+            in_window(Vec2::new(60.0, 100.0)),
+        );
+        release_key(&mut app, KeyCode::ControlLeft);
+
+        let mut wanted = vec![left, middle];
+        wanted.sort();
+        assert_eq!(sorted(&app), wanted);
+    }
+
+    /// The box is drawn on the layer only the viewport's camera has.
+    ///
+    /// Otherwise the rubber band is drawn across the panels as well, which is
+    /// `docs/specs/ui.md` §5 for the outline and for this alike. The other half
+    /// of that claim, that the viewport's camera is the only one carrying the
+    /// layer, is `outline.rs`'s
+    /// `the_outline_is_drawn_only_for_the_viewports_camera`, and this is on the
+    /// same layer rather than on one of its own.
+    ///
+    /// Mutation: drop `render_layers` from `BandGizmos`' config in
+    /// `SelectionPlugin`, and this fails, because the group is then on the
+    /// layer every camera draws.
+    #[test]
+    fn the_box_is_drawn_on_the_layer_only_the_viewports_camera_has() {
+        let app = selection_editor();
+
+        let drawn_on = app
+            .world()
+            .resource::<GizmoConfigStore>()
+            .config::<BandGizmos>()
+            .0
+            .render_layers
+            .clone();
+
+        assert!(
+            drawn_on.intersects(&RenderLayers::layer(SELECTION_LAYER)),
+            "the box is not on the layer the viewport camera adds"
+        );
+    }
+
+    /// The box is gone once the button is let go.
+    ///
+    /// Mutation: read `Pressed::band` in `finish` rather than taking it, and
+    /// this fails, because the box is then drawn for ever.
+    #[test]
+    fn the_band_is_gone_once_the_button_is_let_go() {
+        let mut app = selection_editor();
+        press_and_hold(
+            &mut app,
+            in_window(Vec2::new(-300.0, -100.0)),
+            in_window(Vec2::new(60.0, 100.0)),
+        );
+        assert!(
+            covered_by::<BandGizmos>(&app).is_some(),
+            "nothing was drawn to take away"
+        );
+
+        write_input(
+            &mut app,
+            in_window(Vec2::new(60.0, 100.0)),
+            PointerAction::Release(PointerButton::Primary),
+        );
+        app.update();
+        app.update();
+
+        assert_eq!(covered_by::<BandGizmos>(&app), None);
     }
 }

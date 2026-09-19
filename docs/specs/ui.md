@@ -189,6 +189,9 @@ than new.
 | Left button, released over empty space | Clears the selection |
 | Ctrl or Cmd with the left button, over an entity | Adds it to the selection, or takes it out if it was already in it |
 | Ctrl or Cmd with the left button, over empty space | Nothing; the selection stays as it was |
+| Left button, dragged from empty space | Draws a box; what it touches becomes the selection |
+| Ctrl or Cmd with the left button, dragged from empty space | Adds what the box touches to what is already selected |
+| Left button, dragged from an entity | Nothing yet, and kept for moving what is selected |
 | Right button | Nothing yet, and kept for a context menu |
 
 Zoom is clamped, from 1/32 to 32 world units per pixel.
@@ -215,9 +218,31 @@ on one of several selected entities collapses the selection to that one.** Unity
 does the same. The gesture that will want to keep the group is dragging it,
 which belongs to the parent that moves what is selected.
 
+**A box takes what it touches, not what it encloses.** An entity the box
+overlaps by any area is selected, whether or not it fits inside. Unity's Scene
+view, Blender and Godot all read it that way and Unity's own Hierarchy reads it
+the other, so this is a decision rather than a fact to look up. What it buys is
+that something larger than the viewport can be selected at all, which is the
+background sprite in every level.
+
+**The box stops at the edge of what the viewport shows.** A drag that carries on
+over the panels keeps growing until the box reaches the edge of the visible
+world, and no further. Bevy keeps forwarding the pointer while the viewport is
+being dragged and extrapolates past the region's edge, so without this an entity
+that is off screen joins the selection, and the delete or the transform that
+comes next takes it with no outline anywhere to say so.
+
+**The release that ends a box drag also arrives as a click, and nothing
+suppresses it.** Bevy emits the click before the end of the drag, and the box
+writes the selection after it, so the only thing the click can do during a box,
+which is clear the selection, is overwritten in the same frame. That is a
+property of the order rather than of the editor, so the order is what is held,
+by `a_release_that_ended_a_band_clicks_before_it_ends_the_drag`.
+
 The left button is still what every tool that paints will want. What is decided
 here is what it does when no tool has been chosen, which is the state the editor
-is in and will stay in until phase 2.
+is in and will stay in until phase 2. A box drag over empty space is the part of
+that a painting tool will have to take back, and it is the only part.
 
 ### Rationale
 
@@ -282,8 +307,19 @@ tests run on. Taking both costs one line and is held by a named test.
 **Selecting on the press**, which is Unity's and which composes more easily with
 a rubber band: a press on empty space clears, and the drag that follows builds a
 new selection, with no question about what the release meant. It was turned down
-for the misclick above. What it costs is written where it lands, on the issue
-for the rubber band.
+for the misclick above, and the rubber band turned out to need nothing from it.
+
+**A box that selects only what it encloses**, which is Unity's Hierarchy and
+Tiled's. It never takes something the user did not surround, and it makes
+anything bigger than the viewport unselectable by box.
+
+**A box that reaches past the edge of the viewport**, which is what the pointer
+reports if nothing stops it. Two lines shorter, and it selects what the user
+cannot see.
+
+**A flag that suppresses the click a box drag ends with.** Easier to read than
+an argument about ordering, and impossible to hold: deleting it leaves every
+test green, because the box's own write always follows that click.
 
 ### Accepted risk
 
@@ -313,6 +349,10 @@ drawn to does not.
 
 The corners stay empty. They are where a transform gizmo puts its handles, and
 a mark that looks grabbable and is not is worse than no mark.
+
+**While a box drag is happening, the viewport draws the box**: an outline in the
+same colour, on the same render layer, in a gizmo group of its own, with nothing
+filled in. It is gone the moment the button is let go.
 
 ### Rationale
 
@@ -361,6 +401,17 @@ document. That is the trap the selection chunk was written to avoid.
 **A retained `Gizmo` entity per selected entity.** A second set of entities to
 spawn, despawn and reconcile against a selection that changes on every click,
 for a picture that has to be recomputed anyway when the entity moves.
+
+**A translucent fill inside the box drag**, which is Unity's. A second draw and
+a blend mode for a rectangle that exists for the length of a gesture.
+
+**A colour of its own for the box drag.** One more constant for something that
+is only ever on screen while the button is held, beside the only other thing
+drawn there.
+
+**The box drag in the outline's gizmo group.** One group rather than two, and it
+takes away how the outline's tests tell "nothing is drawn" from "something is":
+they read whether that group has a handle at all.
 
 ### Accepted risk
 
