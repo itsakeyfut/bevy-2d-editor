@@ -22,9 +22,19 @@ use crate::Region;
 /// answer; a list because adding to the selection is then an addition to this
 /// module rather than a rewrite of everything that reads it.
 ///
+/// What the order means, now that there is more than one way in:
+///
+/// * something added goes on the end, so the last element is the most recently
+///   chosen. That is the one Unity calls active.
+/// * removing one leaves the rest in the order they were chosen in.
+/// * an entity appears at most once, because the only thing that appends first
+///   asks whether it is already here.
+///
 /// **The field is private and there is no setter.** That is what makes "one
 /// place decides what is selected" a thing the compiler holds rather than a
-/// rule somebody has to remember: nothing outside this module can write it.
+/// rule somebody has to remember: nothing outside this module can write it,
+/// and the three claims above are held by one function rather than by every
+/// caller.
 #[derive(Resource, Default)]
 pub struct Selection(Vec<Entity>);
 
@@ -35,7 +45,7 @@ impl Selection {
     }
 }
 
-/// What the viewport's pointer was over when the button went down.
+/// What the gesture in progress means, fixed when the button went down.
 ///
 /// `Pointer<Click>` guarantees that the press and the release shared a target,
 /// and the target here is the viewport's UI node rather than anything in the
@@ -45,11 +55,21 @@ impl Selection {
 /// pressing one and letting go over empty space cleared the selection that was
 /// already there. Both measured.
 ///
-/// `None` means the press was over empty space, which is a real answer rather
-/// than a missing one: pressing and releasing over nothing is what clears the
-/// selection.
+/// The modifier is here rather than read at the release for the same reason
+/// the entity is: `docs/specs/ui.md` §4 fixes what a gesture means when it
+/// begins and commits it when it ends. Reading the keyboard at the release
+/// instead would turn letting the key go a moment early into a selection of
+/// six replaced by one.
 #[derive(Resource, Default)]
-struct PressedOver(Option<Entity>);
+struct Pressed {
+    /// What the viewport's pointer was over.
+    ///
+    /// `None` means empty space, which is a real answer rather than a missing
+    /// one: pressing and releasing over nothing is what clears the selection.
+    over: Option<Entity>,
+    /// Whether the modifier that adds and removes was held.
+    additive: bool,
+}
 
 /// An entity the user can select by clicking it.
 ///
@@ -75,7 +95,7 @@ pub struct SelectionPlugin;
 impl Plugin for SelectionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Selection>()
-            .init_resource::<PressedOver>()
+            .init_resource::<Pressed>()
             .add_observer(attach)
             .add_observer(forget_what_is_gone);
     }
@@ -111,18 +131,31 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
 /// so an observer on the entity racing an observer on the region would be
 /// correct or wrong by hash order. Measured.
 ///
+/// **With the modifier held it adds and removes instead of replacing**, which
+/// is the other half of `docs/specs/ui.md` §4's table. A click that lands on
+/// nothing then leaves the selection alone: adding nothing to a selection is
+/// not the same gesture as abandoning it, and the user who misses with the
+/// seventh click keeps the six.
+///
 /// Mutation: return before writing the selection, and `clicking_an_entity_selects_it`
 /// fails. Mutation: clear on a hit and select on a miss, and
 /// `clicking_empty_space_clears_the_selection` fails. Mutation: take the
 /// furthest rather than the nearest, and `the_nearer_of_two_under_the_pointer_is_the_one_selected`
-/// fails. Mutation: drop the comparison with [`PressedOver`], and
-/// `letting_go_somewhere_else_takes_the_press_back` fails.
+/// fails. Mutation: drop the comparison with [`Pressed::over`], and
+/// `letting_go_somewhere_else_takes_the_press_back` fails. Mutation: ignore
+/// [`Pressed::additive`], and `a_modifier_click_adds_to_the_selection` fails.
+/// Mutation: push what is already selected rather than removing it, and
+/// `a_modifier_click_on_a_selected_entity_removes_it_and_keeps_the_rest`
+/// fails. Mutation: clear on a miss whatever the modifier says, and
+/// `a_modifier_click_on_empty_space_keeps_the_selection` fails. Mutation:
+/// `swap_remove` in place of `remove`, and
+/// `the_selection_keeps_the_order_things_were_chosen_in` fails.
 fn select(
     click: On<Pointer<Click>>,
     viewport: Query<&PointerId, With<ViewportNode>>,
     selectable: Query<(), With<Selectable>>,
     hover: Res<HoverMap>,
-    pressed: Res<PressedOver>,
+    pressed: Res<Pressed>,
     mut selection: ResMut<Selection>,
 ) {
     if click.event().button != PointerButton::Primary {
@@ -143,24 +176,46 @@ fn select(
     // go, and this is the whole of it: the engine's own same-target guarantee
     // is about the viewport's node, which never changes during a drag across
     // it.
-    if hit != pressed.0 {
+    if hit != pressed.over {
         return;
     }
 
-    selection.0.clear();
-    selection.0.extend(hit);
+    let Some(entity) = hit else {
+        if !pressed.additive {
+            selection.0.clear();
+        }
+        return;
+    };
+
+    if !pressed.additive {
+        selection.0.clear();
+        selection.0.push(entity);
+        return;
+    }
+
+    // `remove` rather than `swap_remove`: the order is a claim `Selection`
+    // makes, and the cheaper call is the plausible tidying that breaks it.
+    match selection.0.iter().position(|selected| *selected == entity) {
+        Some(index) => {
+            selection.0.remove(index);
+        }
+        None => selection.0.push(entity),
+    }
 }
 
-/// Remember what the press was over, so that the release can be compared to it.
+/// Remember what the gesture means, so that the release can act on it.
 ///
-/// Mutation: record `None` regardless, and `clicking_an_entity_selects_it`
-/// fails, because every press would then look like a press on empty space.
+/// Mutation: record `None` for the entity regardless, and
+/// `clicking_an_entity_selects_it` fails, because every press would then look
+/// like a press on empty space. Mutation: read the keyboard in [`select`]
+/// instead of here, and `the_modifier_is_read_when_the_button_goes_down` fails.
 fn remember(
     press: On<Pointer<Press>>,
     viewport: Query<&PointerId, With<ViewportNode>>,
     selectable: Query<(), With<Selectable>>,
     hover: Res<HoverMap>,
-    mut pressed: ResMut<PressedOver>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut pressed: ResMut<Pressed>,
 ) {
     if press.event().button != PointerButton::Primary {
         return;
@@ -168,7 +223,30 @@ fn remember(
     let Ok(pointer) = viewport.single() else {
         return;
     };
-    pressed.0 = under(&hover, pointer, &selectable);
+    *pressed = Pressed {
+        over: under(&hover, pointer, &selectable),
+        additive: additive(&keys),
+    };
+}
+
+/// Whether the modifier that adds to and removes from the selection is held.
+///
+/// Control and Super are both taken, on every platform, rather than one chosen
+/// by `cfg`. Unity binds this to Ctrl on Windows and to Command on macOS, and
+/// macOS turns Ctrl and the left button into a secondary click before the
+/// editor sees it, so a Mac user reaches for Command in any case. A `cfg`
+/// branch would be a path that cannot run on the machine the tests run on.
+/// `docs/specs/ui.md` §4 carries the decision and what it was weighed against.
+///
+/// Mutation: drop either `Super` key, and `either_control_or_super_is_the_modifier`
+/// fails, which is what stands in for the macOS binding here.
+fn additive(keys: &ButtonInput<KeyCode>) -> bool {
+    keys.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ])
 }
 
 /// The nearest selectable entity the viewport's pointer is over.
@@ -217,7 +295,7 @@ fn forget_what_is_gone(remove: On<Remove, Selectable>, mut selection: ResMut<Sel
 #[cfg(test)]
 mod tests {
     use super::{Selectable, Selection};
-    use crate::pointer::{click_at, in_window, write_input};
+    use crate::pointer::{click_at, hold, in_window, let_go, write_input};
     use crate::viewport::PLACEHOLDERS;
     use crate::{editor, headless};
     use bevy::picking::Pickable;
@@ -410,7 +488,7 @@ mod tests {
     /// selected the middle placeholder and the second cleared a selection that
     /// was already there, both measured.
     ///
-    /// Mutation: drop the comparison with `PressedOver` in `select`, and this
+    /// Mutation: drop the comparison with `Pressed::over` in `select`, and this
     /// fails.
     #[test]
     fn letting_go_somewhere_else_takes_the_press_back() {
@@ -470,7 +548,7 @@ mod tests {
     /// batch is what a long frame produces, and a long frame is what a large
     /// level produces.
     ///
-    /// Mutation: drop the comparison with `PressedOver` in `select`, and this
+    /// Mutation: drop the comparison with `Pressed::over` in `select`, and this
     /// fails.
     #[test]
     fn a_gesture_that_leaves_the_viewport_in_one_frame_keeps_the_selection() {
@@ -646,5 +724,206 @@ mod tests {
             chosen,
             "a click on a pane changed the selection"
         );
+    }
+
+    /// Where each placeholder sits in the window.
+    ///
+    /// The three of them are a row on the world's x axis, and a test that adds
+    /// to a selection needs to name a second and a third one rather than the
+    /// middle alone.
+    const LEFT: Vec2 = Vec2::new(-200.0, 0.0);
+    const MIDDLE: Vec2 = Vec2::ZERO;
+    const RIGHT: Vec2 = Vec2::new(200.0, 0.0);
+
+    /// Somewhere inside the viewport with no placeholder under it.
+    const EMPTY: Vec2 = Vec2::new(0.0, -180.0);
+
+    /// Click with the modifier held for the whole gesture.
+    fn modifier_click_at(app: &mut App, position: Vec2) {
+        hold(app, KeyCode::ControlLeft);
+        click_at(app, position, PointerButton::Primary);
+        let_go(app, KeyCode::ControlLeft);
+    }
+
+    /// A modifier click adds to the selection.
+    ///
+    /// The first acceptance criterion of the issue this came from: what was
+    /// already chosen is still chosen afterwards.
+    ///
+    /// Mutation: ignore `Pressed::additive` in `select`, so that every click
+    /// clears first, and this fails.
+    #[test]
+    fn a_modifier_click_adds_to_the_selection() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+        modifier_click_at(&mut app, in_window(MIDDLE));
+
+        assert_eq!(selected(&app), [left, middle]);
+    }
+
+    /// A modifier click on something already selected removes it, and keeps the
+    /// rest.
+    ///
+    /// Mutation: push in `select` without asking whether the entity is already
+    /// in the selection, and this fails with the middle one in twice.
+    #[test]
+    fn a_modifier_click_on_a_selected_entity_removes_it_and_keeps_the_rest() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+        modifier_click_at(&mut app, in_window(MIDDLE));
+        assert_eq!(selected(&app).len(), 2, "there was nothing to take away");
+
+        modifier_click_at(&mut app, in_window(MIDDLE));
+
+        assert_eq!(selected(&app), [left]);
+    }
+
+    /// A modifier click on empty space keeps the selection.
+    ///
+    /// The one that costs a user their work: they have picked out several
+    /// things, they miss with the next click, and without this everything they
+    /// chose is gone. Adding nothing to a selection is not abandoning it.
+    ///
+    /// Mutation: clear on a miss whatever `Pressed::additive` says, and this
+    /// fails.
+    #[test]
+    fn a_modifier_click_on_empty_space_keeps_the_selection() {
+        let mut app = selection_editor();
+
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+        modifier_click_at(&mut app, in_window(MIDDLE));
+        let chosen = selected(&app);
+        assert_eq!(chosen.len(), 2, "nothing was selected to protect");
+
+        modifier_click_at(&mut app, in_window(EMPTY));
+
+        assert_eq!(
+            selected(&app),
+            chosen,
+            "a missed click took the rest with it"
+        );
+    }
+
+    /// A plain click collapses a selection of several to the one clicked.
+    ///
+    /// The third acceptance criterion from the other side: a click with no
+    /// modifier still replaces, now that there is something wider than one
+    /// entity for it to replace. Unity does the same, and the gesture that will
+    /// want to keep the group is dragging it, which is a later issue.
+    ///
+    /// Mutation: treat every click as additive, and this fails with all three
+    /// selected.
+    #[test]
+    fn a_plain_click_collapses_a_selection_of_several_to_one() {
+        let mut app = selection_editor();
+        let right = placeholder(&mut app, 2);
+
+        modifier_click_at(&mut app, in_window(LEFT));
+        modifier_click_at(&mut app, in_window(MIDDLE));
+        assert_eq!(selected(&app).len(), 2, "there was nothing to collapse");
+
+        click_at(&mut app, in_window(RIGHT), PointerButton::Primary);
+
+        assert_eq!(selected(&app), [right]);
+    }
+
+    /// The selection keeps the order things were chosen in.
+    ///
+    /// `Selection` says the last element is the most recently chosen, because
+    /// the inspector will want it. Nothing reads that yet, so the claim is held
+    /// here or nowhere. The order asserted is neither the order the
+    /// placeholders are spawned in nor their order across the screen, so a
+    /// selection that happens to be sorted does not pass by accident.
+    ///
+    /// Mutation: `swap_remove` in place of `remove` in `select`, and this fails
+    /// with the last two the wrong way round. Mutation: `insert(0, entity)`
+    /// rather than `push`, and the first assertion fails.
+    #[test]
+    fn the_selection_keeps_the_order_things_were_chosen_in() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        let right = placeholder(&mut app, 2);
+
+        modifier_click_at(&mut app, in_window(RIGHT));
+        modifier_click_at(&mut app, in_window(LEFT));
+        modifier_click_at(&mut app, in_window(MIDDLE));
+        assert_eq!(selected(&app), [right, left, middle]);
+
+        // The first one chosen, so that taking it out of the front is what is
+        // being watched.
+        modifier_click_at(&mut app, in_window(RIGHT));
+
+        assert_eq!(selected(&app), [left, middle]);
+    }
+
+    /// Either Control or Super is the modifier.
+    ///
+    /// Four keys rather than one, and each asserted by name: `docs/specs/ui.md`
+    /// §4 takes both rather than choosing by `cfg`, because macOS binds this to
+    /// Command and turns Control and the left button into a secondary click
+    /// before the editor sees it. This is what stands in for that platform on a
+    /// machine that is not it.
+    ///
+    /// Mutation: drop either `Super` key from `additive`, and this fails naming
+    /// the key that went.
+    #[test]
+    fn either_control_or_super_is_the_modifier() {
+        for key in [
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+        ] {
+            let mut app = selection_editor();
+            let left = placeholder(&mut app, 0);
+            let middle = placeholder(&mut app, 1);
+
+            click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+            hold(&mut app, key);
+            click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+            let_go(&mut app, key);
+
+            assert_eq!(selected(&app), [left, middle], "{key:?} did not add");
+        }
+    }
+
+    /// The modifier is read when the button goes down.
+    ///
+    /// `docs/specs/ui.md` §4 fixes what a gesture means when it begins, and the
+    /// keyboard is part of what it means. Letting the key go before the button
+    /// is the case that decides it, and reading the keyboard at the release
+    /// would turn this user's add into a replace and lose what they had.
+    ///
+    /// Mutation: read `ButtonInput<KeyCode>` in `select` rather than storing it
+    /// in `Pressed`, and this fails with only the middle one selected.
+    #[test]
+    fn the_modifier_is_read_when_the_button_goes_down() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+
+        let at = in_window(MIDDLE);
+        hold(&mut app, KeyCode::ControlLeft);
+        for action in [
+            PointerAction::Move { delta: Vec2::ONE },
+            PointerAction::Press(PointerButton::Primary),
+        ] {
+            write_input(&mut app, at, action);
+            app.update();
+            app.update();
+        }
+        let_go(&mut app, KeyCode::ControlLeft);
+        write_input(&mut app, at, PointerAction::Release(PointerButton::Primary));
+        app.update();
+        app.update();
+
+        assert_eq!(selected(&app), [left, middle]);
     }
 }

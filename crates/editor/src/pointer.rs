@@ -12,6 +12,8 @@
 //! being claimed.
 
 use bevy::camera::NormalizedRenderTarget;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
 use bevy::picking::pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput};
 use bevy::prelude::*;
 use bevy::window::{PrimaryWindow, WindowRef};
@@ -41,13 +43,53 @@ pub(crate) fn click_at(app: &mut App, position: Vec2, button: PointerButton) {
     }
 }
 
-/// Write one pointer input for the window's own pointer.
-pub(crate) fn write_input(app: &mut App, position: Vec2, action: PointerAction) {
-    let window = app
-        .world_mut()
+/// The window both kinds of input are addressed to.
+fn primary_window(app: &mut App) -> Entity {
+    app.world_mut()
         .query_filtered::<Entity, With<PrimaryWindow>>()
         .single(app.world())
-        .expect("there is a primary window");
+        .expect("there is a primary window")
+}
+
+/// Hold a key down, and leave it down.
+///
+/// Written as a [`KeyboardInput`] rather than by pressing `ButtonInput`
+/// directly, for the reason the module says about the pointer: the chain under
+/// test starts one layer earlier, and `keyboard_input_system` is part of it.
+///
+/// It stays down across the frames a gesture takes. Measured: that system
+/// clears only what was just pressed and just released, so one message holds
+/// for the six updates [`click_at`] runs.
+pub(crate) fn hold(app: &mut App, key: KeyCode) {
+    write_key(app, key, ButtonState::Pressed);
+}
+
+/// Let a key back up.
+pub(crate) fn let_go(app: &mut App, key: KeyCode) {
+    write_key(app, key, ButtonState::Released);
+}
+
+/// Write one keyboard input for the primary window.
+///
+/// `logical_key` is the physical key's own name rather than what a layout would
+/// produce, because nothing here reads `ButtonInput<Key>`; saying so is cheaper
+/// than a table of layouts nothing consults.
+fn write_key(app: &mut App, key: KeyCode, state: ButtonState) {
+    let window = primary_window(app);
+    app.world_mut().write_message(KeyboardInput {
+        key_code: key,
+        logical_key: Key::Unidentified(NativeKey::Unidentified),
+        state,
+        text: None,
+        repeat: false,
+        window,
+    });
+    app.update();
+}
+
+/// Write one pointer input for the window's own pointer.
+pub(crate) fn write_input(app: &mut App, position: Vec2, action: PointerAction) {
+    let window = primary_window(app);
     let location = Location {
         position,
         target: NormalizedRenderTarget::Window(
