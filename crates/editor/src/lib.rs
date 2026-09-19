@@ -19,6 +19,8 @@ use bevy::prelude::*;
 use bevy::scene::bsn;
 use bevy::ui::{UiRect, percent, px};
 
+#[cfg(test)]
+mod drawn;
 mod outline;
 #[cfg(test)]
 mod pointer;
