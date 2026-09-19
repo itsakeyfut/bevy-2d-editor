@@ -71,9 +71,13 @@ pub(crate) fn let_go(app: &mut App, key: KeyCode) {
 
 /// Write one keyboard input for the primary window.
 ///
-/// `logical_key` is the physical key's own name rather than what a layout would
+/// `logical_key` is left unidentified rather than given what a layout would
 /// produce, because nothing here reads `ButtonInput<Key>`; saying so is cheaper
 /// than a table of layouts nothing consults.
+///
+/// It runs no frame of its own, which is [`write_input`]'s contract too: the
+/// message is taken up by the next update, and every caller runs one. An
+/// `app.update()` was here and nothing in the workspace failed without it.
 fn write_key(app: &mut App, key: KeyCode, state: ButtonState) {
     let window = primary_window(app);
     app.world_mut().write_message(KeyboardInput {
@@ -84,7 +88,6 @@ fn write_key(app: &mut App, key: KeyCode, state: ButtonState) {
         repeat: false,
         window,
     });
-    app.update();
 }
 
 /// Write one pointer input for the window's own pointer.
