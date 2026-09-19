@@ -110,7 +110,7 @@ struct Pressed {
 /// without one is a thing that cannot be selected, which would read as a defect
 /// in this file rather than as a missing component over there.
 ///
-/// It also names the set a later rubber band has to hit-test against, and
+/// It also names the set the box drag below hit-tests against, and
 /// leaves room for the thing that is pickable and not selectable, which is a
 /// gizmo handle.
 #[derive(Component, Default)]
@@ -510,9 +510,11 @@ pub(crate) struct BandGizmos;
 /// **It cannot see the world.** A resource, the viewport's pointer and the
 /// camera, and nothing else, so the work it does per frame cannot grow with the
 /// level; the one pass over every `Selectable` is [`finish`], once, at the
-/// release. That is what keeps a box drag from being the gesture that stops the
-/// viewport answering, and it is row 1 of `CLAUDE.md`'s list rather than row 2:
-/// a query added here would be visible in the signature.
+/// release. What that keeps away is row 5 of `CLAUDE.md`'s list, the viewport
+/// no longer answering during a stroke. Nothing holds it but this signature:
+/// a query over the world added here is visible in the parameters and nowhere
+/// else, so it is a thing a reader can see rather than a thing a test can
+/// fail.
 ///
 /// `Update` rather than `PostUpdate`: everything it reads is written in
 /// `PreUpdate`, by the observers above and by `viewport_picking`, and unlike
