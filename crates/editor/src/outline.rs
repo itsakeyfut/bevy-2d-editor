@@ -117,7 +117,7 @@ fn outline(
 #[cfg(test)]
 mod tests {
     use super::{SELECTION_LAYER, SelectionGizmos};
-    use crate::pointer::{click_at, in_window};
+    use crate::pointer::{click_at, hold_key, in_window, release_key};
     use crate::viewport::ViewportCamera;
     use crate::{Selectable, editor, headless};
     use bevy::camera::visibility::RenderLayers;
@@ -139,49 +139,77 @@ mod tests {
         app
     }
 
-    /// What the outline covers, or `None` when nothing was drawn.
-    ///
-    /// `update_gizmo_meshes` puts the group's handle back to `None` in a frame
-    /// where nothing reached its storage, so "nothing is drawn" is a state that
-    /// can be read rather than an absence that has to be inferred.
+    /// Every rectangle the outline drew, one per strip.
     ///
     /// `rect_2d` emits a line loop, which arrives as a repeated vertex and a
-    /// `NaN` separator, so the extent of the finite positions is what is
-    /// compared rather than the list as it comes.
-    fn outlined(app: &App) -> Option<Rect> {
-        let handle = app
+    /// `NaN` separator, so a strip is a run of finite positions and the count
+    /// of runs is the count of rectangles. Reading the runs apart rather than
+    /// together is what lets a test tell two outlines from one: their extents
+    /// taken together are a single rectangle covering both, which is what a
+    /// selection of two would look like if only one were drawn around
+    /// everything.
+    fn outlined_each(app: &App) -> Vec<Rect> {
+        let Some(handle) = app
             .world()
             .resource::<GizmoHandles>()
             .handles()
             .get(&TypeId::of::<SelectionGizmos>())
             .cloned()
-            .flatten()?;
-        let drawn = app
+            .flatten()
+        else {
+            return Vec::new();
+        };
+        let mut rectangles = Vec::new();
+        let mut strip: Vec<Vec2> = Vec::new();
+        let mut close = |strip: &mut Vec<Vec2>| {
+            if let (Some(min), Some(max)) = (
+                strip.iter().copied().reduce(Vec2::min),
+                strip.iter().copied().reduce(Vec2::max),
+            ) {
+                rectangles.push(Rect::from_corners(min, max));
+            }
+            strip.clear();
+        };
+        for position in &app
             .world()
             .resource::<Assets<GizmoAsset>>()
             .get(&handle)
             .expect("the group's handle names an asset")
             .strip_positions
-            .iter()
-            .filter(|position| position.is_finite())
-            .map(|position| position.truncate())
-            .collect::<Vec<Vec2>>();
+        {
+            if position.is_finite() {
+                strip.push(position.truncate());
+            } else {
+                close(&mut strip);
+            }
+        }
+        close(&mut strip);
+        rectangles
+    }
+
+    /// What the outline covers, or `None` when nothing was drawn.
+    ///
+    /// `update_gizmo_meshes` puts the group's handle back to `None` in a frame
+    /// where nothing reached its storage, so "nothing is drawn" is a state that
+    /// can be read rather than an absence that has to be inferred.
+    fn outlined(app: &App) -> Option<Rect> {
+        app.world()
+            .resource::<GizmoHandles>()
+            .handles()
+            .get(&TypeId::of::<SelectionGizmos>())
+            .cloned()
+            .flatten()?;
+        let drawn = outlined_each(app);
         assert!(
             !drawn.is_empty(),
             "a handle exists with nothing drawn in it"
         );
-        Some(Rect::from_corners(
+        Some(
             drawn
-                .iter()
-                .copied()
-                .reduce(Vec2::min)
+                .into_iter()
+                .reduce(|covered, rectangle| covered.union(rectangle))
                 .expect("something was drawn"),
-            drawn
-                .iter()
-                .copied()
-                .reduce(Vec2::max)
-                .expect("something was drawn"),
-        ))
+        )
     }
 
     /// Where an entity is, worked out from its sprite rather than from its
@@ -227,6 +255,24 @@ mod tests {
         let selection = app.world().resource::<crate::Selection>().entities();
         assert_eq!(selection.len(), 1, "the click selected nothing");
         selection[0]
+    }
+
+    /// Select the middle placeholder and the left one, and say which they are.
+    ///
+    /// The modifier is Control, which `docs/specs/ui.md` §4 binds to adding to
+    /// the selection.
+    fn select_the_middle_and_the_left(app: &mut App) -> [Entity; 2] {
+        click_at(app, in_window(Vec2::ZERO), PointerButton::Primary);
+        hold_key(app, KeyCode::ControlLeft);
+        click_at(
+            app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+        release_key(app, KeyCode::ControlLeft);
+        let selection = app.world().resource::<crate::Selection>().entities();
+        assert_eq!(selection.len(), 2, "two clicks did not select two things");
+        [selection[0], selection[1]]
     }
 
     /// Selecting an entity outlines it.
@@ -533,6 +579,43 @@ mod tests {
                 layers.intersects(&drawn_on),
                 is_viewport,
                 "the wrong camera draws the outline"
+            );
+        }
+    }
+
+    /// Everything selected is outlined, not only the first of it.
+    ///
+    /// `outline` loops over the selection, and until a selection could hold
+    /// more than one entity that loop and a single lookup were the same
+    /// program. Somebody who picks out two things and sees one of them
+    /// outlined is looking at an editor that is lying about what it will act
+    /// on, which is row 4 of `CLAUDE.md`'s list.
+    ///
+    /// The two rectangles are compared as a set, because which strip comes
+    /// first is the selection's order and this test is not about that.
+    ///
+    /// Mutation: `.iter().take(1)` on the selection in `outline`, and this
+    /// fails with one rectangle where there should be two. Every other test in
+    /// this module passes under it, measured.
+    #[test]
+    fn everything_selected_is_outlined() {
+        let mut app = outline_editor();
+        let left = select_the_middle_and_the_left(&mut app);
+
+        let drawn = outlined_each(&app);
+
+        assert_eq!(drawn.len(), 2, "{drawn:?} is not two rectangles");
+        for entity in left {
+            let wanted = rect_of(&app, entity);
+            assert!(
+                drawn.iter().any(|rectangle| {
+                    (rectangle.min - wanted.min)
+                        .abs()
+                        .max((rectangle.max - wanted.max).abs())
+                        .max_element()
+                        < 1e-3
+                }),
+                "nothing was drawn on {wanted:?}, only {drawn:?}"
             );
         }
     }

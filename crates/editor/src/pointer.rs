@@ -1,9 +1,14 @@
-//! Driving the window's pointer from a test.
+//! Driving the window's pointer and keyboard from a test.
 //!
 //! One copy rather than one per test module. Two modules ask the same thing of
 //! the editor, that a click at a place in the window reaches what is in the
 //! world, and a helper that drifted between them would be two different claims
 //! wearing one name.
+//!
+//! The keyboard half is named `hold_key` and `release_key` rather than `hold`
+//! and `let_go`, because holding and letting go are what the mouse button does
+//! too: a rubber band drags with the button held, and that helper wants the
+//! shorter name.
 //!
 //! The inputs are written as [`PointerInput`] for the window's own pointer,
 //! which is one layer earlier than triggering a `Pointer` event: the chain
@@ -43,7 +48,10 @@ pub(crate) fn click_at(app: &mut App, position: Vec2, button: PointerButton) {
     }
 }
 
-/// The window both kinds of input are addressed to.
+/// The window an input is addressed to.
+///
+/// The pointer's [`Location`] needs it. The keyboard's message carries it and
+/// nothing reads it, which [`write_key`] says more about.
 fn primary_window(app: &mut App) -> Entity {
     app.world_mut()
         .query_filtered::<Entity, With<PrimaryWindow>>()
@@ -60,12 +68,12 @@ fn primary_window(app: &mut App) -> Entity {
 /// It stays down across the frames a gesture takes. Measured: that system
 /// clears only what was just pressed and just released, so one message holds
 /// for the six updates [`click_at`] runs.
-pub(crate) fn hold(app: &mut App, key: KeyCode) {
+pub(crate) fn hold_key(app: &mut App, key: KeyCode) {
     write_key(app, key, ButtonState::Pressed);
 }
 
 /// Let a key back up.
-pub(crate) fn let_go(app: &mut App, key: KeyCode) {
+pub(crate) fn release_key(app: &mut App, key: KeyCode) {
     write_key(app, key, ButtonState::Released);
 }
 
@@ -73,11 +81,16 @@ pub(crate) fn let_go(app: &mut App, key: KeyCode) {
 ///
 /// `logical_key` is left unidentified rather than given what a layout would
 /// produce, because nothing here reads `ButtonInput<Key>`; saying so is cheaper
-/// than a table of layouts nothing consults.
+/// than a table of layouts nothing consults. `window` is required by the
+/// message and read by nobody on this path: `keyboard_input_system` takes
+/// `key_code`, `logical_key` and `state` and ignores the rest, so a key cannot
+/// be aimed at one window rather than another.
 ///
-/// It runs no frame of its own, which is [`write_input`]'s contract too: the
-/// message is taken up by the next update, and every caller runs one. An
-/// `app.update()` was here and nothing in the workspace failed without it.
+/// It runs no frame of its own, which is [`write_input`]'s contract too. A key
+/// takes effect in the next update, and a caller that needs it down before it
+/// reads anything runs one; a trailing [`release_key`] before an assertion does
+/// not, and does not need to. An `app.update()` was here and nothing in the
+/// workspace failed without it.
 fn write_key(app: &mut App, key: KeyCode, state: ButtonState) {
     let window = primary_window(app);
     app.world_mut().write_message(KeyboardInput {
