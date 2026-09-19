@@ -7,7 +7,7 @@
 
 use bevy::ecs::lifecycle::Remove;
 use bevy::picking::Pickable;
-use bevy::picking::events::{Click, Pointer};
+use bevy::picking::events::{Click, Pointer, Press};
 use bevy::picking::hover::HoverMap;
 use bevy::picking::pointer::{PointerButton, PointerId};
 use bevy::prelude::*;
@@ -35,6 +35,22 @@ impl Selection {
     }
 }
 
+/// What the viewport's pointer was over when the button went down.
+///
+/// `Pointer<Click>` guarantees that the press and the release shared a target,
+/// and the target here is the viewport's UI node rather than anything in the
+/// world: the world is reached through a second pointer, so the engine's
+/// guarantee says nothing about which entity ends up selected. Without this,
+/// pressing one entity and letting go over another selected the second, and
+/// pressing one and letting go over empty space cleared the selection that was
+/// already there. Both measured.
+///
+/// `None` means the press was over empty space, which is a real answer rather
+/// than a missing one: pressing and releasing over nothing is what clears the
+/// selection.
+#[derive(Resource, Default)]
+struct PressedOver(Option<Entity>);
+
 /// An entity the user can select by clicking it.
 ///
 /// `Pickable` is required rather than left to whoever spawns one.
@@ -59,6 +75,7 @@ pub struct SelectionPlugin;
 impl Plugin for SelectionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Selection>()
+            .init_resource::<PressedOver>()
             .add_observer(attach)
             .add_observer(forget_what_is_gone);
     }
@@ -74,7 +91,10 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
     if regions.get(add.entity) != Ok(&Region::Viewport) {
         return;
     }
-    commands.entity(add.entity).observe(select);
+    commands
+        .entity(add.entity)
+        .observe(remember)
+        .observe(select);
 }
 
 /// Set the selection to what the left button was released over.
@@ -93,12 +113,16 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
 ///
 /// Mutation: return before writing the selection, and `clicking_an_entity_selects_it`
 /// fails. Mutation: clear on a hit and select on a miss, and
-/// `clicking_empty_space_clears_the_selection` fails.
+/// `clicking_empty_space_clears_the_selection` fails. Mutation: take the
+/// furthest rather than the nearest, and `the_nearer_of_two_under_the_pointer_is_the_one_selected`
+/// fails. Mutation: drop the comparison with [`PressedOver`], and
+/// `letting_go_somewhere_else_takes_the_press_back` fails.
 fn select(
     click: On<Pointer<Click>>,
     viewport: Query<&PointerId, With<ViewportNode>>,
     selectable: Query<(), With<Selectable>>,
     hover: Res<HoverMap>,
+    pressed: Res<PressedOver>,
     mut selection: ResMut<Selection>,
 ) {
     if click.event().button != PointerButton::Primary {
@@ -112,22 +136,63 @@ fn select(
         return;
     };
 
-    let hit = hover
+    let hit = under(&hover, pointer, &selectable);
+
+    // The gesture has to end where it began. `docs/specs/ui.md` §4 asks that a
+    // press somebody did not mean is taken back by moving off before letting
+    // go, and this is the whole of it: the engine's own same-target guarantee
+    // is about the viewport's node, which never changes during a drag across
+    // it.
+    if hit != pressed.0 {
+        return;
+    }
+
+    selection.0.clear();
+    selection.0.extend(hit);
+}
+
+/// Remember what the press was over, so that the release can be compared to it.
+///
+/// Mutation: record `None` regardless, and `clicking_an_entity_selects_it`
+/// fails, because every press would then look like a press on empty space.
+fn remember(
+    press: On<Pointer<Press>>,
+    viewport: Query<&PointerId, With<ViewportNode>>,
+    selectable: Query<(), With<Selectable>>,
+    hover: Res<HoverMap>,
+    mut pressed: ResMut<PressedOver>,
+) {
+    if press.event().button != PointerButton::Primary {
+        return;
+    }
+    let Ok(pointer) = viewport.single() else {
+        return;
+    };
+    pressed.0 = under(&hover, pointer, &selectable);
+}
+
+/// The nearest selectable entity the viewport's pointer is over.
+///
+/// `Pickable::default` blocks what is under it, so the map usually holds one; a
+/// `Pickable` that does not block puts what is behind it in the map too, which
+/// is what makes the tie-break reachable and testable. `bevy_picking`'s
+/// `build_hover_map` is where that branch is.
+///
+/// One function rather than two copies, because the press and the release ask
+/// the same question and an answer that drifted between them would be a
+/// misclick escape that worked in one direction.
+fn under(
+    hover: &HoverMap,
+    pointer: &PointerId,
+    selectable: &Query<(), With<Selectable>>,
+) -> Option<Entity> {
+    hover
         .get(pointer)
         .into_iter()
         .flatten()
         .filter(|(entity, _)| selectable.contains(**entity))
-        // The nearest, which today is the only one: `Pickable::default` blocks
-        // what is under it, so the map stops at the topmost. Written for the
-        // nearest anyway, because a `Pickable` that does not block would
-        // otherwise pick arbitrarily. There is no test for this line and there
-        // cannot usefully be one while the engine's default makes the other
-        // case unreachable.
         .min_by(|a, b| a.1.depth.total_cmp(&b.1.depth))
-        .map(|(entity, _)| *entity);
-
-    selection.0.clear();
-    selection.0.extend(hit);
+        .map(|(entity, _)| *entity)
 }
 
 /// Drop an entity from the selection when it stops being selectable.
@@ -200,6 +265,19 @@ mod tests {
     /// `viewport_picking` and then `sprite_picking`, and triggering the last
     /// event in that chain would assume the thing under test.
     fn click_at(app: &mut App, position: Vec2, button: PointerButton) {
+        for action in [
+            PointerAction::Move { delta: Vec2::ONE },
+            PointerAction::Press(button),
+            PointerAction::Release(button),
+        ] {
+            write_input(app, position, action);
+            app.update();
+            app.update();
+        }
+    }
+
+    /// Write one pointer input for the window's own pointer.
+    fn write_input(app: &mut App, position: Vec2, action: PointerAction) {
         let window = app
             .world_mut()
             .query_filtered::<Entity, With<PrimaryWindow>>()
@@ -213,19 +291,36 @@ mod tests {
                     .expect("the primary window normalises"),
             ),
         };
-        for action in [
-            PointerAction::Move { delta: Vec2::ONE },
-            PointerAction::Press(button),
-            PointerAction::Release(button),
+        app.world_mut()
+            .write_message(PointerInput::new(PointerId::Mouse, location, action));
+    }
+
+    /// Press at one place and let go at another, a frame apart.
+    fn press_then_release(app: &mut App, press: Vec2, release: Vec2) {
+        for (position, action) in [
+            (press, PointerAction::Move { delta: Vec2::ONE }),
+            (press, PointerAction::Press(PointerButton::Primary)),
+            (release, PointerAction::Move { delta: Vec2::ONE }),
+            (release, PointerAction::Release(PointerButton::Primary)),
         ] {
-            app.world_mut().write_message(PointerInput::new(
-                PointerId::Mouse,
-                location.clone(),
-                action,
-            ));
+            write_input(app, position, action);
             app.update();
             app.update();
         }
+    }
+
+    /// Press, then move and let go in one frame, with no update between them.
+    ///
+    /// A gesture whose input batches into a single frame, which is what a long
+    /// frame does: a large level, or a paint stroke later on.
+    fn press_then_leave_in_one_frame(app: &mut App, press: Vec2, release: Vec2) {
+        write_input(app, press, PointerAction::Move { delta: Vec2::ONE });
+        write_input(app, press, PointerAction::Press(PointerButton::Primary));
+        app.update();
+        write_input(app, release, PointerAction::Move { delta: Vec2::ONE });
+        write_input(app, release, PointerAction::Release(PointerButton::Primary));
+        app.update();
+        app.update();
     }
 
     /// What is selected.
@@ -290,6 +385,45 @@ mod tests {
         }
     }
 
+    /// The nearer of two under the pointer is the one selected.
+    ///
+    /// Two entities reach one pointer's hover map when the one in front does
+    /// not block what is under it: `bevy_picking`'s `build_hover_map` stops at
+    /// the first entity whose `Pickable` blocks, and carries on past one whose
+    /// does not. So the tie-break is reachable without waiting for anything,
+    /// and an earlier version of this file said in a comment that it could not
+    /// be tested, which was true of the placeholders and not of the engine.
+    ///
+    /// Mutation: take the furthest instead of the nearest in `select`, and this
+    /// fails.
+    #[test]
+    fn the_nearer_of_two_under_the_pointer_is_the_one_selected() {
+        let mut app = selection_editor();
+        let behind = placeholder(&mut app, 1);
+        let in_front = app
+            .world_mut()
+            .spawn((
+                Sprite::from_color(Color::WHITE, Vec2::splat(64.0)),
+                Transform::from_xyz(0.0, 0.0, 1.0),
+                Selectable,
+                Pickable {
+                    should_block_lower: false,
+                    is_hoverable: true,
+                },
+            ))
+            .id();
+        app.update();
+
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+
+        assert_ne!(
+            selected(&app),
+            [behind],
+            "the one behind was selected, so the nearest is not what is taken"
+        );
+        assert_eq!(selected(&app), [in_front]);
+    }
+
     /// Clicking empty space clears the selection.
     ///
     /// The position is inside the viewport region and away from every
@@ -309,6 +443,98 @@ mod tests {
         );
 
         assert!(selected(&app).is_empty(), "the selection was not cleared");
+    }
+
+    /// Letting go somewhere else takes the press back.
+    ///
+    /// This is what `docs/specs/ui.md` §4 asks of the left button: a press
+    /// somebody did not mean costs nothing as long as they move off before
+    /// letting go. Three gestures, and none may reach the selection.
+    ///
+    /// Bevy's own same-target guarantee does not give this. `Pointer<Click>`
+    /// fires when the press and the release shared a target, and the target
+    /// here is the viewport's UI node, which is the same node all the way
+    /// across the viewport. Before the press was remembered, the first gesture
+    /// selected the middle placeholder and the second cleared a selection that
+    /// was already there, both measured.
+    ///
+    /// Mutation: drop the comparison with `PressedOver` in `select`, and this
+    /// fails.
+    #[test]
+    fn letting_go_somewhere_else_takes_the_press_back() {
+        // One: press one entity, let go over another.
+        let mut app = selection_editor();
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            in_window(Vec2::ZERO),
+        );
+        assert!(
+            selected(&app).is_empty(),
+            "letting go over a different entity selected it"
+        );
+
+        // Two: with something already selected, press another and let go over
+        // empty space.
+        let mut app = selection_editor();
+        click_at(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+        let chosen = selected(&app);
+        assert_eq!(chosen.len(), 1, "nothing was selected to protect");
+        press_then_release(
+            &mut app,
+            in_window(Vec2::ZERO),
+            in_window(Vec2::new(0.0, -180.0)),
+        );
+        assert_eq!(
+            selected(&app),
+            chosen,
+            "a press that was taken back cleared the selection anyway"
+        );
+
+        // Three: press empty space, let go over an entity.
+        let mut app = selection_editor();
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(0.0, -180.0)),
+            in_window(Vec2::ZERO),
+        );
+        assert!(
+            selected(&app).is_empty(),
+            "a gesture that began on empty space selected something"
+        );
+    }
+
+    /// A gesture that leaves the viewport in one frame keeps the selection.
+    ///
+    /// `Pointer<Click>` is dispatched from the previous frame's hover while
+    /// what is under the pointer is read from this frame's, so a release
+    /// arriving in the same frame as the move out of the viewport is a click on
+    /// the viewport node with nothing under the viewport's own pointer. Before
+    /// the press was remembered that cleared the selection, measured. An input
+    /// batch is what a long frame produces, and a long frame is what a large
+    /// level produces.
+    ///
+    /// Mutation: drop the comparison with `PressedOver` in `select`, and this
+    /// fails.
+    #[test]
+    fn a_gesture_that_leaves_the_viewport_in_one_frame_keeps_the_selection() {
+        let mut app = selection_editor();
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        let chosen = selected(&app);
+        assert_eq!(chosen.len(), 1, "nothing was selected to protect");
+
+        // 1150 across is inside the inspector, which starts 980 across.
+        press_then_leave_in_one_frame(&mut app, in_window(Vec2::ZERO), Vec2::new(1150.0, 284.0));
+
+        assert_eq!(
+            selected(&app),
+            chosen,
+            "leaving the viewport in one frame cleared the selection"
+        );
     }
 
     /// Something pickable that is not selectable is not selected.
