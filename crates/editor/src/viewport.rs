@@ -8,6 +8,7 @@
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
+use bevy::camera::visibility::RenderLayers;
 use bevy::image::{Image, ToExtents};
 use bevy::input::mouse::MouseScrollUnit;
 use bevy::picking::events::{Drag, Pointer, Scroll};
@@ -17,6 +18,7 @@ use bevy::render::render_resource::{TextureDimension, TextureFormat, TextureUsag
 use bevy::ui::widget::ViewportNode;
 use bevy::ui::{ComputedNode, UiGlobalTransform};
 
+use crate::outline::SELECTION_LAYER;
 use crate::{Region, Selectable};
 
 /// The camera whose view fills [`Region::Viewport`].
@@ -125,7 +127,15 @@ fn attach(
 
     let target = images.add(image);
     let camera = commands
-        .spawn((Camera2d, ViewportCamera, RenderTarget::Image(target.into())))
+        .spawn((
+            Camera2d,
+            ViewportCamera,
+            RenderTarget::Image(target.into()),
+            // The layer the selection outline is drawn on, which the camera the
+            // panels are drawn to does not have. `outline::SELECTION_LAYER` is
+            // where that is said; layer 0 stays so that the world still renders.
+            RenderLayers::from_layers(&[0, SELECTION_LAYER]),
+        ))
         .id();
 
     for (x, colour) in PLACEHOLDERS {

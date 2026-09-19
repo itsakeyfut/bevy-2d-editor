@@ -19,9 +19,13 @@ use bevy::prelude::*;
 use bevy::scene::bsn;
 use bevy::ui::{UiRect, percent, px};
 
+mod outline;
+#[cfg(test)]
+mod pointer;
 mod selection;
 mod viewport;
 
+pub use outline::SelectionOutlinePlugin;
 pub use selection::{Selectable, Selection, SelectionPlugin};
 pub use viewport::{ViewportCamera, ViewportPlugin};
 
@@ -262,10 +266,11 @@ fn spawn_regions(mut commands: Commands) {
 ///
 /// Mutation: remove the row, and
 /// `the_group_carries_the_members_the_table_names` fails.
-pub(crate) const MEMBERS: [Member; 3] = [
+pub(crate) const MEMBERS: [Member; 4] = [
     member!(PanelsPlugin),
     member!(ViewportPlugin),
     member!(SelectionPlugin),
+    member!(SelectionOutlinePlugin),
 ];
 
 /// Fold a table of members into the group they compose.
@@ -454,7 +459,15 @@ mod tests {
     #[test]
     fn the_group_carries_the_members_the_table_names() {
         let names: Vec<&str> = MEMBERS.iter().map(|member| member.0).collect();
-        assert_eq!(names, ["PanelsPlugin", "ViewportPlugin", "SelectionPlugin"]);
+        assert_eq!(
+            names,
+            [
+                "PanelsPlugin",
+                "ViewportPlugin",
+                "SelectionPlugin",
+                "SelectionOutlinePlugin"
+            ]
+        );
     }
 
     /// A member is a row and nothing else.
