@@ -51,6 +51,7 @@ Quotations are left in the language of their source.
 | Unity is the design target, Jackdaw the implementation reference | [ui.md §2](./ui.md) |
 | The UI stack is Bevy UI + `bevy_feathers` | [ui.md §3](./ui.md) |
 | What the mouse does in the viewport: pan, zoom on the cursor, and select on release | [ui.md §4](./ui.md) |
+| What a selection looks like in the viewport | [ui.md §5](./ui.md) |
 | Tilemaps ride on Bevy's own `TilemapChunk` | [level-editor.md §2](./level-editor.md) |
 | Colliders: a physics-neutral shape, avian2d behind a default-on feature | [level-editor.md §3](./level-editor.md) |
 | Sprite animation | [level-editor.md §4](./level-editor.md) |

@@ -258,3 +258,76 @@ A trackpad reports scrolling in pixels rather than in notches, and how many
 pixels make a notch is a constant here rather than a measurement. Sixteen is
 `PIXELS_PER_NOTCH` in `crates/editor/src/viewport.rs`; if it turns out to feel
 wrong on a trackpad, it is one number and not a design.
+
+---
+
+## 5. What a selection looks like in the viewport
+
+### Decision
+
+**A rectangle on the entity's bounds**, drawn every frame from what is
+selected. Every selected entity gets the same one; nothing distinguishes the
+last one chosen.
+
+**Only the viewport's camera draws it.** The outline is a gizmo group of its
+own, on a render layer the viewport camera adds and the camera the panels are
+drawn to does not.
+
+The corners stay empty. They are where a transform gizmo puts its handles, and
+a mark that looks grabbable and is not is worse than no mark.
+
+### Rationale
+
+§2 makes Unity the design target, and this is Unity's 2D Scene view: a thin
+outline hugging the sprite. A beginner reads a box around a thing as "this is
+the thing I picked" without being told.
+
+The bounds are the `Aabb` that `bevy_sprite`'s `calculate_bounds_2d` already
+computes, rather than a size read back out of `Sprite`. That is
+[architecture.md §5](./architecture.md) applied: the outline is then right for
+anything the world draws, and correct when a sprite is given a custom size or a
+sub-rectangle, without this knowing how any of that works.
+
+**Drawing it each frame rather than keeping something that represents it** is
+what makes two of this decision's properties free. It follows the entity at
+every zoom and after a pan because it is computed from the entity's transform
+in the frame it is drawn, and it writes nothing to what is selected, so
+selecting is not an edit to the document. Both are the things that would
+otherwise have to be kept in step.
+
+The render layer is what makes "inside the viewport" true by construction. The
+alternative is to rely on the opaque panes covering whatever the window's camera
+draws in world space, which is a claim about draw order between the 2D pass and
+the UI pass that nobody here has measured.
+
+### Rejected options
+
+**Corner marks, or a box with handles at the corners.** That is a gizmo, and it
+is a separate piece of work. Drawing something that looks like a handle before
+one can be dragged teaches the wrong thing.
+
+**A light line over a dark one**, so the outline reads over any artwork. It is
+two draws and an offset for a contrast problem that has not appeared yet. It
+comes back if the outline turns out to disappear over light art.
+
+**A distinct colour for the last entity chosen.** Unity has an active object,
+and `Selection` is an ordered list for exactly that reason. Nothing reads the
+last one yet: the inspector is the thing that will, and it is a later chunk of
+this milestone. Deciding what "active" looks like before anything acts on it is
+deciding without the premise.
+
+**An outline sprite as a child of the selected entity.** It writes `Children` to
+the entity that was selected, which makes selecting an edit to the user's
+document. That is the trap the selection chunk was written to avoid.
+
+**A retained `Gizmo` entity per selected entity.** A second set of entities to
+spawn, despawn and reconcile against a selection that changes on every click,
+for a picture that has to be recomputed anyway when the entity moves.
+
+### Accepted risk
+
+**The colour is a constant in the code, not a theme token.** Feathers' tokens
+carry colour only (§3) and there is none for an editor overlay drawn in the
+world. It was chosen to read against the window's dark background and against
+the three placeholders, which is not artwork. If it disappears over real art,
+it is one value and not a design.
