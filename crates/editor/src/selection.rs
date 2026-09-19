@@ -351,7 +351,15 @@ fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
 /// Mutation: drop the `clear`, and
 /// `a_band_replaces_the_selection_when_the_modifier_is_not_held` fails.
 /// Mutation: read [`Pressed::band`] instead of taking it, and
-/// `the_band_is_gone_once_the_button_is_let_go` fails.
+/// `the_band_is_gone_once_the_button_is_let_go` fails. Mutation: drop the
+/// `!selection.0.contains(&entity)`, and
+/// `a_modifier_box_over_something_already_selected_leaves_it_in_once` fails.
+///
+/// **The button check is the one line here no test holds.** Reaching it means
+/// letting go of a second button during a box drag, which takes two buttons at
+/// once and which no test drives. Measured: deleting it leaves the whole suite
+/// green. What it costs if it goes is a middle button released mid-drag ending
+/// the box early, at wherever the pointer was.
 fn finish(
     end: On<Pointer<DragEnd>>,
     viewport: Query<&PointerLocation, With<ViewportNode>>,
@@ -562,11 +570,13 @@ fn forget_what_is_gone(remove: On<Remove, Selectable>, mut selection: ResMut<Sel
 
 #[cfg(test)]
 mod tests {
-    use super::{BandGizmos, Selectable, Selection};
+    use super::{BandGizmos, SELECTION_LAYER, Selectable, Selection};
     use crate::drawn::covered_by;
     use crate::pointer::{click_at, hold_key, in_window, release_key, write_input};
     use crate::viewport::PLACEHOLDERS;
     use crate::{Region, editor, headless};
+    use bevy::camera::visibility::RenderLayers;
+    use bevy::gizmos::config::GizmoConfigStore;
     use bevy::picking::events::{Click, DragEnd, Pointer};
     use bevy::picking::pointer::{PointerAction, PointerButton};
     use bevy::picking::{Pickable, PickingSystems};
@@ -1711,6 +1721,66 @@ mod tests {
         assert_eq!(
             covered_by::<BandGizmos>(&app),
             Some(Rect::from_corners(from, to))
+        );
+    }
+
+    /// A modifier box over something already selected leaves it in once.
+    ///
+    /// `Selection` says an entity appears at most once, and the box is the
+    /// first writer that can reach one that is already there: a modifier click
+    /// takes such an entity out, and a modifier box adds without toggling, so
+    /// the box has to notice. What a duplicate costs is the inspector showing
+    /// one thing twice and a delete acting on it twice.
+    ///
+    /// Mutation: drop the `!selection.0.contains(&entity)` in `finish`, and
+    /// this fails with three entries where there should be two.
+    #[test]
+    fn a_modifier_box_over_something_already_selected_leaves_it_in_once() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        hold_key(&mut app, KeyCode::ControlLeft);
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-300.0, -100.0)),
+            in_window(Vec2::new(60.0, 100.0)),
+        );
+        release_key(&mut app, KeyCode::ControlLeft);
+
+        let mut wanted = vec![left, middle];
+        wanted.sort();
+        assert_eq!(sorted(&app), wanted);
+    }
+
+    /// The box is drawn on the layer only the viewport's camera has.
+    ///
+    /// Otherwise the rubber band is drawn across the panels as well, which is
+    /// `docs/specs/ui.md` §5 for the outline and for this alike. The other half
+    /// of that claim, that the viewport's camera is the only one carrying the
+    /// layer, is `outline.rs`'s
+    /// `the_outline_is_drawn_only_for_the_viewports_camera`, and this is on the
+    /// same layer rather than on one of its own.
+    ///
+    /// Mutation: drop `render_layers` from `BandGizmos`' config in
+    /// `SelectionPlugin`, and this fails, because the group is then on the
+    /// layer every camera draws.
+    #[test]
+    fn the_box_is_drawn_on_the_layer_only_the_viewports_camera_has() {
+        let app = selection_editor();
+
+        let drawn_on = app
+            .world()
+            .resource::<GizmoConfigStore>()
+            .config::<BandGizmos>()
+            .0
+            .render_layers
+            .clone();
+
+        assert!(
+            drawn_on.intersects(&RenderLayers::layer(SELECTION_LAYER)),
+            "the box is not on the layer the viewport camera adds"
         );
     }
 
