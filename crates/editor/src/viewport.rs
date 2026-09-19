@@ -17,7 +17,7 @@ use bevy::render::render_resource::{TextureDimension, TextureFormat, TextureUsag
 use bevy::ui::widget::ViewportNode;
 use bevy::ui::{ComputedNode, UiGlobalTransform};
 
-use crate::Region;
+use crate::{Region, Selectable};
 
 /// The camera whose view fills [`Region::Viewport`].
 ///
@@ -47,15 +47,23 @@ const ZOOM_MIN: f32 = 1.0 / 32.0;
 /// and that scrolling back does not recover.
 const ZOOM_MAX: f32 = 32.0;
 
-/// The colour of the placeholder in the world.
+/// The placeholders in the world: where each one sits, and what colour it is.
 ///
-/// Warm, so that it reads against the window's own dark background. It is here
-/// to be something the viewport can show and something a person can watch move
-/// while panning; the first change that puts real content in the world deletes
-/// it.
-const PLACEHOLDER: Color = Color::srgb(0.85, 0.62, 0.25);
+/// Three rather than one. One is enough to show that the viewport draws and
+/// that panning moves it, which is all #23 needed; selecting one of one
+/// demonstrates nothing, and a `Selectable` missing from one of three is
+/// otherwise invisible. Each has a colour of its own so that a person can tell
+/// which one they clicked.
+///
+/// They read against the window's own dark background, and the first change
+/// that puts real content in the world deletes them.
+pub(crate) const PLACEHOLDERS: [(f32, Color); 3] = [
+    (-200.0, Color::srgb(0.85, 0.62, 0.25)),
+    (0.0, Color::srgb(0.45, 0.68, 0.85)),
+    (200.0, Color::srgb(0.62, 0.78, 0.45)),
+];
 
-/// How big the placeholder is, in world units.
+/// How big a placeholder is, in world units.
 const PLACEHOLDER_SIZE: f32 = 64.0;
 
 /// The 2D viewport, and the navigation `docs/specs/ui.md` §4 decided.
@@ -120,10 +128,13 @@ fn attach(
         .spawn((Camera2d, ViewportCamera, RenderTarget::Image(target.into())))
         .id();
 
-    commands.spawn(Sprite::from_color(
-        PLACEHOLDER,
-        Vec2::splat(PLACEHOLDER_SIZE),
-    ));
+    for (x, colour) in PLACEHOLDERS {
+        commands.spawn((
+            Sprite::from_color(colour, Vec2::splat(PLACEHOLDER_SIZE)),
+            Transform::from_xyz(x, 0.0, 0.0),
+            Selectable,
+        ));
+    }
 
     commands
         .entity(add.entity)
@@ -258,7 +269,7 @@ fn zoom(
 
 #[cfg(test)]
 mod tests {
-    use super::{PIXELS_PER_NOTCH, PLACEHOLDER_SIZE, ViewportCamera, ZOOM_MAX, ZOOM_MIN};
+    use super::{PIXELS_PER_NOTCH, ViewportCamera, ZOOM_MAX, ZOOM_MIN};
     use crate::{Region, editor, headless};
     use bevy::camera::{NormalizedRenderTarget, RenderTarget};
     use bevy::input::mouse::MouseScrollUnit;
@@ -792,20 +803,37 @@ mod tests {
 
     /// There is something in the world for the viewport to show.
     ///
-    /// The first acceptance criterion needs something placed in the world, and
-    /// panning needs something a person can watch move. This is the placeholder
-    /// the first real content replaces.
+    /// Something placed in the world is what the viewport is for, and panning
+    /// needs something a person can watch move. These are the placeholders the
+    /// first real content replaces.
     ///
-    /// Mutation: stop spawning the sprite in `attach`, and this fails.
+    /// The count and the positions are written out here rather than read from
+    /// `PLACEHOLDERS`, which is the table the spawning also reads: a test that
+    /// compares a table with itself passes whatever the table says, which is
+    /// RK-001.
+    ///
+    /// Mutation: stop spawning one of them in `attach`, and this fails.
     #[test]
     fn there_is_something_in_the_world_for_the_viewport_to_show() {
         let mut app = viewport_editor();
-        let sprites: Vec<Vec2> = app
+        let mut placed: Vec<(f32, Vec2)> = app
             .world_mut()
-            .query::<&Sprite>()
+            .query::<(&Sprite, &Transform)>()
             .iter(app.world())
-            .filter_map(|sprite| sprite.custom_size)
+            .filter_map(|(sprite, transform)| {
+                sprite
+                    .custom_size
+                    .map(|size| (transform.translation.x, size))
+            })
             .collect();
-        assert_eq!(sprites, [Vec2::splat(PLACEHOLDER_SIZE)]);
+        placed.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(
+            placed,
+            [
+                (-200.0, Vec2::splat(64.0)),
+                (0.0, Vec2::splat(64.0)),
+                (200.0, Vec2::splat(64.0)),
+            ]
+        );
     }
 }

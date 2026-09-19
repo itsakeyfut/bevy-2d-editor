@@ -19,8 +19,10 @@ use bevy::prelude::*;
 use bevy::scene::bsn;
 use bevy::ui::{UiRect, percent, px};
 
+mod selection;
 mod viewport;
 
+pub use selection::{Selectable, Selection, SelectionPlugin};
 pub use viewport::{ViewportCamera, ViewportPlugin};
 
 /// A member of the editor's plugin group: the name a test names it by, and the
@@ -260,7 +262,11 @@ fn spawn_regions(mut commands: Commands) {
 ///
 /// Mutation: remove the row, and
 /// `the_group_carries_the_members_the_table_names` fails.
-pub(crate) const MEMBERS: [Member; 2] = [member!(PanelsPlugin), member!(ViewportPlugin)];
+pub(crate) const MEMBERS: [Member; 3] = [
+    member!(PanelsPlugin),
+    member!(ViewportPlugin),
+    member!(SelectionPlugin),
+];
 
 /// Fold a table of members into the group they compose.
 ///
@@ -448,7 +454,7 @@ mod tests {
     #[test]
     fn the_group_carries_the_members_the_table_names() {
         let names: Vec<&str> = MEMBERS.iter().map(|member| member.0).collect();
-        assert_eq!(names, ["PanelsPlugin", "ViewportPlugin"]);
+        assert_eq!(names, ["PanelsPlugin", "ViewportPlugin", "SelectionPlugin"]);
     }
 
     /// A member is a row and nothing else.
