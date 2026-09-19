@@ -185,8 +185,10 @@ than new.
 | --- | --- |
 | Middle button, dragged | Drags the view |
 | Wheel | Zooms, on the cursor |
-| Left button, released over an entity | Selects it |
+| Left button, released over an entity | Selects it, and nothing else stays selected |
 | Left button, released over empty space | Clears the selection |
+| Ctrl or Cmd with the left button, over an entity | Adds it to the selection, or takes it out if it was already in it |
+| Ctrl or Cmd with the left button, over empty space | Nothing; the selection stays as it was |
 | Right button | Nothing yet, and kept for a context menu |
 
 Zoom is clamped, from 1/32 to 32 world units per pixel.
@@ -197,6 +199,21 @@ before letting go, which is the ordinary way out of a misclick everywhere else.
 Letting go somewhere else leaves the selection exactly as it was, rather than
 selecting what the pointer happened to end up over or clearing what was already
 chosen.
+
+**What the gesture means is fixed when the button goes down**, and that includes
+the modifier. Letting the key go a moment before the button still adds, because
+the alternative is that an intended add becomes a replace and a selection
+somebody spent a minute picking out is gone.
+
+**Control and Command are both taken, on every platform**, rather than one
+chosen per operating system. Unity binds this to Ctrl on Windows and to Command
+on macOS, and macOS turns Ctrl and the left button into a secondary click before
+the editor ever sees it, so a Mac user reaches for Command in any case.
+
+One consequence, stated here rather than left to be discovered: **a plain click
+on one of several selected entities collapses the selection to that one.** Unity
+does the same. The gesture that will want to keep the group is dragging it,
+which belongs to the parent that moves what is selected.
 
 The left button is still what every tool that paints will want. What is decided
 here is what it does when no tool has been chosen, which is the state the editor
@@ -246,6 +263,22 @@ button a context menu will want, and §2 says Unity wins where the two disagree.
 the viewport tiring to use at exactly the moment a level gets big enough to
 need it.
 
+**Shift as the key that adds and removes.** One key, nothing to say about
+Command, and it is what a hand reaches for. Unity's Shift adds and never
+removes, though: somebody who has picked out six things and shift-clicks one of
+them expects it to stay, and it would go. That is the same loss as clearing on a
+missed click, said in a different gesture.
+
+**Unity's full pair**, Shift for adding only beside Ctrl/Cmd for adding and
+removing. It is the most faithful reading of Unity and it is more than is needed:
+a second rule, with its own tests, for a gesture nobody here has reached for.
+Shift-as-add-only can be put in later without unpicking this, because it is a
+rule beside this one rather than a change to it.
+
+**Choosing the key by operating system**, Command on macOS and Control
+elsewhere. Literal, and it buys a branch that cannot run on the machine the
+tests run on. Taking both costs one line and is held by a named test.
+
 **Selecting on the press**, which is Unity's and which composes more easily with
 a rubber band: a press on empty space clears, and the drag that follows builds a
 new selection, with no question about what the release meant. It was turned down
@@ -258,6 +291,11 @@ A trackpad reports scrolling in pixels rather than in notches, and how many
 pixels make a notch is a constant here rather than a measurement. Sixteen is
 `PIXELS_PER_NOTCH` in `crates/editor/src/viewport.rs`; if it turns out to feel
 wrong on a trackpad, it is one number and not a design.
+
+Taking Command everywhere means that on Windows and Linux the Super key and the
+left button add to the selection too. The window manager takes that combination
+in most configurations, nothing else in the editor uses Super, and if it ever
+gets in somebody's way it is one line.
 
 ---
 
