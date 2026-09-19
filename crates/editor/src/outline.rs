@@ -119,13 +119,15 @@ mod tests {
     use super::{SELECTION_LAYER, SelectionGizmos};
     use crate::pointer::{click_at, in_window};
     use crate::viewport::ViewportCamera;
-    use crate::{editor, headless};
+    use crate::{Selectable, editor, headless};
     use bevy::camera::visibility::RenderLayers;
     use bevy::gizmos::config::GizmoConfigStore;
     use bevy::gizmos::{GizmoAsset, GizmoHandles};
     use bevy::picking::pointer::{PointerAction, PointerButton};
     use bevy::prelude::*;
+    use bevy::sprite::Anchor;
     use core::any::TypeId;
+    use core::f32::consts::FRAC_PI_4;
 
     /// The editor, run until a test can look at the world.
     ///
@@ -204,6 +206,19 @@ mod tests {
             .custom_size
             .expect("a placeholder's sprite has a size of its own");
         Rect::from_center_size(at, size)
+    }
+
+    /// Two rectangles are the same to within a rotation's arithmetic.
+    ///
+    /// A rectangle turned by an eighth of a turn has irrational corners, so
+    /// comparing one for equality is comparing two roundings.
+    fn assert_close(left: Option<Rect>, right: Rect) {
+        let left = left.expect("nothing was drawn to compare");
+        let apart = (left.min - right.min)
+            .abs()
+            .max((left.max - right.max).abs())
+            .max_element();
+        assert!(apart < 1e-3, "{left:?} is not {right:?}");
     }
 
     /// Select the middle placeholder, and say which entity it is.
@@ -297,6 +312,75 @@ mod tests {
         app.update();
 
         assert_eq!(outlined(&app), Some(rect_of(&app, middle)));
+    }
+
+    /// The outline is on the bounds of an entity that is turned, scaled and
+    /// anchored away from its centre.
+    ///
+    /// Three of the four terms in the placement are otherwise unguarded, and
+    /// were: everything in the world is an unrotated, unscaled, centre-anchored
+    /// sprite, so removing the rotation, the scale or the `Aabb`'s own centre
+    /// from `outline` left all eight of the tests around this green, measured.
+    /// This is the same shape as RK-005 in the knowledge bank, where a fixture
+    /// that cannot reach a path makes the tests around it look like cover.
+    ///
+    /// The expected rectangle is built by turning the sprite's four corners,
+    /// which is not how `outline` builds it: it places one point and hands the
+    /// size and the angle to `rect_2d`.
+    ///
+    /// Mutation: drop `at.scale()`, or use `Rot2::IDENTITY`, or place the
+    /// rectangle on `at.translation()` rather than on the `Aabb`'s centre, and
+    /// this fails. Each on its own.
+    #[test]
+    fn the_outline_is_on_the_bounds_of_a_turned_and_scaled_entity() {
+        let mut app = outline_editor();
+        let size = Vec2::new(48.0, 24.0);
+        let turned = Transform::from_xyz(0.0, 0.0, 1.0)
+            .with_rotation(Quat::from_rotation_z(FRAC_PI_4))
+            .with_scale(Vec3::new(2.0, 3.0, 1.0));
+        let awkward = app
+            .world_mut()
+            .spawn((
+                Sprite::from_color(Color::WHITE, size),
+                Anchor::TOP_LEFT,
+                turned,
+                Selectable,
+            ))
+            .id();
+        app.update();
+
+        // The sprite sits where its anchor puts it, so the middle of it is not
+        // where the entity is. Clicking the middle is what reaches it.
+        let middle_of_it = turned.transform_point((-Anchor::TOP_LEFT.as_vec() * size).extend(0.0));
+        click_at(
+            &mut app,
+            in_window(middle_of_it.truncate()),
+            PointerButton::Primary,
+        );
+        assert_eq!(
+            app.world().resource::<crate::Selection>().entities(),
+            [awkward],
+            "the click did not reach the sprite under test"
+        );
+
+        let half = size * 0.5;
+        let corners = [
+            Vec2::new(-half.x, -half.y),
+            Vec2::new(half.x, -half.y),
+            Vec2::new(half.x, half.y),
+            Vec2::new(-half.x, half.y),
+        ]
+        .map(|corner| {
+            turned
+                .transform_point((corner - Anchor::TOP_LEFT.as_vec() * size).extend(0.0))
+                .truncate()
+        });
+        let expected = Rect::from_corners(
+            corners.into_iter().reduce(Vec2::min).expect("four corners"),
+            corners.into_iter().reduce(Vec2::max).expect("four corners"),
+        );
+
+        assert_close(outlined(&app), expected);
     }
 
     /// Zooming does not change what the outline covers.
