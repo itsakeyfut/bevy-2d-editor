@@ -191,9 +191,12 @@ than new.
 
 Zoom is clamped, from 1/32 to 32 world units per pixel.
 
-**Selection happens when the button is released, not when it is pressed.** A
-press that was a mistake is taken back by moving off the entity before letting
-go, which is the ordinary way out of a misclick everywhere else.
+**Selection happens when the button is released over the same thing it was
+pressed on.** A press that was a mistake is taken back by moving off the entity
+before letting go, which is the ordinary way out of a misclick everywhere else.
+Letting go somewhere else leaves the selection exactly as it was, rather than
+selecting what the pointer happened to end up over or clearing what was already
+chosen.
 
 The left button is still what every tool that paints will want. What is decided
 here is what it does when no tool has been chosen, which is the state the editor
@@ -209,8 +212,17 @@ it back.
 
 Releasing rather than pressing is not Unity's, which selects on the press. It is
 taken because the cost of the difference is small and what it buys is a misclick
-the user can still escape from. Bevy gives it for free: its click event fires
-only when the press and the release share a target.
+the user can still escape from.
+
+**Bevy does not give that escape for free**, and an earlier draft of this section
+said it did. Its click event does fire only when the press and the release share
+a target, but the target of a click in the viewport is the viewport's own UI
+node, which is the same node everywhere inside it; what is in the world is
+reached through a second pointer that the node carries. So the engine's
+guarantee says nothing about which entity is selected, and the editor keeps what
+the press was over and compares it itself. Measured before it did: pressing one
+entity and letting go over another selected the second, and pressing one and
+letting go over empty space cleared a selection that was already there.
 
 Zooming on the cursor rather than on the centre is Unity again, and it is the
 difference between reaching a corner of a large level in one gesture and
