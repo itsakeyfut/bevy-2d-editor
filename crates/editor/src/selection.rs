@@ -6,10 +6,10 @@
 //! [`docs/specs/ui.md` §4](../../../docs/specs/ui.md).
 
 use bevy::ecs::lifecycle::Remove;
-use bevy::picking::Pickable;
 use bevy::picking::events::{Click, Pointer, Press};
 use bevy::picking::hover::HoverMap;
 use bevy::picking::pointer::{PointerButton, PointerId};
+use bevy::picking::{Pickable, PickingSystems};
 use bevy::prelude::*;
 use bevy::ui::widget::ViewportNode;
 
@@ -91,16 +91,33 @@ pub struct Selectable;
 
 /// Selection, and the left button that sets it.
 ///
+/// **It declares that the keyboard is read before a press is dispatched.**
+/// `remember` below reads `ButtonInput<KeyCode>` from inside an observer that
+/// `bevy_picking` triggers, and the engine orders the two against nothing:
+/// `bevy_picking`'s sets are chained among themselves and say nothing about
+/// `InputSystems`, checked in 0.19.1. The order that holds today is the one
+/// this wants, so the line changes no behaviour; what it buys is that a
+/// schedule saying otherwise fails to build and names the cycle, rather than
+/// reading the modifier as up and turning somebody's add into a replace. That
+/// only bites when the key and the button arrive in one frame's batch, which
+/// is what a long frame on a large level produces.
+///
 /// Mutation: leave its row out of the editor's member table, and
-/// `the_group_carries_the_members_the_table_names` fails.
+/// `the_group_carries_the_members_the_table_names` fails. Mutation: drop the
+/// `configure_sets` call, and
+/// `a_schedule_that_reads_the_keyboard_after_the_press_does_not_build` fails.
 pub struct SelectionPlugin;
 
 impl Plugin for SelectionPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Selection>()
-            .init_resource::<Pressed>()
-            .add_observer(attach)
-            .add_observer(forget_what_is_gone);
+        app.configure_sets(
+            PreUpdate,
+            PickingSystems::Hover.after(bevy::input::InputSystems),
+        )
+        .init_resource::<Selection>()
+        .init_resource::<Pressed>()
+        .add_observer(attach)
+        .add_observer(forget_what_is_gone);
     }
 }
 
@@ -305,8 +322,8 @@ mod tests {
     use crate::pointer::{click_at, hold_key, in_window, release_key, write_input};
     use crate::viewport::PLACEHOLDERS;
     use crate::{editor, headless};
-    use bevy::picking::Pickable;
     use bevy::picking::pointer::{PointerAction, PointerButton};
+    use bevy::picking::{Pickable, PickingSystems};
     use bevy::prelude::*;
 
     /// How many frames the editor needs before a test can look at the world.
@@ -996,5 +1013,66 @@ mod tests {
         app.update();
 
         assert_eq!(selected(&app), [left]);
+    }
+
+    /// The modifier survives a key and a press arriving in one frame.
+    ///
+    /// A human presses the modifier first and the two are frames apart. An
+    /// input batch is what a long frame produces, and a long frame is what a
+    /// large level produces, which is the same argument
+    /// `a_gesture_that_leaves_the_viewport_in_one_frame_keeps_the_selection`
+    /// makes about the pointer.
+    ///
+    /// **No mutation of this repository makes this fail**, and saying so is
+    /// the point of writing it down: what it watches is the engine's order
+    /// between `InputSystems` and picking's dispatch, and what holds that
+    /// order is the `configure_sets` on `SelectionPlugin`, guarded by the test
+    /// below. This one is the canary that would notice the day the engine's
+    /// own default changed underneath that line.
+    #[test]
+    fn the_modifier_survives_a_key_and_a_press_in_one_frame() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+
+        let at = in_window(MIDDLE);
+        write_input(&mut app, at, PointerAction::Move { delta: Vec2::ONE });
+        app.update();
+        // No update between these two: the key and the button are one batch.
+        hold_key(&mut app, KeyCode::ControlLeft);
+        write_input(&mut app, at, PointerAction::Press(PointerButton::Primary));
+        app.update();
+        write_input(&mut app, at, PointerAction::Release(PointerButton::Primary));
+        app.update();
+        app.update();
+
+        assert_eq!(
+            selected(&app),
+            [left, middle],
+            "a key and a press in one frame lost the modifier"
+        );
+    }
+
+    /// A schedule that reads the keyboard after the press does not build.
+    ///
+    /// This is what `SelectionPlugin`'s `configure_sets` is worth: with it, a
+    /// plugin that puts input processing after picking is a cycle the schedule
+    /// refuses and names, which is row 3 of `CLAUDE.md`'s list. Without it the
+    /// same plugin builds and the editor quietly reads every modifier as up
+    /// whenever the key and the button share a frame, which is row 4 and costs
+    /// the user the selection they were assembling.
+    ///
+    /// Mutation: drop the `configure_sets` call from `SelectionPlugin`, and
+    /// this fails, because the schedule then builds happily.
+    #[test]
+    #[should_panic(expected = "cycle")]
+    fn a_schedule_that_reads_the_keyboard_after_the_press_does_not_build() {
+        let mut app = editor(headless());
+        app.configure_sets(
+            PreUpdate,
+            bevy::input::InputSystems.after(PickingSystems::Last),
+        );
+        app.update();
     }
 }
