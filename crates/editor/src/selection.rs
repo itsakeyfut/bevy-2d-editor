@@ -157,15 +157,21 @@ mod tests {
     use bevy::prelude::*;
     use bevy::window::{PrimaryWindow, WindowRef};
 
-    /// How many frames the editor takes before a click can reach the world.
+    /// How many frames the editor needs before a test can look at the world.
     ///
-    /// The viewport's own render target has to have been sized from the region
-    /// before its camera projects anything, which `viewport::tests::UPDATES`
-    /// measures at two, and the pointer then crosses `viewport_picking` and
-    /// `sprite_picking` on the frames after.
-    const SETTLE: usize = 3;
+    /// One, and measured rather than guessed: at zero the `Startup` system has
+    /// not spawned the regions, so there is no viewport, no observer on it and
+    /// no placeholder to name, and three tests fail. At one there is.
+    ///
+    /// The frames the pointer itself needs are not here. `click_at` runs two
+    /// updates for each of the three inputs it writes, so the render target is
+    /// sized and both picking backends have run long before anything is
+    /// asserted. An earlier version of this was three, with a doc comment
+    /// explaining frames that `click_at` was already providing, and nothing
+    /// failed when it was one.
+    const SETTLE: usize = 1;
 
-    /// The editor, run until a click can reach the world.
+    /// The editor, run until a test can look at the world.
     fn selection_editor() -> App {
         let mut app = editor(headless());
         for _ in 0..SETTLE {
