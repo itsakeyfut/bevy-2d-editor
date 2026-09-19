@@ -206,7 +206,10 @@ fn under(
 /// so observing the second alone needs no observer on the first.
 ///
 /// Mutation: drop this observer, and `a_despawned_entity_does_not_stay_selected`
-/// fails.
+/// fails. Mutation: listen on `Despawn` instead, which is the plausible
+/// narrowing because the prose around this talks about despawning, and
+/// `something_that_stops_being_selectable_stops_being_selected` fails while the
+/// despawn test stays green.
 fn forget_what_is_gone(remove: On<Remove, Selectable>, mut selection: ResMut<Selection>) {
     selection.0.retain(|entity| *entity != remove.entity);
 }
@@ -602,6 +605,34 @@ mod tests {
         assert!(
             selected(&app).is_empty(),
             "the selection still names a despawned entity"
+        );
+    }
+
+    /// Something that stops being selectable stops being selected.
+    ///
+    /// The other half of what `forget_what_is_gone` claims. Despawning is not
+    /// the only way an entity leaves the selection: taking `Selectable` off one
+    /// that is still alive does it too, and that is the case `Remove` covers and
+    /// `Despawn` does not.
+    ///
+    /// Without this, swapping the observer to `Despawn` left every test green,
+    /// measured, which makes the narrowing invisible to whoever reads the
+    /// surrounding prose about despawning and simplifies it.
+    ///
+    /// Mutation: listen on `Despawn` rather than `Remove`, and this fails while
+    /// `a_despawned_entity_does_not_stay_selected` passes.
+    #[test]
+    fn something_that_stops_being_selectable_stops_being_selected() {
+        let mut app = selection_editor();
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        let chosen = selected(&app)[0];
+
+        app.world_mut().entity_mut(chosen).remove::<Selectable>();
+        app.update();
+
+        assert!(
+            selected(&app).is_empty(),
+            "the selection still names something that is no longer selectable"
         );
     }
 
