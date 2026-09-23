@@ -21,12 +21,14 @@ use bevy::ui::{UiRect, percent, px};
 
 #[cfg(test)]
 mod drawn;
+mod inspector;
 mod outline;
 #[cfg(test)]
 mod pointer;
 mod selection;
 mod viewport;
 
+pub use inspector::InspectorPlugin;
 pub use outline::SelectionOutlinePlugin;
 pub use selection::{Selectable, Selection, SelectionPlugin};
 pub use viewport::{ViewportCamera, ViewportPlugin};
@@ -268,11 +270,12 @@ fn spawn_regions(mut commands: Commands) {
 ///
 /// Mutation: remove the row, and
 /// `the_group_carries_the_members_the_table_names` fails.
-pub(crate) const MEMBERS: [Member; 4] = [
+pub(crate) const MEMBERS: [Member; 5] = [
     member!(PanelsPlugin),
     member!(ViewportPlugin),
     member!(SelectionPlugin),
     member!(SelectionOutlinePlugin),
+    member!(InspectorPlugin),
 ];
 
 /// Fold a table of members into the group they compose.
@@ -467,7 +470,8 @@ mod tests {
                 "PanelsPlugin",
                 "ViewportPlugin",
                 "SelectionPlugin",
-                "SelectionOutlinePlugin"
+                "SelectionOutlinePlugin",
+                "InspectorPlugin"
             ]
         );
     }
