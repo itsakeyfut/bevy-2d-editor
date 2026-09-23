@@ -31,6 +31,16 @@ struct Shown(Option<Shape>);
 /// The panel's whole content, as one value that can be compared.
 #[derive(PartialEq)]
 struct Shape {
+    /// Which entity this is about.
+    ///
+    /// **Nothing draws it, and it is not redundant.** Without it two entities
+    /// with the same `Name` and the same components compare equal, so moving
+    /// the selection between them leaves the panel alone. Measured before this
+    /// field was here: selecting one of two identically named placeholders
+    /// after the other rebuilt nothing. What is on screen is the same either
+    /// way today, because this panel draws no values; the moment #43 puts a
+    /// value in a row, the panel would be showing the other entity's.
+    of: Entity,
     /// What the header calls the entity.
     title: String,
     /// One per component, in the order they are drawn.
@@ -124,8 +134,10 @@ impl Plugin for InspectorPlugin {
 /// despawn the children only when there is something to put back, and
 /// `the_inspector_is_empty_when_nothing_is_selected` fails. Mutation: format the
 /// entity without asking for its `Name`, and
-/// `the_header_uses_the_entitys_name_when_it_has_one` fails. Each was applied
-/// and the named test watched to fail.
+/// `the_header_uses_the_entitys_name_when_it_has_one` fails. Mutation: drop the
+/// `of` field from [`Shape`], and
+/// `the_panel_follows_the_selection_to_a_look_alike` fails. Each was applied and
+/// the named test watched to fail.
 fn show(
     selection: Res<Selection>,
     entities: Query<EntityRef>,
@@ -186,7 +198,11 @@ fn show(
             || format!("Entity {entity}"),
             |name| name.as_str().to_owned(),
         );
-        Some(Shape { title, rows })
+        Some(Shape {
+            of: *entity,
+            title,
+            rows,
+        })
     });
 
     if shown.0 == wanted {
@@ -596,6 +612,66 @@ mod tests {
             under_the_panel(&mut app),
             before,
             "the inspector rebuilt a panel nothing had changed"
+        );
+    }
+
+    /// The panel follows the selection to an entity that looks the same.
+    ///
+    /// Every other test here distinguishes two entities by what is on screen,
+    /// which is why none of them reaches this: the placeholders have different
+    /// ids, so their headers differ, so any comparison at all rebuilds. Here
+    /// they are given one name between them, and the header and the rows then
+    /// match to the character.
+    ///
+    /// **What it costs to get wrong is #43's, not this issue's.** The two
+    /// panels are identical today, so nothing is visibly wrong; the moment a
+    /// row carries a value, a panel that did not rebuild is one showing the
+    /// value of an entity the user is no longer looking at.
+    ///
+    /// Mutation: drop the `of` field from `Shape`, and this fails. Every other
+    /// test in this module passes under it, measured, which is the whole reason
+    /// this one exists.
+    #[test]
+    fn the_panel_follows_the_selection_to_a_look_alike() {
+        let mut app = inspector_editor();
+        let everything: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<crate::Selectable>>()
+            .iter(app.world())
+            .collect();
+        assert!(
+            everything.len() > 1,
+            "there is only one thing to select, so nothing can look like another"
+        );
+        for entity in everything {
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(Name::new("Player"));
+        }
+        app.update();
+
+        let middle = select_the_middle(&mut app);
+        let first = under_the_panel(&mut app);
+        let shown_first = on_screen(&mut app);
+        assert!(!first.is_empty(), "nothing was built to compare");
+
+        click_at(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+        let left = app.world().resource::<Selection>().entities()[0];
+
+        assert_ne!(left, middle, "the second click chose the same entity");
+        assert_eq!(
+            on_screen(&mut app),
+            shown_first,
+            "the two entities do not look the same, so this tests nothing"
+        );
+        assert_ne!(
+            under_the_panel(&mut app),
+            first,
+            "the panel stayed on the entity that is no longer selected"
         );
     }
 
