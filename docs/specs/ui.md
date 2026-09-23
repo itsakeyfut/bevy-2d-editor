@@ -523,3 +523,11 @@ of type names that phase 3 deletes.
 
 **Scrolling and collapsing are not here.** Fourteen rows fit in a 300-pixel pane.
 Both arrive when something does not fit, rather than now.
+
+**After a box drag the header names an arbitrary one of what the box covered.**
+§4's box adds several entities in one gesture, and
+`crates/editor/src/selection.rs` says that nothing ranks them: only the boundary
+between gestures is meaningful, so "the last one chosen" has no answer inside a
+boxed group. What the header should say instead is deferred, with its trigger,
+in [open-questions.md §1](./open-questions.md). While the header carries a name
+and no values, the cost is cosmetic.

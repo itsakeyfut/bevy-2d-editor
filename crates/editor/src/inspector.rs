@@ -40,6 +40,20 @@ struct Shape {
     /// way today, because this panel draws no values; the moment #43 puts a
     /// value in a row, the panel would be showing the other entity's.
     of: Entity,
+    /// Which region the children were spawned under.
+    ///
+    /// The same argument as `of`, one level out: without it this value is a
+    /// claim about a particular pane's children compared without reference to
+    /// that pane. Replace the region and the comparison still says "already
+    /// shown", so the new pane stays blank until the selection next changes.
+    /// Measured before this field was here: despawning the inspector region and
+    /// spawning another left the panel empty with an entity still selected.
+    ///
+    /// **Nothing can reach that today**, because `spawn_regions` runs once at
+    /// `Startup` and nothing despawns a region. Docking is what brings it, and
+    /// docking is deferred with a trigger in
+    /// `docs/specs/open-questions.md` §1.
+    into: Entity,
     /// What the header calls the entity.
     title: String,
     /// One per component, in the order they are drawn.
@@ -140,8 +154,10 @@ impl Plugin for InspectorPlugin {
 /// entity without asking for its `Name`, and
 /// `the_header_uses_the_entitys_name_when_it_has_one` fails. Mutation: drop the
 /// `of` field from [`Shape`], and
-/// `the_panel_follows_the_selection_to_a_look_alike` fails. Each was applied and
-/// the named test watched to fail.
+/// `the_panel_follows_the_selection_to_a_look_alike` fails. Mutation: drop the
+/// `into` field from [`Shape`], and
+/// `the_panel_is_rebuilt_when_the_region_it_draws_into_is_replaced` fails. Each
+/// was applied and the named test watched to fail.
 fn show(
     world: &World,
     shown: Res<Shown>,
@@ -158,9 +174,18 @@ fn show(
     };
 
     let registry = world.resource::<AppTypeRegistry>().read();
-    // The last element is the most recently chosen, which is the one Unity
-    // calls active. `Selection` in `selection.rs` is where that condition is
-    // written down; this is its first reader.
+    // The last element is the one Unity calls active, and `Selection` in
+    // `selection.rs` is where that condition is written down; this is its first
+    // reader.
+    //
+    // **It says less than it looks.** That file also says that several entities
+    // added by one gesture go on the end together in the order the world
+    // iterates them, and that only the boundary between gestures is meaningful.
+    // So after a click the last element is the one just clicked, and after a box
+    // drag it is an arbitrary member of what the box covered. Measured: a box
+    // over two placeholders selects both and this names the second. What the
+    // header should say in that case is not decided; the deferral and its
+    // trigger are in `docs/specs/open-questions.md` §1.
     let selection = world.resource::<Selection>();
     let wanted = selection.entities().last().and_then(|entity| {
         // `Err` rather than a panic when the entity is gone. **No test holds
@@ -199,6 +224,7 @@ fn show(
         );
         Some(Shape {
             of: *entity,
+            into: panel,
             title,
             rows,
         })
@@ -671,6 +697,53 @@ mod tests {
             under_the_panel(&mut app),
             first,
             "the panel stayed on the entity that is no longer selected"
+        );
+    }
+
+    /// The panel is rebuilt when the region it draws into is replaced.
+    ///
+    /// The same argument as `the_panel_follows_the_selection_to_a_look_alike`
+    /// one level out: there the content was the same and the entity differed,
+    /// here the content and the entity are both the same and the pane differs.
+    /// Nothing else in this module ever hands `show` a second region, which is
+    /// why nothing else can reach it.
+    ///
+    /// **Nothing in the editor can reach it either**, today: `spawn_regions`
+    /// runs once at `Startup`. This is written for the docking that
+    /// `docs/specs/open-questions.md` §1 defers, which is exactly a pane being
+    /// torn down and put back somewhere else.
+    ///
+    /// Mutation: drop the `into` field from `Shape`, and this fails with the
+    /// replacement pane empty. Every other test in this module passes under it.
+    #[test]
+    fn the_panel_is_rebuilt_when_the_region_it_draws_into_is_replaced() {
+        let mut app = inspector_editor();
+        let chosen = select_the_middle(&mut app);
+        let before = on_screen(&mut app);
+        assert!(!before.is_empty(), "nothing was built to replace");
+
+        let old = panel_of(&mut app);
+        let parent = app
+            .world()
+            .entity(old)
+            .get::<ChildOf>()
+            .expect("the region hangs from the middle row")
+            .parent();
+        app.world_mut().entity_mut(old).despawn();
+        app.world_mut().spawn((Region::Inspector, ChildOf(parent)));
+        app.update();
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<Selection>().entities(),
+            [chosen],
+            "replacing the region changed the selection, so this tests something else"
+        );
+        assert_ne!(panel_of(&mut app), old, "the region was not replaced");
+        assert_eq!(
+            on_screen(&mut app),
+            before,
+            "the replacement pane never filled"
         );
     }
 
