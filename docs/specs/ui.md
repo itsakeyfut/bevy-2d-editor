@@ -420,3 +420,114 @@ carry colour only (§3) and there is none for an editor overlay drawn in the
 world. It was chosen to read against the window's dark background and against
 the three placeholders, which is not artwork. If it disappears over real art,
 it is one value and not a design.
+
+---
+
+## 6. What the inspector shows
+
+### Decision
+
+**Every component the entity has**, listed by the name the type registry gives
+it, sorted by that name, under a header naming the entity.
+
+| | |
+| --- | --- |
+| Which components | **all of them**, engine internals included. No filter, no denylist |
+| The name | `TypeRegistration`'s `short_path()`. `Transform`, not `bevy_transform::components::transform::Transform` |
+| A component with no registration | **a row saying `<no reflection>`**, dimmed, rather than nothing |
+| The header | the entity's `Name` if it has one, otherwise `Entity 356v0` |
+| The order | the names, ascending. Every unregistered row goes after every named one |
+| Nothing selected | an empty pane |
+
+**The type registry is the only source of a name**, and that is a measurement
+rather than a preference. `ComponentInfo::name()` returns a `DebugName`, which
+carries nothing unless `bevy_utils/debug` is on; the feature line §3 settles
+does not reach it, so every component answers
+`<Enable the debug feature to see the name>`. There is no fallback under the
+registry, which is why the unregistered row says what it says instead of
+guessing.
+
+A component that derives `Reflect` is registered without anybody asking:
+`reflect_auto_register` is on through Bevy's `default_app`. So the user-defined
+components phase 3 brings ([roadmap.md §3](./roadmap.md)) arrive here on their
+own, and the unregistered row is for what this workspace attaches without the
+derive.
+
+### Rationale
+
+**Listing everything is the option whose failure the user can see.** Measured on
+one placeholder that has been clicked: 14 components, of which `Transform` and
+`Sprite` are the two anybody came for and `TransformTreeChanged`,
+`ViewVisibility` and `SyncToRenderWorld` are among the twelve they did not. That is noisy, and
+noise is row 4 of `CLAUDE.md`'s failure list: wrong on screen, and visible.
+Hiding components is row 4 as an absence, which is the same row and cannot be
+seen at all. Between two failures on one row, the one the user can point at
+wins.
+
+It also declines to decide what "less" means. The thing that could decide it
+properly is the reflection schema phase 3 extracts, which is what lets the
+editor tell a component the user defined from one the engine attached. That
+deferral has a trigger, in
+[open-questions.md §1](./open-questions.md).
+
+**The header names the entity the way Unity names a GameObject**, which is §2
+applied. Bevy's `Name` is optional and nothing in the world carries one yet, so
+the fallback is what is actually on screen; the `Name` branch is written now
+because the first named entity is phase 2's and coming back for it is how it
+gets forgotten.
+
+**Sorting is what makes the panel the same twice.** The archetype hands its
+components back in type registration order, which is plugin build order:
+measured, `GlobalTransform` comes before `Transform`. That means nothing to a
+reader and it moves when a plugin is added.
+
+### Rejected options
+
+**Only the components the registry names.** Thirteen rows rather than fourteen.
+It differs from the chosen option by exactly the one row that says something is
+there and unnamed, so it buys tidiness by deleting the honest part.
+
+**A hand-written list of components to hide.** The Unity-shaped picture, three
+rows. It is a list nobody can check against anything, written before the schema
+that would justify it, and rebuilt in phase 3. It also puts component type names
+in the editor's code, which is the thing an inspector driven by reflection is
+supposed not to have.
+
+**`Transform` pinned to the top, the rest alphabetical.** Unity's own layout,
+and the most tempting option here. It needs a named type in the code for exactly
+the reason above.
+
+**The archetype's order, unsorted.** Shortest, meaningless to a reader, and not
+stable against adding a plugin.
+
+**`Unnamed` in the header when there is no `Name`.** Tidier than an id, and
+selecting one unnamed entity after another leaves the header unchanged, so the
+panel stops saying that the selection moved.
+
+**Turning on Bevy's `debug` feature**, which makes `ComponentInfo::name()` work
+and gives every component a name, registered or not. It costs an amendment to
+§3's feature line, which `xtask`'s
+`every_manifest_asks_for_the_features_the_specification_settled` holds, for a
+fallback that only ever names types this repository owns. It comes back if the
+missing names start costing time: the engine's own conflict diagnostics are
+unreadable without it, which is already visible in
+`crates/editor/src/inspector.rs`.
+
+### Accepted risk
+
+**The panel is noisy, and will stay noisy until phase 3.** Twelve of the
+fourteen rows on a placeholder are the engine's, one is the editor's own
+`Selectable` and one is the `Sprite` the user put there. Nobody can edit any of them yet, so what
+it costs today is reading past them; what it would cost to fix today is a list
+of type names that phase 3 deletes.
+
+**Scrolling and collapsing are not here.** Fourteen rows fit in a 300-pixel pane.
+Both arrive when something does not fit, rather than now.
+
+**After a box drag the header names an arbitrary one of what the box covered.**
+§4's box adds several entities in one gesture, and
+`crates/editor/src/selection.rs` says that nothing ranks them: only the boundary
+between gestures is meaningful, so "the last one chosen" has no answer inside a
+boxed group. What the header should say instead is deferred, with its trigger,
+in [open-questions.md §1](./open-questions.md). While the header carries a name
+and no values, the cost is cosmetic.
