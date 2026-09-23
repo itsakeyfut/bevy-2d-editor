@@ -4,7 +4,7 @@ date: 2026-09-23
 decision-makers: the project's owner, during `/spec` on #42
 ---
 
-# Rebuild the inspector's panel rather than reconcile it, and walk the entity from an ordinary system
+# Rebuild the inspector's panel rather than reconcile it, and walk the entity with the engine's own call
 
 ## Context and Problem Statement
 
@@ -15,8 +15,7 @@ panel changes every time the selection does, and its length changes with it.
 
 Two shapes answer that, and they differ in what they keep: a rebuild keeps
 nothing and a reconcile keeps a row per component. The same change also has to
-choose how the entity is walked, because Bevy offers the walk in two places and
-one of them makes the system exclusive.
+choose how the entity is walked, because Bevy offers the walk in two places.
 
 What is on screen is [`docs/specs/ui.md` §6](../specs/ui.md) and is not repeated
 here.
@@ -38,7 +37,7 @@ contents move.
 * **#44 attaches an input field to a row.** Whatever is chosen has to leave a
   row alone while nothing about it has changed, or the field is destroyed under
   the cursor.
-* Nothing here is large. Fifteen rows on a placeholder, measured.
+* Nothing here is large. Fourteen rows on a placeholder, measured.
 
 ## Considered Options
 
@@ -62,15 +61,33 @@ part of the choice. Change detection on the selection alone would not see a
 component added to an entity that is already selected, and watching archetypes
 as well would be a second mechanism to keep in step with the first.
 
-**The walk is done from an ordinary system.** `World::inspect_entity` is the
-engine's own and returns exactly what this needs, `Err` for a despawned entity
-included, but it takes `&World` and would make this the only exclusive system in
-the editor. `EntityRef::archetype().components()` with `&Components` beside it
-is the same walk in a system the schedule can run in parallel with others. This
-is where "use what Bevy provides"
-([architecture.md §5](../specs/architecture.md)) meets a cost: the engine
-provides both, and the cheaper-looking one is the one that serialises the
-schedule.
+**The walk is `World::inspect_entity`, which is the engine's own.** It returns
+`Result<impl Iterator<Item = &ComponentInfo>, EntityNotSpawnedError>`, the `Err`
+covering a despawned entity, and it is exactly what this needs.
+[architecture.md §5](../specs/architecture.md) says to find out whether the
+engine has a mechanism before building one, and it has this one.
+
+**The first version of this record said otherwise, and was wrong.** It claimed
+that `&World` would make this "the only exclusive system in the editor" and that
+`EntityRef::archetype().components()` with `&Components` beside it would let the
+schedule run this in parallel where `&World` would not. A reviewer checked both
+halves against `bevy_ecs` 0.19.1 and neither holds:
+
+* Bevy reserves "exclusive system" for a system taking `&mut World`
+  (`src/system/exclusive_system_param.rs`). A `&World` parameter is an ordinary
+  `ReadOnlySystemParam`.
+* `&World` and `Query<EntityRef>` have **the same** access footprint. `&World`'s
+  `init_access` calls `filtered_access.read_all()`
+  (`src/system/system_param.rs`), and `EntityRef`'s `update_component_access`
+  calls `access.read_all()` (`src/query/fetch.rs`). Neither can run beside a
+  system that writes anything, and neither is better off than the other.
+
+So the reason recorded here bought nothing, and what it was hiding is that the
+engine's own call is both shorter and the one
+[architecture.md §5](../specs/architecture.md) asks for.
+`show` went from seven parameters to four. This is kept rather than deleted
+because the wrong reason is the part worth knowing: it was plausible, it was
+written as if measured, and it took a reader with no stake in it to check.
 
 ### Confirmation
 
@@ -80,17 +97,17 @@ updates twice with nothing changed, and asserts the ids are the same: a rebuild
 despawns them, so surviving ids are a panel that was left alone.
 
 **Mutation: delete the `shown.0 == wanted` guard in `show`.** Applied, and that
-test failed while the other ten in the module passed. Measured.
+test failed while the other eleven in the module passed. Measured.
 
 The opposite failure, a panel that never rebuilds, is held by
 `choosing_a_different_entity_changes_what_is_shown`. Mutation: return early
-whenever `Shown` already holds something. Applied, and six tests failed
-including that one.
+whenever `Shown` already holds something. Applied: **seven** of the twelve
+failed, that one among them.
 
-**Nothing holds the exclusive-versus-ordinary half of this decision**, and
-nothing can: both spellings produce the same panel. What would reverse it is a
-reviewer deciding the engine's own call reads better than reproducing it, which
-is what this record exists to answer.
+**Nothing holds the choice of walk**, and nothing can: both spellings produce
+the same panel, and the first version of this record proves that a reason
+written here can be wrong for weeks without any test noticing. What guards it is
+a reader checking the claim against the engine, which is what happened.
 
 ### Consequences
 
@@ -125,7 +142,7 @@ is what this record exists to answer.
   in the list.
 * Bad, because it adds state whose bug is a stale row: row 4, arriving quietly,
   in a panel whose whole job is to say what is true.
-* Bad, because it is more code than the thing it optimises is worth at fifteen
+* Bad, because it is more code than the thing it optimises is worth at fourteen
   rows.
 
 ### Rebuild every frame, no comparison

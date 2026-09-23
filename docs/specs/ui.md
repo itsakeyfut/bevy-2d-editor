@@ -456,9 +456,9 @@ derive.
 ### Rationale
 
 **Listing everything is the option whose failure the user can see.** Measured on
-one placeholder: 15 components, of which `Transform` and `Sprite` are the two
-anybody came for and `TransformTreeChanged`, `ViewVisibility` and
-`SyncToRenderWorld` are among the thirteen they did not. That is noisy, and
+one placeholder that has been clicked: 14 components, of which `Transform` and
+`Sprite` are the two anybody came for and `TransformTreeChanged`,
+`ViewVisibility` and `SyncToRenderWorld` are among the twelve they did not. That is noisy, and
 noise is row 4 of `CLAUDE.md`'s failure list: wrong on screen, and visible.
 Hiding components is row 4 as an absence, which is the same row and cannot be
 seen at all. Between two failures on one row, the one the user can point at
@@ -483,8 +483,8 @@ reader and it moves when a plugin is added.
 
 ### Rejected options
 
-**Only the components the registry names.** Thirteen rows rather than fifteen.
-It differs from the chosen option by exactly the two rows that say something is
+**Only the components the registry names.** Thirteen rows rather than fourteen.
+It differs from the chosen option by exactly the one row that says something is
 there and unnamed, so it buys tidiness by deleting the honest part.
 
 **A hand-written list of components to hide.** The Unity-shaped picture, three
@@ -515,10 +515,11 @@ unreadable without it, which is already visible in
 
 ### Accepted risk
 
-**The panel is noisy, and will stay noisy until phase 3.** Thirteen of fifteen
-rows on a placeholder are the engine's. Nobody can edit any of them yet, so what
+**The panel is noisy, and will stay noisy until phase 3.** Twelve of the
+fourteen rows on a placeholder are the engine's, one is the editor's own
+`Selectable` and one is the `Sprite` the user put there. Nobody can edit any of them yet, so what
 it costs today is reading past them; what it would cost to fix today is a list
 of type names that phase 3 deletes.
 
-**Scrolling and collapsing are not here.** Fifteen rows fit in a 300-pixel pane.
+**Scrolling and collapsing are not here.** Fourteen rows fit in a 300-pixel pane.
 Both arrive when something does not fit, rather than now.

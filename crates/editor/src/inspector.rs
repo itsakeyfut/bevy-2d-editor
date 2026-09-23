@@ -5,7 +5,6 @@
 //! rebuilt rather than reconciled is
 //! [ADR-0002](../../../docs/adr/0002-rebuild-the-inspector-rather-than-diff-it.md).
 
-use bevy::ecs::component::{ComponentInfo, Components};
 use bevy::feathers::containers::{pane_body, pane_header};
 use bevy::feathers::display::{label, label_dim};
 use bevy::prelude::*;
@@ -85,28 +84,32 @@ impl Plugin for InspectorPlugin {
 ///   `ComponentInfo::name()` returns a `DebugName`, which carries nothing
 ///   unless `bevy_utils/debug` is on, and this build does not turn it on:
 ///   every component answers `"<Enable the debug feature to see the name>"`.
-///   So the walk goes `ComponentId` -> `ComponentInfo::type_id` ->
-///   `TypeRegistry::get` -> `type_path_table().short_path()`.
+///   So each name goes `ComponentInfo::type_id` -> `TypeRegistry::get` ->
+///   `type_path_table().short_path()`.
 /// * **A component nobody registered has no name at all.** There is no
-///   fallback to drop to, which is why [`UNREGISTERED`] exists. Of the 15
-///   components a placeholder carries, 13 are named and 2 are not: `Selectable`
-///   and anything else this workspace attaches without deriving `Reflect`.
+///   fallback to drop to, which is why [`UNREGISTERED`] exists. Measured on a
+///   placeholder that has been clicked: **14 components, 13 named and one
+///   not**, and the one is `Selectable`. Thirteen before the click, because
+///   `PickingInteraction` arrives with it.
 /// * **`reflect_auto_register` is on**, through Bevy's `default_app`. A
 ///   component that derives `Reflect` is registered without anybody calling
 ///   `register_type`, so phase 3's user-defined components arrive here on their
 ///   own.
-/// * **`World::inspect_entity` is the engine's own walk** and returns exactly
-///   this, `Err` for an entity that is gone included. It takes `&World`, which
-///   would make this the only exclusive system in the editor;
-///   [`EntityRef::archetype`] plus `&Components` is the same walk in a system
-///   the schedule can run beside others. ADR-0002 carries that choice.
+/// * **The walk is [`World::inspect_entity`], which is the engine's own.** It
+///   returns `Result<impl Iterator<Item = &ComponentInfo>, EntityNotSpawnedError>`,
+///   the `Err` covering an entity that is gone. It needs `&World`, and taking
+///   `&World` does **not** make a system exclusive: Bevy reserves that word for
+///   a system taking `&mut World`. Nor does it cost any parallelism against
+///   `Query<EntityRef>`, which was the other spelling: both reach
+///   `Access::read_all`, so the scheduler sees one footprint. An earlier
+///   version of this comment claimed otherwise, and ADR-0002 records what that
+///   was worth.
 ///
 /// # Why the resource is read and written through two different paths
 ///
 /// [`Shown`] is a `Res` here and goes back through `Commands`, **not a
-/// `ResMut`**. `Query<EntityRef>` claims read access to everything, resources
-/// included, so a `ResMut` beside it is a conflict the engine panics on at
-/// first run:
+/// `ResMut`**. `&World` claims read access to everything, resources included,
+/// so a `ResMut` beside it is a conflict the engine panics on at first run:
 ///
 /// ```text
 /// error[B0002]: ResMut<<Enable the debug feature to see the name>> in system
@@ -114,7 +117,8 @@ impl Plugin for InspectorPlugin {
 /// parameter.
 /// ```
 ///
-/// Measured. Note that the message can name neither the resource nor the
+/// Measured under both this spelling and the `Query<EntityRef>` one it
+/// replaced. Note that the message can name neither the resource nor the
 /// system, for the same reason the components have no names.
 ///
 /// # The empty state is an empty pane
@@ -139,10 +143,7 @@ impl Plugin for InspectorPlugin {
 /// `the_panel_follows_the_selection_to_a_look_alike` fails. Each was applied and
 /// the named test watched to fail.
 fn show(
-    selection: Res<Selection>,
-    entities: Query<EntityRef>,
-    components: &Components,
-    registry: Res<AppTypeRegistry>,
+    world: &World,
     shown: Res<Shown>,
     regions: Query<(Entity, &Region)>,
     mut commands: Commands,
@@ -156,33 +157,30 @@ fn show(
         return;
     };
 
-    let registry = registry.read();
+    let registry = world.resource::<AppTypeRegistry>().read();
     // The last element is the most recently chosen, which is the one Unity
     // calls active. `Selection` in `selection.rs` is where that condition is
     // written down; this is its first reader.
+    let selection = world.resource::<Selection>();
     let wanted = selection.entities().last().and_then(|entity| {
         // `Err` rather than a panic when the entity is gone. **No test holds
         // this, because nothing can currently reach it**: `forget_what_is_gone`
         // in `selection.rs` observes `Remove<Selectable>`, observers run at the
         // despawn rather than a frame later, and `Selection` only ever names
         // something that was `Selectable`. Measured: replacing this with
-        // `.expect()` leaves all eleven tests in this module green. It stays
-        // because `Query::get` returns a `Result` and taking the safe arm of
-        // one costs nothing, and because the entity that reaches here first
+        // `.expect()` leaves all twelve tests in this module green. It stays
+        // because `inspect_entity` returns a `Result` and taking the safe arm
+        // of one costs nothing, and because the entity that reaches here first
         // will be one some later gesture put in the selection without that
         // observer's knowledge. Saying so beats letting a green suite imply a
         // guard, which is RK-005's rule.
-        let found = entities.get(*entity).ok()?;
-        let mut rows: Vec<Row> = found
-            .archetype()
-            .components()
-            .iter()
-            .map(|id| {
-                components
-                    .get_info(*id)
-                    .and_then(ComponentInfo::type_id)
-                    .and_then(|of| registry.get(of))
-                    .map_or(Row::Unregistered, |registration| {
+        let mut rows: Vec<Row> = world
+            .inspect_entity(*entity)
+            .ok()?
+            .map(|info| {
+                info.type_id().and_then(|of| registry.get(of)).map_or(
+                    Row::Unregistered,
+                    |registration| {
                         Row::Named(
                             registration
                                 .type_info()
@@ -190,11 +188,12 @@ fn show(
                                 .short_path()
                                 .to_owned(),
                         )
-                    })
+                    },
+                )
             })
             .collect();
         rows.sort();
-        let title = found.get::<Name>().map_or_else(
+        let title = world.get::<Name>(*entity).map_or_else(
             || format!("Entity {entity}"),
             |name| name.as_str().to_owned(),
         );
