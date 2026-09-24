@@ -688,7 +688,7 @@ the panel is editable.
 | What commits | **Enter, or the box losing focus.** Typing moves nothing |
 | A value that does not parse | **nothing is written.** The box keeps the typed text until it loses focus, and the real value comes back with the rebuild that follows |
 | Where the write lands | one `f32` leaf, of one field, of one component, on the active entity, through `World::get_reflect_mut` |
-| While a box has focus | **the panel is not rebuilt**, so the box survives the value it just changed. [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) |
+| While a box has focus | **the panel is not rebuilt**, so the box survives the value it just changed, and for one frame after the focus leaves, so that it survives its own commit. [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) |
 | More than one entity selected | only the active entity, which is the one the header names and, since §4, the front-most of the group |
 | Taking it back | **not yet.** Undo is later in the phase ([roadmap.md §3](./roadmap.md)); typing the old number back is what there is |
 
@@ -786,3 +786,14 @@ focus leaves. The way to reach it is the component being removed between the
 panel being drawn and Enter being pressed, which nothing in the editor does yet.
 Nothing is written and nothing is said, which is row 4 for as long as the box
 holds focus.
+
+**Letting go of a box writes what is in it, whether or not it was typed into.**
+`bevy_feathers` emits on focus loss regardless, so clicking into a box and
+clicking out again writes the number that was already there back to the
+component. That is a no-op unless the value moved while the box held focus, and
+while it does the panel is frozen, so the only thing that could move it is
+something other than the inspector. Nothing in the editor is that today; the
+gizmos and the undo of [roadmap.md §3](./roadmap.md) are the first that would
+be, and what it would look like then is the user's own older number quietly
+coming back. Row 6 in miniature, reachable only once a second writer exists,
+and the thing that would close it is a box that knows whether it was edited.

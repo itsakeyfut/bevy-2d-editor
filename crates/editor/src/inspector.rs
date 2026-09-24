@@ -17,7 +17,7 @@ use bevy::feathers::controls::{
     FeathersNumberInput, NumberFormat, NumberInputValue, UpdateNumberInput,
 };
 use bevy::feathers::display::{label, label_dim};
-use bevy::input_focus::InputFocus;
+use bevy::input_focus::IsFocused;
 use bevy::prelude::*;
 use bevy::reflect::{ReflectMut, ReflectRef};
 use bevy::ui::ScrollPosition;
@@ -46,6 +46,27 @@ const UNREGISTERED: &str = "<no reflection>";
 /// with the first.
 #[derive(Resource, Default, PartialEq)]
 struct Shown(Option<Shape>);
+
+/// Whether the focus was inside the panel the last time [`show`] looked.
+///
+/// **The panel is held for one frame after the focus leaves it, and this is
+/// what remembers that it has to be.** A box commits when it loses focus, and
+/// the two do not happen in the same place in the frame: the engine clears
+/// `InputFocus` in `PreUpdate`, `show` runs in `Update`, and `FocusLost`
+/// reaches the widget in `PostUpdate`. Without this, clicking away from a box
+/// rebuilds the panel in between, so `bevy_feathers` finds a despawned entity,
+/// emits nothing, and the number the user typed is discarded in silence.
+///
+/// Measured before this existed: typing into a box and clicking a different
+/// placeholder left the component untouched, while clearing `InputFocus` by
+/// hand in a world where nothing else changed committed correctly. The suite
+/// was green, because the only test of this path did the second thing.
+///
+/// What it costs is one frame in which the panel is a frame out of date, which
+/// nobody can see, and it is written on
+/// [ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md).
+#[derive(Resource, Default)]
+struct FocusWasInside(bool);
 
 /// The panel's whole content, as one value that can be compared.
 #[derive(PartialEq)]
@@ -235,6 +256,7 @@ pub struct InspectorPlugin;
 impl Plugin for InspectorPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Shown>()
+            .init_resource::<FocusWasInside>()
             .add_systems(Update, show)
             .add_observer(commit);
     }
@@ -352,7 +374,7 @@ impl Plugin for InspectorPlugin {
 fn show(
     world: &World,
     shown: Res<Shown>,
-    focus: Res<InputFocus>,
+    was_inside: Res<FocusWasInside>,
     regions: Query<(Entity, &Region)>,
     mut commands: Commands,
 ) {
@@ -371,14 +393,21 @@ fn show(
     // [ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)
     // is where the options were weighed.
     //
-    // `Shown` is left unwritten too. Writing it would record a picture that
-    // was never drawn, and the panel would then compare equal to something
-    // that is not on screen, which is what `Shape::into` exists to prevent one
-    // level out.
-    if focus
-        .get()
-        .is_some_and(|focused| is_under(world, focused, panel))
-    {
+    // **And for one frame after it leaves**, which is [`FocusWasInside`] and
+    // is the difference between a box that commits when the user clicks away
+    // and one that throws their number away. The engine clears the focus in
+    // `PreUpdate` and the widget hears about it in `PostUpdate`, so this
+    // system sees no focus at all in the frame that has to keep the box alive.
+    //
+    // `Shown` is left unwritten either way. Writing it would record a picture
+    // that was never drawn, and the panel would then compare equal to
+    // something that is not on screen, which is what `Shape::into` exists to
+    // prevent one level out.
+    let inside = world.is_focus_within(panel);
+    if inside != was_inside.0 {
+        commands.insert_resource(FocusWasInside(inside));
+    }
+    if inside || was_inside.0 {
         return;
     }
 
@@ -668,22 +697,6 @@ fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
             })
         })
         .collect()
-}
-
-/// Whether one entity is the panel, or sits somewhere under it.
-///
-/// Walks `ChildOf` upwards, which is bounded by the depth of the panel's tree.
-/// The alternative, asking the panel for its descendants, would walk the whole
-/// subtree to answer a question about one entity.
-fn is_under(world: &World, entity: Entity, panel: Entity) -> bool {
-    let mut next = Some(entity);
-    while let Some(current) = next {
-        if current == panel {
-            return true;
-        }
-        next = world.entity(current).get::<ChildOf>().map(ChildOf::parent);
-    }
-    false
 }
 
 /// Commit what a number box holds, when the user says so.
@@ -1104,20 +1117,39 @@ mod tests {
         panic!("the box has nothing to type into");
     }
 
-    /// Type into a box, and commit it by letting the focus go.
+    /// Type into a box, and commit it by clicking somewhere else.
     ///
-    /// The whole path, rather than a `ValueChange` made up here: the buffer is
-    /// edited, the box takes focus, and the focus leaves, which is one of the
-    /// two things `docs/specs/ui.md` §7 commits on.
+    /// **The gesture, rather than the focus resource.** An earlier version of
+    /// this helper cleared `InputFocus` by hand between updates, and that is
+    /// the one arrangement in which the panel has nothing else to redraw, so
+    /// the box happened to survive long enough to commit. Every test that went
+    /// through it passed while clicking away silently threw the number
+    /// away. Clicking is what a person does, so clicking is what this does.
     fn type_and_commit(app: &mut App, cell: Entity, text: &str) {
         type_into(app, cell, text);
+        focus(app, cell);
+        // Onto the middle placeholder, which is the one these tests have
+        // already selected. Clicking it takes the focus out of the box, which
+        // is the commit, and changes its `PickingInteraction`, which is what
+        // makes the panel want to rebuild in the same frame. Clicking a
+        // different entity would do both of those and move the selection as
+        // well, which is a second thing for a test to have to reason about.
+        click_at(app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+    }
+
+    /// Put the focus in a box, the way pressing on it does.
+    ///
+    /// `bevy_ui_widgets`' own `on_pointer_press` sets `InputFocus` to the
+    /// entity carrying the text, with `FocusCause::Pressed`, so this is that
+    /// call rather than a pointer event: the press would land on a node whose
+    /// size a headless layout has not settled.
+    fn focus(app: &mut App, cell: Entity) {
         let inner = editable_under(app.world(), cell);
         app.world_mut()
             .resource_mut::<InputFocus>()
             .set(inner, FocusCause::Pressed);
-        app.update();
-        app.world_mut().resource_mut::<InputFocus>().clear();
-        app.update();
         app.update();
     }
 
@@ -2529,6 +2561,13 @@ mod tests {
     /// discovered: every other line is stale for as long as one box holds
     /// focus. The second half is what makes it a freeze rather than a stop.
     ///
+    /// **What moves here is the scale, and the box that holds focus is on the
+    /// translation.** They have to be different fields, because letting a box
+    /// go commits what is in it: focusing a box, moving the same number behind
+    /// the panel's back and then letting go writes the box's stale value over
+    /// the new one, which is a real property of this design and belongs to its
+    /// own place rather than to this test. `docs/specs/ui.md` §7 records it.
+    ///
     /// Mutation: delete the focus guard at the top of `show`, and the first
     /// assertion fails. Mutation: make that return happen whenever anything is
     /// already shown, rather than only while the focus is in the panel, and
@@ -2546,27 +2585,38 @@ mod tests {
             .set(inner, FocusCause::Pressed);
         app.update();
 
-        // Something else moves the entity while the user is typing.
+        // Something else resizes the entity while the user is in a box on its
+        // translation.
         app.world_mut()
             .entity_mut(middle)
-            .insert(Transform::from_xyz(0.0, 99.0, 0.0));
+            .insert(Transform::from_scale(Vec3::splat(3.0)));
         app.update();
         app.update();
 
+        let scale = line_of(&mut app, "Transform", 2);
         assert_eq!(
-            numbers_on(&mut app, line),
-            ["0", "0", "0"],
+            numbers_on(&mut app, scale),
+            ["1", "1", "1"],
             "the panel was rebuilt while a box had focus"
         );
 
         app.world_mut().resource_mut::<InputFocus>().clear();
+        // Four, and each one is doing something. The panel is held for a frame
+        // after the focus leaves, so that a box outlives its own commit. Then
+        // it rebuilds. Then it rebuilds again, because `GlobalTransform` has
+        // caught up with the `Transform` inserted above and the compared value
+        // carries both. And a box's buffer is filled by the text edit queue on
+        // the frame after the box is spawned, so the last rebuild's numbers are
+        // not readable until one more.
+        app.update();
+        app.update();
         app.update();
         app.update();
 
-        let line = line_of(&mut app, "Transform", 0);
+        let scale = line_of(&mut app, "Transform", 2);
         assert_eq!(
-            numbers_on(&mut app, line),
-            ["0", "99", "0"],
+            numbers_on(&mut app, scale),
+            ["3", "3", "3"],
             "the panel never caught up after the focus left"
         );
     }

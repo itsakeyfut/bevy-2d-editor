@@ -49,15 +49,28 @@ the user edit is [§7](../specs/ui.md); neither is repeated here.
 
 Chosen option: **do not rebuild while focus is inside the panel.**
 
-`show` reads `InputFocus`, and when the focused entity is a descendant of the
-inspector region it returns before comparing anything and without writing
-`Shown`. The next frame after focus leaves, the comparison runs as it always
-did and the panel is rebuilt from what the world now holds.
+`show` asks `bevy_input_focus`' own `IsFocused::is_focus_within` whether the
+focus is inside the inspector region, and returns before comparing anything and
+without writing `Shown` when it is. The engine's call is the same walk up
+`ChildOf` that a hand-written one would be, and
+[architecture.md §5](../specs/architecture.md) asks for the engine's where there
+is one.
 
 The rule is one sentence: **while the user is in the panel, the panel is theirs.**
 It is the smallest thing that answers ADR-0002's open cost, and it holds the
 half-typed value in the only place that can hold it without a reconcile, which
 is the widget the user is typing into.
+
+**And for one frame after the focus leaves, which is not an extra and was found
+by review.** A box commits when it loses focus, and the losing and the
+committing are in different places in the frame: the engine clears `InputFocus`
+in `PreUpdate`, `show` runs in `Update`, and `FocusLost` reaches the widget in
+`PostUpdate`. With the rule as first written, clicking away from a box rebuilt
+the panel in between, so `bevy_feathers` found a despawned entity, emitted
+nothing, and **the number the user had typed was discarded in silence.** The
+`FocusWasInside` resource holds the panel for that one frame, so the box
+outlives its own commit. Row 4: the box snaps back to the old number and the
+user can see that nothing took, which is a poor way to find out.
 
 Leaving `Shown` unwritten is part of the choice. Writing it would record a
 picture that was never drawn, and the panel would then compare equal to
@@ -74,10 +87,17 @@ and asserts that the same entity is still there afterwards.
 `Transform`, `Shape` differs, and the panel is despawned, so the entity the test
 recorded is gone.
 
+**Mutation: hold only while the focus is inside, dropping `FocusWasInside`.**
+Then `committing_a_field_writes_it_to_the_component` fails, because the gesture
+its helper performs is the one that loses the value: typing, then clicking
+somewhere else. That helper used to clear `InputFocus` by hand between updates,
+which is the one arrangement where the panel has nothing to redraw and the box
+survives by luck, and the suite was green while the gesture was broken.
+
 The opposite failure, a panel that stops rebuilding altogether, is held by
-`the_panel_is_rebuilt_once_focus_leaves_it`. **Mutation: return whenever
-`InputFocus` holds anything at all**, rather than only when it is inside the
-panel.
+`the_panel_is_frozen_while_a_box_has_focus_and_catches_up_after`. **Mutation:
+return whenever anything is already shown**, rather than only while the focus is
+in the panel or was last frame.
 
 ### Consequences
 
@@ -91,6 +111,8 @@ panel.
 * Bad, because the guard is about **the region**, not about the row. Focus in
   any box freezes the whole panel, including the components nobody is editing.
   Per-row would need the reconcile ADR-0002 turned down.
+* Bad, because the panel is one frame out of date after the focus leaves.
+  Nobody can see one frame, and the alternative was the commit not happening.
 * What would reverse this: a panel where the stale lines matter more than the
   box surviving. A gizmo dragged in the viewport while a box holds focus would
   be it, because then the numbers on screen contradict what the user is
