@@ -37,20 +37,26 @@ Undo and redo are built around the same command.
 trait EditorCommand: Send + Sync + 'static {
     fn execute(&mut self, world: &mut World);
     fn undo(&mut self, world: &mut World);
-    fn description(&self) -> &str;
 }
 ```
 
 Because a command takes `&mut World`, one command can touch both the Editor
 Model and the tile data. **There is one history, not two.**
 
+**There is no `description`**, which §5 quotes from Jackdaw and this section
+used to carry. Nothing reads one: there is no menu entry and no history panel,
+and an interface with no caller is a guess at what the caller will want. It
+comes back with the first thing that shows a command's name to the user, and
+leaving it out costs nothing until then, because every command has to be
+touched to give it one and the compiler lists them. Decided on issue #51.
+
 ### What phase 1 does instead, and until when
 
-**The inspector writes straight to the component, and this section knows it.**
-[ui.md §7](./ui.md) lets a number be typed into a field row and committed, and
-the commit reaches the entity through `World::get_reflect_mut` with no command
-and no Editor Model in between. That is the flow above with three of its four
-boxes missing.
+**A command writes straight to the component, because there is no Editor Model
+to write into.** [ui.md §7](./ui.md) lets a number be typed into a field row and
+committed, and the commit reaches the entity through `World::get_reflect_mut`
+with no Editor Model in between. That is the flow above with the model and the
+two boxes under it missing.
 
 It is a divergence rather than a change of mind, and what makes it one is that
 there is nothing yet to diverge into: `LevelDocument` does not exist, `b2d_data`
@@ -58,16 +64,22 @@ is a doc comment, and the entities the inspector edits are the three placeholder
 `crates/editor/src/viewport.rs` spawns rather than anything projected from a
 document. A command shaped against no model would be a guess at the model.
 
-What holds it to one place is that the write is one function taking
-`&mut World`, an entity, and where the value goes: the same shape
-`EditorCommand::execute` takes. **Undo does not rebuild the write path, it
-wraps it**, and that requirement is the reason the function exists rather than
-the observer writing the component itself.
+**What changes with undo is that the write goes through a command.** Until
+issue #51 the inspector's observer called the write function itself, and this
+section named undo arriving as the condition that ended that. Issue #51 decided
+that the observer hands a command to the history instead, and that the command
+reads the value it is about to replace before it writes. **Decided and not yet
+built**: until #51 merges, the observer still writes directly.
 
-**The condition that ends this** is undo arriving, which is later in the same
-phase ([roadmap.md §3](./roadmap.md)). When it does, this paragraph says what to
-delete: the observer calls a command instead of the function, and the flow above
-is whole for the first path that ever needed it.
+The trait and the history live in `crates/editor`, because the history is
+editor state and every writer that will go through it, the gizmos included, is
+in that crate. Nothing in `b2d_data` or `b2d_runtime` has a reason to see
+either, and [crates.md §3](./crates.md) is what keeps them from it.
+
+**The condition that ends the rest of this** is the level data model arriving
+([roadmap.md](./roadmap.md), "Alongside phase 1" item 4). When it does, a
+command writes into `LevelDocument` and the component follows from it, and this
+paragraph is what to delete.
 
 ---
 
