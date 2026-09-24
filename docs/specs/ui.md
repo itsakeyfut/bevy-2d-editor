@@ -443,7 +443,7 @@ values it carries**.
 | More than one entity selected | the header adds the count: `Player (1 of 3 selected)` |
 | The order | the component names, ascending. Every unregistered row goes after every named one. **Field lines are not sorted**: `translation, rotation, scale` is what `Transform` means |
 | Nothing selected | an empty pane |
-| Longer than the pane | **clipped at the pane's edge.** Scrolling is still deferred, below |
+| Longer than the pane | **the pane scrolls**, with the wheel, and clips across its width |
 
 **The value is read with `World::get_reflect`**, which needs only
 `ReflectFromPtr`. `#[derive(Reflect)]` inserts that unconditionally, where
@@ -589,16 +589,36 @@ fourteen rows on a placeholder are the engine's, one is the editor's own
 it costs today is reading past them; what it would cost to fix today is a list
 of type names that phase 3 deletes.
 
-**Scrolling and collapsing are not here, and now something does not fit.**
-Fourteen component names fit a 512-pixel pane; the 22 value lines under them do
-not, and the panel is 37 rows from the first click. What holds today is that the
-pane clips: the rows past its edge are not drawn, and they are not reachable
-either. **Measured before the pane was bounded**, in the default 1280 by 720
-window: the row of panes grew to 882 pixels, the menu bar and the bottom panel
-were left one pixel each where §1 asks for 28 and 180, and the viewport moved
-out from under the pointer, which is row 4 and row 5 at once. Scrolling is what makes the clipped rows
-reachable, and it is the next thing this panel needs rather than a deferral with
-no cost.
+**Collapsing is not here.** Fourteen component names fit a 512-pixel pane; the
+22 value lines under them do not. **Measured before the pane was bounded**, in
+the default 1280 by 720 window: the row of panes grew to 882 pixels, the menu
+bar and the bottom panel were left one pixel each where §1 asks for 28 and 180,
+and the viewport moved out from under the pointer, which is row 4 and row 5 at
+once.
+
+**Scrolling was deferred here, and the deferral is withdrawn.** This section
+said scrolling arrives "when something does not fit, rather than now". Running
+the editor showed what that cost: in the window the editor opens at, the clip
+falls inside `Sprite`, so `Transform`, the one component anybody opens the
+inspector for, is below the fold and unreachable. That is not row 4 with a
+visible cost, it is the panel failing at its job while looking finished. The
+pane now scrolls with the wheel, through `bevy_ui_widgets::ScrollArea` and a
+`ScrollPosition`, both of which arrive with `DefaultPlugins`; neither is a
+mechanism this project wrote.
+
+**The scroll position lives on the pane, not on the panel drawn into it**,
+because the panel is despawned and respawned whenever anything in it changes,
+hovering a sprite included. It goes back to the top when the selection moves to
+**another entity**, and only then: a position into one entity's list means
+nothing in another's, while a rebuild of the same entity is the ordinary case
+and must not throw the reader back to the top.
+
+**There is no scrollbar.** The wheel scrolls, and nothing on screen says the
+panel is longer than the pane. `bevy_feathers` ships `FeathersScrollbar`; what
+keeps it out is that `show` despawns the pane's children on every rebuild, so a
+scrollbar beside the panel would have to survive that. That is a change to how
+the panel is built rather than a widget to add, and it is the next thing this
+pane wants.
 
 **A value that is a `Reflect` type with no `Debug` registered reads as its whole
 type path.** `Anchor(Vec2(0.0, 0.0))` is short because `bevy_reflect` was told
