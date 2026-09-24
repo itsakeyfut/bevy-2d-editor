@@ -36,9 +36,11 @@ use crate::viewport::ViewportCamera;
 /// * removing one leaves the rest in the order they were chosen in.
 /// * an entity appears at most once.
 /// * several added by one gesture go on the end together, back to front, so
-///   the last of them is the one in front: the same one a click there would
-///   have taken. Two at the same depth keep the order the world iterates them
-///   in, which is arbitrary and is not relied on. Both are
+///   the last of them is the one in front. Two at the same depth keep the
+///   order the world iterates them in, which is arbitrary and is not relied
+///   on, and which is not the one a click on the pair would take: sprite
+///   picking hands a click the world's first of a tie, and this leaves the
+///   world's last active. Both are
 ///   [`docs/specs/ui.md` §4](../../../docs/specs/ui.md).
 ///
 /// Those are conditions on this type, not a description of who writes it

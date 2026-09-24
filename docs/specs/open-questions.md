@@ -18,7 +18,7 @@ What is still open, and the trigger condition for each deferral.
 * ~~Whether scenarios are written in a script language~~ → **no; a dedicated UI instead** ([scenario-editor.md §2](./scenario-editor.md))
 * ~~How the database works~~ → **the user defines the types in Rust, templates scaffold them, one row per file** ([database-editor.md §1](./database-editor.md))
 * ~~How this relates to Bevy's official editor~~ → **the archived prototypes are excluded as a reference; alignment comes from living on Bevy's own foundations** ([concepts.md §6](../concepts.md))
-* ~~Whether a box drag ranks what it covers~~ → **it is to, front to back, so that the last element is the entity in front** ([ui.md §4](./ui.md)). Its trigger condition was an edit that could land on an entity the user did not mean, and [ui.md §7](./ui.md) is that edit. The code followed in issue #47
+* ~~Whether a box drag ranks what it covers~~ → **it is to, front to back, so that the last element is the entity in front** ([ui.md §4](./ui.md)). Its trigger condition was an edit that could land on an entity the user did not mean, and [ui.md §7](./ui.md) is that edit. The code followed in issue #47; a tie in depth keeps the world's order and is still arbitrary, which the header's count in [ui.md §6](./ui.md) keeps visible
 
 ### Still open
 

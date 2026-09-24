@@ -415,19 +415,14 @@ fn show(
     // `selection.rs` is where that condition is written down; this is its first
     // reader.
     //
-    // **It says less than it looks.** That file also says that several entities
-    // added by one gesture go on the end together in the order the world
-    // iterates them, and that only the boundary between gestures is meaningful.
-    // So after a click the last element is the one just clicked, and after a box
-    // drag it is an arbitrary member of what the box covered. Measured: a box
-    // over two placeholders selects both and this names the second.
-    //
-    // **That is now decided and not yet built.** `docs/specs/ui.md` §4 says a
-    // box is to rank what it covers front to back, so that this names the
-    // front-most; issue #47 is the change to `selection.rs` that does it. Until
-    // then the sentence above is what the code does, and an edit committed
-    // through a field row below can land on an entity the user did not single
-    // out.
+    // **It says less than it looks.** After a click the last element is the
+    // one just clicked. After a box drag it is the front-most of what the box
+    // covered, ranked by `z` as `docs/specs/ui.md` §4 decided, **except where
+    // the box covered several at one depth**: a tie keeps the order the world
+    // iterated in, which is arbitrary. Every placeholder is at `z == 0`, so
+    // for them it still is, and an edit committed through a field row below
+    // can land on an entity the user did not single out. The header's count
+    // is what makes that visible.
     let selection = world.resource::<Selection>();
     let wanted = selection.entities().last().and_then(|entity| {
         // `Err` rather than a panic when the entity is gone. **No test holds
@@ -463,8 +458,8 @@ fn show(
             |name| name.as_str().to_owned(),
         );
         // How many are selected, not which one of them this is: `selection.rs`
-        // says a boxed group has no order inside it, so there is no index to
-        // report. `docs/specs/ui.md` §6 has why the panel says it at all.
+        // ranks a boxed group by depth and leaves a tie in the world's order,
+        // so there is no index that would mean anything to report. `docs/specs/ui.md` §6 has why the panel says it at all.
         let title = match selection.entities().len() {
             0 | 1 => named,
             several => format!("{named} (1 of {several} selected)"),
@@ -1732,12 +1727,13 @@ mod tests {
 
     /// The header says how many are selected when several are.
     ///
-    /// After a box drag the active entity is an arbitrary member of what the
-    /// box covered, which `selection.rs` says has no order inside it. The panel
+    /// After a box drag over several entities at one depth the active entity is
+    /// an arbitrary member of them, which `selection.rs` says of a tie. The panel
     /// carries values now, so a header naming one entity of several without
     /// saying so reads as a claim about the only thing selected.
     /// `docs/specs/ui.md` §6 has the decision, and
-    /// `docs/specs/open-questions.md` §1 has the half of it still open.
+    /// `docs/specs/open-questions.md` §1 has the ranking that followed it, which
+    /// leaves a tie as arbitrary as before.
     ///
     /// Mutation: drop the count from the title in `show`, and this fails.
     #[test]

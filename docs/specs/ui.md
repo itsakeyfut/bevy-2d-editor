@@ -664,10 +664,12 @@ gesture while `crates/editor/src/selection.rs` ranks none of them, so "the last
 one chosen" has no answer inside a boxed group, and it named the condition under
 which that would have to be settled: a value being written back.
 [§7](#7-what-the-inspector-can-edit) is that value, so §4 has now decided the
-answer, front to back, and issue #47 built it: the header now names the
-front-most of a boxed group. Before that, an edit committed through the
-inspector could land on an entity the user did not single out, which is what
-the count in the header made visible rather than fixed.
+answer, front to back, and issue #47 built it: the header names the front-most
+of a boxed group **when the group differs in depth**. Several at one depth are
+a tie, which keeps the world's order and is still arbitrary, and every
+placeholder is at `z == 0`, so for them nothing has changed: an edit committed
+through the inspector can land on an entity the user did not single out, and
+the count in the header is what makes that visible rather than fixes it.
 
 ---
 
