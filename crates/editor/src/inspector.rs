@@ -340,24 +340,35 @@ fn show(
                         .insert(ChildOf(group));
                     for field in fields {
                         // The indent is the panel's business rather than the
-                        // widget's, so it is on a node here and not inside
+                        // widget's, so it is written here and not inside
                         // `field_row`, which stays a plain two-string row.
-                        let line = commands
-                            .spawn_scene(bsn! {
-                                Node { padding: {UiRect::left(FIELD_INDENT)} }
-                            })
-                            .insert(ChildOf(group))
-                            .id();
+                        // It is **patched onto the scene** rather than put on a
+                        // node of its own: neither `field_row` nor `label_dim`
+                        // sets `padding`, so this merges into the row's own
+                        // `Node`. That is what `bsn!` composition is for, and
+                        // `spawn_regions` in `lib.rs` already patches Feathers'
+                        // `pane()` the same way. Measured: a wrapper entity per
+                        // line was 119 entities under the panel against 97,
+                        // which ADR-0002 spawns and despawns on every rebuild.
+                        let indent = UiRect::left(FIELD_INDENT);
+                        let value = field.value.clone();
                         match &field.name {
                             Some(name) => {
+                                let name = name.clone();
                                 commands
-                                    .spawn_scene(field_row(name.clone(), field.value.clone()))
-                                    .insert(ChildOf(line));
+                                    .spawn_scene(bsn! {
+                                        field_row(name, value)
+                                        Node { padding: {indent} }
+                                    })
+                                    .insert(ChildOf(group));
                             }
                             None => {
                                 commands
-                                    .spawn_scene(label_dim(field.value.clone()))
-                                    .insert(ChildOf(line));
+                                    .spawn_scene(bsn! {
+                                        label_dim(value)
+                                        Node { padding: {indent} }
+                                    })
+                                    .insert(ChildOf(group));
                             }
                         }
                     }
@@ -1260,5 +1271,90 @@ mod tests {
                 "a row below the pane is not clipped to it: {clip:?}"
             );
         }
+    }
+
+    /// A field line carries its indent on the row itself.
+    ///
+    /// The indent is patched onto the row's own scene rather than put on a node
+    /// wrapping it, which is what `bsn!` composition is for: neither `field_row`
+    /// nor `label_dim` sets `padding`, so the caller's `Node` merges into the
+    /// row's. **Measured**: a wrapper entity per line cost 119 entities under
+    /// the panel against 97, one extra per value line, and ADR-0002 spawns and
+    /// despawns all of them on every rebuild.
+    ///
+    /// Read through the row that draws `translation`: it has the indent, and it
+    /// is the same entity that has the two words on it.
+    ///
+    /// Mutation: spawn the indent as a node of its own and parent the row under
+    /// it, and this fails with the row's own padding at zero.
+    #[test]
+    fn a_field_line_carries_its_indent_on_the_row_itself() {
+        let mut app = inspector_editor();
+        select_the_middle(&mut app);
+
+        let panel = panel_of(&mut app);
+        let world = app.world();
+        let body = world
+            .entity(panel)
+            .get::<Children>()
+            .and_then(|children| children.iter().nth(1))
+            .expect("the panel has a body");
+        let group = world
+            .entity(body)
+            .get::<Children>()
+            .map(|rows| rows.iter().collect::<Vec<Entity>>())
+            .unwrap_or_default()
+            .into_iter()
+            .find(|row| {
+                text_under(world, *row)
+                    .first()
+                    .is_some_and(|first| first == "Transform")
+            })
+            .expect("Transform has a row");
+        // The first child is the component's name; the second is its first
+        // field, which is the line this is about.
+        let line = world
+            .entity(group)
+            .get::<Children>()
+            .and_then(|children| children.iter().nth(1))
+            .expect("Transform opened into at least one line");
+
+        assert_eq!(
+            text_under(world, line),
+            vec!["translation".to_owned(), "Vec3(0.0, 0.0, 0.0)".to_owned()],
+            "the entity being measured is not the row that draws the field"
+        );
+        assert_eq!(
+            world
+                .entity(line)
+                .get::<Node>()
+                .expect("a row is a node")
+                .padding
+                .left,
+            Val::Px(12.0),
+            "the indent is not on this entity at all"
+        );
+        // **The value's own text has to hang directly off it**, and reading the
+        // padding alone does not say that: a node wrapping the row carries the
+        // same padding and the same words underneath it, so the first two
+        // assertions hold under either shape. Measured, on a version of this
+        // test that stopped there: the wrapper form left all 93 green.
+        let beneath: Vec<String> = world
+            .entity(line)
+            .get::<Children>()
+            .map(|children| {
+                children
+                    .iter()
+                    .filter_map(|child| {
+                        world.entity(child).get::<Text>().map(|text| text.0.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            beneath,
+            vec!["Vec3(0.0, 0.0, 0.0)".to_owned()],
+            "the indent is on a node wrapping the row rather than on the row"
+        );
     }
 }
