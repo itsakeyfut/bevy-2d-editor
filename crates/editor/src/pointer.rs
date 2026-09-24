@@ -19,6 +19,8 @@
 use bevy::camera::NormalizedRenderTarget;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
+use bevy::input::mouse::MouseScrollUnit;
+use bevy::input::touch::TouchPhase;
 use bevy::picking::pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput};
 use bevy::prelude::*;
 use bevy::window::{PrimaryWindow, WindowRef};
@@ -33,6 +35,28 @@ use bevy::window::{PrimaryWindow, WindowRef};
 /// `docs/specs/ui.md` §1.
 pub(crate) fn in_window(world: Vec2) -> Vec2 {
     Vec2::new(240.0 + 370.0 + world.x, 28.0 + 256.0 - world.y)
+}
+
+/// Turn the wheel by `notches` with the pointer at a window position.
+///
+/// Written as a [`PointerInput`] like the rest of this module, so the chain
+/// under test is the real one: the window, then UI picking deciding which node
+/// is under the pointer, then `Pointer<Scroll>` bubbling up from it.
+pub(crate) fn scroll_at(app: &mut App, position: Vec2, notches: f32) {
+    write_input(app, position, PointerAction::Move { delta: Vec2::ONE });
+    app.update();
+    write_input(
+        app,
+        position,
+        PointerAction::Scroll {
+            unit: MouseScrollUnit::Line,
+            x: 0.0,
+            y: notches,
+            phase: TouchPhase::Moved,
+        },
+    );
+    app.update();
+    app.update();
 }
 
 /// Press and release a button at a window position.

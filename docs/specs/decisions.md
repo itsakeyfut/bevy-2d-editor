@@ -52,7 +52,7 @@ Quotations are left in the language of their source.
 | The UI stack is Bevy UI + `bevy_feathers` | [ui.md §3](./ui.md) |
 | What the mouse does in the viewport: pan, zoom on the cursor, select on release, add or remove with Ctrl/Cmd, and a box drag over empty space | [ui.md §4](./ui.md) |
 | What a selection, and a box drag in progress, look like in the viewport | [ui.md §5](./ui.md) |
-| What the inspector shows: every component, named through the type registry | [ui.md §6](./ui.md) |
+| What the inspector shows: every component, named through reflection and opened into the values it carries | [ui.md §6](./ui.md) |
 | Tilemaps ride on Bevy's own `TilemapChunk` | [level-editor.md §2](./level-editor.md) |
 | Colliders: a physics-neutral shape, avian2d behind a default-on feature | [level-editor.md §3](./level-editor.md) |
 | Sprite animation | [level-editor.md §4](./level-editor.md) |
@@ -94,7 +94,7 @@ Quotations are left in the language of their source.
 | UI design target | **Unity** |
 | UI implementation reference | **Jackdaw**, for how to build it in Rust |
 | UI stack | **Bevy UI + `bevy_feathers`** ([ui.md §3](./ui.md)) |
-| Inspector | **every component on the entity**, named through the type registry, sorted by name ([ui.md §6](./ui.md)) |
+| Inspector | **every component on the entity**, sorted by name, each opened into one line per field with the value as its `Debug` text ([ui.md §6](./ui.md)) |
 | Aseprite | an external authoring tool |
 | Blender | an external 3D authoring tool |
 | Tilemap | **Bevy's own `TilemapChunk`**, no third-party crate |

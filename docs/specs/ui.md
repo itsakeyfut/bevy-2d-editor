@@ -427,20 +427,59 @@ it is one value and not a design.
 
 ### Decision
 
-**Every component the entity has**, listed by the name the type registry gives
-it, sorted by that name, under a header naming the entity.
+**Every component the entity has**, listed by its short type name, sorted by
+that name, under a header naming the entity, and **each one opened into the
+values it carries**.
 
 | | |
 | --- | --- |
 | Which components | **all of them**, engine internals included. No filter, no denylist |
-| The name | `TypeRegistration`'s `short_path()`. `Transform`, not `bevy_transform::components::transform::Transform` |
-| A component with no registration | **a row saying `<no reflection>`**, dimmed, rather than nothing |
+| The name | the value's own `short_type_path()`. `Transform`, not `bevy_transform::components::transform::Transform` |
+| A component with no reflection | **a row saying `<no reflection>`**, dimmed, rather than nothing |
+| What a component opens into | a named-field struct: **one line per field**, the field's name and its value, in the order the type declares them. Any other shape: **one line carrying the whole value**. A struct with no fields: nothing |
+| What a value reads as | its `Debug`, through reflection. `Vec3(0.0, 0.0, 0.0)`, `Inherited`, `Anchor(Vec2(0.0, 0.0))` |
+| How deep it goes | **one level.** `translation` is a line reading `Vec3(...)`, not three lines reading `x`, `y` and `z` |
 | The header | the entity's `Name` if it has one, otherwise `Entity 356v0` |
-| The order | the names, ascending. Every unregistered row goes after every named one |
+| More than one entity selected | the header adds the count: `Player (1 of 3 selected)` |
+| The order | the component names, ascending. Every unregistered row goes after every named one. **Field lines are not sorted**: `translation, rotation, scale` is what `Transform` means |
 | Nothing selected | an empty pane |
+| Longer than the pane | **the pane scrolls**, with the wheel, and clips across its width |
 
-**The type registry is the only source of a name**, and that is a measurement
-rather than a preference. `ComponentInfo::name()` returns a `DebugName`, which
+**The value is read with `World::get_reflect`**, which needs only
+`ReflectFromPtr`. `#[derive(Reflect)]` inserts that unconditionally, where
+`ReflectComponent` needs `#[reflect(Component)]` as well, so reading through
+`ReflectComponent` would see fewer components than the engine's own call does.
+The name comes off the same value, so the two cannot disagree about which type
+they came from, and a component whose value cannot be read is exactly the one
+that gets the `<no reflection>` row.
+
+**Opening only named-field structs is not a special case**: measured on one
+clicked placeholder, 6 of its 13 readable components are named-field structs and
+7 are tuple structs or enums. The single line those seven get is the ordinary
+path, not the exception.
+
+**A value is its `Debug` text because the alternative is a table of type
+names.** `Debug` through `PartialReflect` is defined for every shape reflection
+can take, so there is no arm that panics and no type named in the editor's code,
+which is the property this section chose the component list for. What it costs
+is a line like
+`Srgba(bevy_color::srgba::Srgba { red: 0.45, green: 0.68, blue: 0.85, alpha: 1.0 })`,
+which is row 4 of `CLAUDE.md`'s list: wrong-looking, on screen, where the user
+can point at it.
+
+**The header says how many are selected because the panel now carries values.**
+[§4](#4-what-the-mouse-does-in-the-viewport)'s box drag puts several entities in
+the selection at once and `crates/editor/src/selection.rs` ranks none of them,
+so the entity the panel is about is an arbitrary member of that group. While the
+panel held names only, that was cosmetic. With values in it, a header naming one
+entity and saying nothing else reads as a claim about the only thing selected,
+and the issue after this one lets that value be edited. Saying `1 of 3` does not
+choose better; it makes the choice visible, which is the difference between row
+4 and row 6. Whether the box drag should rank what it covers is the half of this
+that is still open, in [open-questions.md §1](./open-questions.md).
+
+**The name is no longer the type registry's**, and that is a measurement rather
+than a preference. `ComponentInfo::name()` returns a `DebugName`, which
 carries nothing unless `bevy_utils/debug` is on; the feature line §3 settles
 does not reach it, so every component answers
 `<Enable the debug feature to see the name>`. There is no fallback under the
@@ -504,6 +543,35 @@ stable against adding a plugin.
 selecting one unnamed entity after another leaves the header unchanged, so the
 panel stops saying that the selection moved.
 
+**Descending to the leaves**, so that `translation` opens into `x`, `y` and `z`.
+The closest to Unity, and what editing a number will eventually want. It means
+deciding now what bounds the recursion, what an enum, a map and a list do, and
+what `GlobalTransform`'s `Affine3A` looks like several levels down. A recursion
+whose stop condition is wrong is row 5, the viewport not answering, rather than
+row 4.
+
+**Opening only named-field structs and saying `<shape not shown>` for the rest.**
+The least code. Measured, it would be 7 of the 13 readable rows on a
+placeholder, `Visibility`, `Anchor` and `GlobalTransform` among them. It is the
+rejected "only the components the registry names" above in a new place: it buys
+tidiness by deleting the honest part, and its failure is an absence nobody can
+see.
+
+**A table of known types**, `f32` printed as `0`, `bool` as a tick. Tidier than
+`Debug` for the types it knows and silent for the ones it does not, and it is
+the thing an inspector driven by reflection is supposed not to have.
+
+**An empty panel reading `3 selected` when several are.** It removes the chance
+of showing a value from an entity the user was not looking at by removing the
+values. Unity edits several objects in its inspector rather than blanking it,
+and §2 says Unity wins where the two disagree.
+
+**Ranking what a box drag covers**, so that "the last one chosen" means
+something inside a boxed group and the header can name it honestly. That is a
+change to what a selection is, in §4, §5 and `crates/editor/src/selection.rs`,
+and none of the inspector's criteria need it. It stays open, with its trigger,
+in [open-questions.md §1](./open-questions.md).
+
 **Turning on Bevy's `debug` feature**, which makes `ComponentInfo::name()` work
 and gives every component a name, registered or not. It costs an amendment to
 §3's feature line, which `xtask`'s
@@ -521,13 +589,56 @@ fourteen rows on a placeholder are the engine's, one is the editor's own
 it costs today is reading past them; what it would cost to fix today is a list
 of type names that phase 3 deletes.
 
-**Scrolling and collapsing are not here.** Fourteen rows fit in a 300-pixel pane.
-Both arrive when something does not fit, rather than now.
+**Collapsing is not here.** Fourteen component names fit a 512-pixel pane; the
+22 value lines under them do not. **Measured before the pane was bounded**, in
+the default 1280 by 720 window: the row of panes grew to 882 pixels, the menu
+bar and the bottom panel were left one pixel each where §1 asks for 28 and 180,
+and the viewport moved out from under the pointer, which is row 4 and row 5 at
+once.
 
-**After a box drag the header names an arbitrary one of what the box covered.**
-§4's box adds several entities in one gesture, and
+**Scrolling was deferred here, and the deferral is withdrawn.** This section
+said scrolling arrives "when something does not fit, rather than now". Running
+the editor showed what that cost: in the window the editor opens at, the clip
+falls inside `Sprite`, so `Transform`, the one component anybody opens the
+inspector for, is below the fold and unreachable. That is not row 4 with a
+visible cost, it is the panel failing at its job while looking finished. The
+pane now scrolls with the wheel, through `bevy_ui_widgets::ScrollArea` and a
+`ScrollPosition`, both of which arrive with `DefaultPlugins`; neither is a
+mechanism this project wrote.
+
+**The scroll position lives on the pane, not on the panel drawn into it**,
+because the panel is despawned and respawned whenever anything in it changes,
+hovering a sprite included. It goes back to the top when the selection moves to
+**another entity**, and only then: a position into one entity's list means
+nothing in another's, while a rebuild of the same entity is the ordinary case
+and must not throw the reader back to the top.
+
+**There is no scrollbar.** The wheel scrolls, and nothing on screen says the
+panel is longer than the pane. `bevy_feathers` ships `FeathersScrollbar`; what
+keeps it out is that `show` despawns the pane's children on every rebuild, so a
+scrollbar beside the panel would have to survive that. That is a change to how
+the panel is built rather than a widget to add, and it is the next thing this
+pane wants.
+
+**A value that is a `Reflect` type with no `Debug` registered reads as its whole
+type path.** `Anchor(Vec2(0.0, 0.0))` is short because `bevy_reflect` was told
+to use the real `Debug`; a component a user writes without `#[reflect(Debug)]`
+reads `my_game::enemies::Weight(2.5)` instead. It is what a phase 3 component
+looks like here until it says otherwise, and it is one line of noise rather than
+a wrong value.
+
+**Every value is formatted every frame**, because
+[ADR-0002](../adr/0002-rebuild-the-inspector-rather-than-diff-it.md) compares
+the finished picture and the picture now holds the text. That is 22 short
+strings a frame for one placeholder. A component carrying a large array would
+make it row 5, and phase 2's tile data is the first thing that could; the answer
+then is to bound what a row formats rather than to start watching for changes.
+
+**After a box drag the header still names an arbitrary one of what the box
+covered.** §4's box adds several entities in one gesture, and
 `crates/editor/src/selection.rs` says that nothing ranks them: only the boundary
 between gestures is meaningful, so "the last one chosen" has no answer inside a
-boxed group. What the header should say instead is deferred, with its trigger,
-in [open-questions.md §1](./open-questions.md). While the header carries a name
-and no values, the cost is cosmetic.
+boxed group. The count says that this is one of several and stops there. It was
+cosmetic while the panel held names only; it stops being cosmetic when a value
+can be written back, and that is the condition on the deferral in
+[open-questions.md §1](./open-questions.md).

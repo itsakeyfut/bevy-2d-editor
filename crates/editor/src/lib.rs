@@ -17,7 +17,8 @@ use bevy::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor};
 use bevy::feathers::tokens;
 use bevy::prelude::*;
 use bevy::scene::bsn;
-use bevy::ui::{UiRect, percent, px};
+use bevy::ui::{Overflow, OverflowAxis, UiRect, percent, px};
+use bevy::ui_widgets::ScrollArea;
 
 #[cfg(test)]
 mod drawn;
@@ -218,6 +219,22 @@ fn spawn_regions(mut commands: Commands) {
                 flex_grow: 1.0,
                 display: Display::Flex,
                 flex_direction: FlexDirection::Row,
+                // The row is what is left over, so it starts from nothing and
+                // grows into the space the menu bar and the bottom panel do not
+                // take. Without this its base size is its content, which the
+                // two fixed bars then shrink against: measured with only the
+                // `min_height` below, a menu bar 17 pixels tall and a bottom
+                // panel of 105, where §1 asks for 28 and 180.
+                flex_basis: px(0),
+                // Without this the row is as tall as the tallest thing in it,
+                // and a flex item's default `min_height` is its content. The
+                // inspector's content is as long as the selected entity's
+                // component list, so a click on a placeholder made this row
+                // 882 pixels in the default 720 pixel window, which left the
+                // menu bar and the bottom panel one pixel each and moved the
+                // viewport out from under the pointer. Measured, before this
+                // line.
+                min_height: px(0),
             }
         })
         .insert(ChildOf(root))
@@ -245,7 +262,25 @@ fn spawn_regions(mut commands: Commands) {
             pane()
             ThemeBackgroundColor(tokens::PANE_BODY_BG)
             ThemeBorderColor(tokens::PANE_HEADER_BORDER)
-            Node { width: px(300), border: UiRect::left(px(1)) }
+            Node {
+                width: px(300),
+                border: UiRect::left(px(1)),
+                min_height: px(0),
+                // Scrolled down the page and clipped across it. **Not
+                // `Overflow::scroll_y()`**, which leaves the x axis `Visible`:
+                // `ComputedNode::resolve_clip_rect` then sets the clip to
+                // infinity on that axis, and a value with no spaces in it, such
+                // as a `Handle`'s id, would run out of the pane instead of
+                // stopping at its edge.
+                overflow: {Overflow { x: OverflowAxis::Clip, y: OverflowAxis::Scroll }},
+            }
+            // The wheel is the engine's: `ScrollAreaPlugin` arrives with
+            // `DefaultPlugins` through `UiWidgetsPlugins`, its observer is
+            // global, and `Pointer<Scroll>` bubbles from whatever label the
+            // pointer is over up to this pane. `ScrollArea` requires
+            // `ScrollPosition`, so the position is on this entity too, which
+            // is why it survives the panel being rebuilt under it.
+            ScrollArea
         })
         .insert((Region::Inspector, ChildOf(middle)));
 
