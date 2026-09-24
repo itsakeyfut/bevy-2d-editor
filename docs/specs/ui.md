@@ -239,6 +239,24 @@ which is clear the selection, is overwritten in the same frame. That is a
 property of the order rather than of the editor, so the order is what is held,
 by `a_release_that_ended_a_band_clicks_before_it_ends_the_drag`.
 
+**A box is to rank what it covers, front to back, so that the last one in it is
+the one in front. This is decided and is not yet built.** It was deferred, with
+the condition that it became answerable once an edit could be committed through
+the inspector, and [§7](#7-what-the-inspector-can-edit) is that edit. The rule
+is the one a click already follows: `select` takes the nearest of the entities
+under the pointer, and a box is to take the entities it covers in the same
+order, so that the entity the inspector calls active is the front-most of the
+group rather than whichever one the world iterated first. Ties keep the world's
+order, which is arbitrary and is said to be arbitrary rather than relied on.
+
+**Until it is built, `finish` in `crates/editor/src/selection.rs` still pushes
+in the order the world iterates**, and that file's own condition on `Selection`
+still says nothing ranks a boxed group, which is true of the code as it stands.
+Issue #47 is the change, and it is where this paragraph stops being a promise.
+Saying which of the two a sentence is matters here more than usual: a reader who
+took this for the present tense would believe an ambiguity had been closed that
+is still open.
+
 The left button is still what every tool that paints will want. What is decided
 here is what it does when no tool has been chosen, which is the state the editor
 is in and will stay in until phase 2. A box drag over empty space is the part of
@@ -438,7 +456,7 @@ values it carries**.
 | A component with no reflection | **a row saying `<no reflection>`**, dimmed, rather than nothing |
 | What a component opens into | a named-field struct: **one line per field**, the field's name and its value, in the order the type declares them. Any other shape: **one line carrying the whole value**. A struct with no fields: nothing |
 | What a value reads as | its `Debug`, through reflection. `Vec3(0.0, 0.0, 0.0)`, `Inherited`, `Anchor(Vec2(0.0, 0.0))` |
-| How deep it goes | **one level.** `translation` is a line reading `Vec3(...)`, not three lines reading `x`, `y` and `z` |
+| How deep it goes | **one level, and a second one only into numbers.** A field whose own value is a named-field struct of nothing but `f32` opens into those leaves, drawn as one line carrying a box each; anything else stops at one level. So `translation` is a line of three boxes and `color` is a line reading `Srgba(...)`. [§7](#7-what-the-inspector-can-edit) is what the second level is for |
 | The header | the entity's `Name` if it has one, otherwise `Entity 356v0` |
 | More than one entity selected | the header adds the count: `Player (1 of 3 selected)` |
 | The order | the component names, ascending. Every unregistered row goes after every named one. **Field lines are not sorted**: `translation, rotation, scale` is what `Transform` means |
@@ -550,6 +568,13 @@ what `GlobalTransform`'s `Affine3A` looks like several levels down. A recursion
 whose stop condition is wrong is row 5, the viewport not answering, rather than
 row 4.
 
+**A narrow form of this was taken in [§7](#7-what-the-inspector-can-edit), and
+the reason it was turned down here is the reason for its bound.** That second
+level is not a recursion: it opens a named-field struct whose fields are *all*
+`f32` and stops there, so there is no stop condition to get wrong and no enum,
+map or list to decide about. What editing a number wanted arrived; the general
+descent this paragraph rejected is still rejected.
+
 **Opening only named-field structs and saying `<shape not shown>` for the rest.**
 The least code. Measured, it would be 7 of the 13 readable rows on a
 placeholder, `Visibility`, `Anchor` and `GlobalTransform` among them. It is the
@@ -635,10 +660,140 @@ make it row 5, and phase 2's tile data is the first thing that could; the answer
 then is to bound what a row formats rather than to start watching for changes.
 
 **After a box drag the header still names an arbitrary one of what the box
-covered.** §4's box adds several entities in one gesture, and
-`crates/editor/src/selection.rs` says that nothing ranks them: only the boundary
-between gestures is meaningful, so "the last one chosen" has no answer inside a
-boxed group. The count says that this is one of several and stops there. It was
-cosmetic while the panel held names only; it stops being cosmetic when a value
-can be written back, and that is the condition on the deferral in
-[open-questions.md §1](./open-questions.md).
+covered.** This paragraph recorded that §4's box adds several entities in one
+gesture while `crates/editor/src/selection.rs` ranks none of them, so "the last
+one chosen" has no answer inside a boxed group, and it named the condition under
+which that would have to be settled: a value being written back.
+[§7](#7-what-the-inspector-can-edit) is that value, so §4 has now decided the
+answer, front to back. **The code has not caught up**, and issue #47 is where it
+does; until then an edit committed through the inspector can land on an entity
+the user did not single out, which is what the count in the header makes visible
+rather than fixes.
+
+---
+
+## 7. What the inspector can edit
+
+### Decision
+
+**A number, typed into the box beside its name, and committed.** Nothing else on
+the panel is editable.
+
+| | |
+| --- | --- |
+| What is editable | every `f32` leaf the second level of [§6](#6-what-the-inspector-shows) opens. On a placeholder that is `Transform`'s nine numbers and nothing else |
+| What is not | every other value. It stays the `Debug` text §6 draws |
+| The box | `bevy_feathers`' `FeathersNumberInput`, which already refuses every character that is not a digit or one of `.-+eE` |
+| The name beside it | the leaf's own name through reflection, `x`, `y`, `z`, `w`, dimmed, drawn by this project rather than by the widget |
+| What commits | **Enter, or the box losing focus.** Typing moves nothing |
+| A value that does not parse | **nothing is written.** The box keeps the typed text until it loses focus, and the real value comes back with the rebuild that follows |
+| Where the write lands | one `f32` leaf, of one field, of one component, on the active entity, through `World::get_reflect_mut` |
+| While a box has focus | **the panel is not rebuilt**, so the box survives the value it just changed, and for one frame after the focus leaves, so that it survives its own commit. [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) |
+| More than one entity selected | only the active entity, which is the one the header names and, since §4, the front-most of the group |
+| Taking it back | **not yet.** Undo is later in the phase ([roadmap.md §3](./roadmap.md)); typing the old number back is what there is |
+
+### Rationale
+
+**Committing on Enter, and not on every keystroke, is the whole shape of this.**
+`FeathersNumberInput` emits a value on each keystroke as well, marked
+`is_final: false`, and taking those would move the sprite through `-`, `-1`,
+`-12` on the way to `-120`. With no undo yet, each of those is a change to the
+user's work that nothing can take back, and it is also a `GlobalTransform`
+recomputed per character. Enter and focus loss are what Unity commits on.
+
+**The write is the mirror of the read, and has to see the same components.**
+§6 records that the panel reads through `World::get_reflect`, which needs only
+`ReflectFromPtr`, because `ReflectComponent` would see fewer components than the
+engine's own call does. `World::get_reflect_mut` is that call with `&mut World`,
+so the set that can be written is exactly the set that is shown.
+
+**The value cannot be silently wrong, because nothing writes a value it could
+not parse.** The widget filters the characters, and when what is left still does
+not parse it emits nothing at all. There is no `unwrap_or_default` anywhere on
+this path, which is the shape that would put a zero over somebody's number:
+row 6, and the only row on `CLAUDE.md`'s list that destroys something.
+
+**What is on screen is one box per number, not one box per line.** `translation`
+stays one line, carrying three boxes, which is how Unity draws a vector and is
+what `FeathersNumberInputProps` is shaped for. Three separate lines would say
+that `x` is a sibling of `rotation`.
+
+### Rejected options
+
+**Writing on every keystroke.** It is what the widget offers first, and with
+two-way sync it is what feathers documents. Without undo it makes every
+intermediate state a permanent edit, and it is the option that would need undo
+built first.
+
+**The widget's own axis label**, `FeathersNumberInputProps::label_text`. It is
+an `Option<&'static str>` and a reflected field name is a `String`, so using it
+means a table mapping four literals to four names and a second path for every
+other leaf. One label drawn here is one path, and costs a strip of colour the
+widget would have drawn beside it.
+
+**Editing the whole `Vec3` as one text field**, leaving §6 untouched. No second
+level, no widget, and a parser written here. It also means a typo in one
+component rewrites all three, which is the difference between an edit the user
+can see and an edit they cannot.
+
+**Writing through `ReflectComponent`.** The issue that asked for this named it.
+It is the wrong half of the pair §6 already chose between.
+
+**Writing through an `EditorCommand` into an Editor Model**, which is the shape
+[data-model.md §1](./data-model.md) describes. It is where this goes, and there
+is no Editor Model yet. §1 records the divergence and the condition that ends
+it.
+
+**Blanking the panel, or refusing to write, when several entities are
+selected.** §6 already rejected blanking on the grounds that Unity edits several
+objects rather than showing nothing, and refusing to write is the same absence
+one step later. §4 now ranks a boxed group instead, which makes the entity the
+write lands on the one the user can see named.
+
+**A drag on the label to scrub the value**, which Unity has. More input
+handling, on a gesture the viewport also claims, for something the keyboard
+already does. It comes back when somebody asks for it.
+
+### Accepted risk
+
+**An edit cannot be taken back.** Undo is later in the same phase. What this
+costs is retyping a number that is on screen the whole time: row 4. What would
+make it row 6 is a write the user does not see happening, and the only write
+there is happens in a box they are looking at, on the entity the header names.
+
+**A value something else recomputes can be typed into.** `Aabb`'s centre is a
+struct of `f32` like any other, so the panel lets it be edited; the edit lands,
+the next frame overwrites it, and the box snaps back when focus leaves. That is
+§6's noise seen from the writing side, and §6's answer applies unchanged: a
+failure the user can point at beats a list of type names that phase 3 deletes.
+
+**Rotation is edited as four raw numbers.** `Quat` reflects as `x, y, z, w`, so
+a sprite can be put into a state that is not a rotation. Unity shows Euler
+angles and converts. Doing that here means naming `Quat` in the editor's code,
+which §6 spent its whole component list avoiding, and it carries its own
+question about which three angles. It comes back when somebody turns a sprite
+from the inspector and finds out.
+
+**While a box has focus, every other line on the panel is stale.** Committing a
+translation does not redraw `GlobalTransform` until focus leaves, because the
+panel is not rebuilt while the user is in it. Row 4, bounded by how long one box
+holds focus, and the alternative was the box disappearing under the cursor.
+[ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)
+is where that was weighed.
+
+**A write that cannot land leaves the box and the component disagreeing** until
+focus leaves. The way to reach it is the component being removed between the
+panel being drawn and Enter being pressed, which nothing in the editor does yet.
+Nothing is written and nothing is said, which is row 4 for as long as the box
+holds focus.
+
+**Letting go of a box writes what is in it, whether or not it was typed into.**
+`bevy_feathers` emits on focus loss regardless, so clicking into a box and
+clicking out again writes the number that was already there back to the
+component. That is a no-op unless the value moved while the box held focus, and
+while it does the panel is frozen, so the only thing that could move it is
+something other than the inspector. Nothing in the editor is that today; the
+gizmos and the undo of [roadmap.md §3](./roadmap.md) are the first that would
+be, and what it would look like then is the user's own older number quietly
+coming back. Row 6 in miniature, reachable only once a second writer exists,
+and the thing that would close it is a box that knows whether it was edited.

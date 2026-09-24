@@ -119,10 +119,19 @@ a reader checking the claim against the engine, which is what happened.
 * Bad, because per-row state that survives a rebuild has nowhere to live. A
   half-typed value in #44's field is the first thing that will want it, and the
   answer then is to hold it outside the row rather than to start reconciling.
+  **That prediction was tested and was wrong about the mechanism.** #44 needed
+  nothing held outside the row: the widget keeps its own buffer, and what was
+  needed was for `show` to leave the panel alone while the user is in it.
+  [ADR-0003](./0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)
+  is that decision, and it is a condition on this one rather than a reversal of
+  it.
 * What would reverse this: a panel where a rebuild is visible, either as a
   dropped frame or as something the user was interacting with disappearing.
   Scrolling and collapsing, both deferred in
-  [`ui.md` §6](../specs/ui.md), are the likely first sign.
+  [`ui.md` §6](../specs/ui.md), were the expected first sign; the one that
+  actually arrived was #44's input box, and it was answered by
+  [ADR-0003](./0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)
+  without reversing anything here.
 
 ## Pros and Cons of the Options
 
