@@ -4,7 +4,7 @@ use bevy::ecs::hierarchy::Children;
 use bevy::feathers::constants::size;
 use bevy::feathers::display::{label, label_dim};
 use bevy::scene::{Scene, bsn};
-use bevy::ui::{AlignItems, Display, FlexDirection, Node, Val};
+use bevy::ui::{AlignItems, Display, FlexDirection, Node, Overflow, Val};
 
 /// How wide the name column is.
 ///
@@ -17,7 +17,7 @@ use bevy::ui::{AlignItems, Display, FlexDirection, Node, Val};
 /// token because colour is the only token kind `ThemeProps` carries in 0.19.1,
 /// which [`docs/specs/ui.md` §3](../../../docs/specs/ui.md) records; Feathers
 /// keeps its own spacing in `constants.rs` the same way.
-const NAME_WIDTH: Val = Val::Px(110.0);
+const NAME_WIDTH: Val = Val::Px(140.0);
 
 /// The gap between the name and the value.
 const GAP: Val = Val::Px(8.0);
@@ -44,7 +44,10 @@ pub fn field_row(name: impl Into<String>, value: impl Into<String>) -> impl Scen
             column_gap: GAP,
         }
         Children [
-            (Node { width: NAME_WIDTH } Children [label(name)]),
+            (
+                Node { width: NAME_WIDTH, overflow: {Overflow::clip()} }
+                Children [label(name)]
+            ),
             label_dim(value),
         ]
     }

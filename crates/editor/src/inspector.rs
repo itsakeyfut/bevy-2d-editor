@@ -10,6 +10,7 @@ use bevy::feathers::containers::{pane_body, pane_header};
 use bevy::feathers::display::{label, label_dim};
 use bevy::prelude::*;
 use bevy::reflect::ReflectRef;
+use bevy::ui::ScrollPosition;
 
 use crate::{Region, Selection};
 
@@ -40,26 +41,28 @@ struct Shown(Option<Shape>);
 struct Shape {
     /// Which entity this is about.
     ///
-    /// **Nothing draws it, and nothing reaches it any more.** It was put here
-    /// because two entities with the same `Name` and the same components
-    /// compared equal, so moving the selection between them left the panel
-    /// alone; a test built that pair out of two identically named placeholders.
+    /// **Nothing draws it, and it is read for two different reasons.**
     ///
-    /// Showing the values took that pair away. Every component's value is on
-    /// screen now, so two entities that sit in different places differ in
-    /// `Transform`, `GlobalTransform` and `Aabb`, and two entities that sit in
-    /// the same place cannot both be clicked: `select` in `selection.rs` takes
-    /// the nearest, which is one of them and always the same one. **Measured**:
-    /// with the look-alike test gone, replacing this with
-    /// `Entity::PLACEHOLDER` leaves all 85 tests green.
+    /// It was put here because the comparison has to carry the subject: two
+    /// entities with the same `Name` and the same components compared equal, so
+    /// moving the selection between them left the panel alone. Showing the
+    /// values took that pair away, because two entities that sit in different
+    /// places differ in `Transform`, `GlobalTransform` and `Aabb`, and two that
+    /// sit in the same place cannot both be clicked, `select` in `selection.rs`
+    /// taking the nearest. For one commit that left this field reaching
+    /// nothing: measured, replacing it with `Entity::PLACEHOLDER` left all 85
+    /// tests green.
     ///
-    /// It stays because what took the pair away is what
-    /// [`docs/specs/ui.md` §6](../../../docs/specs/ui.md) defers: filtering
-    /// which components are listed, and collapsing a component so its values
-    /// are not drawn. Either one brings look-alikes back, and then this field
-    /// is the difference between a panel that follows the selection and one
-    /// that silently does not. Saying it is unguarded beats letting a green
-    /// suite imply otherwise.
+    /// **What reaches it now is the scroll position.** The pane keeps where it
+    /// was scrolled to across a rebuild, and the one case where that position
+    /// means nothing is the selection moving to another entity, which is this
+    /// field changing. Mutation: replace it with `Entity::PLACEHOLDER`, and
+    /// `choosing_another_entity_puts_the_panel_back_at_the_top` fails.
+    ///
+    /// The original reason stands underneath: filtering which components are
+    /// listed, and collapsing a component so its values are not drawn, are both
+    /// deferred in [`docs/specs/ui.md` §6](../../../docs/specs/ui.md), and
+    /// either one brings look-alikes back.
     of: Entity,
     /// Which region the children were spawned under.
     ///
@@ -312,6 +315,19 @@ fn show(
         return;
     }
 
+    // A rebuild leaves the pane's `ScrollPosition` alone, because the pane
+    // outlives the panel drawn into it and because most rebuilds are the same
+    // entity's values moving: hovering a sprite changes `PickingInteraction`,
+    // and a scroll that jumped back to the top whenever the pointer crossed
+    // something would be unusable. Moving to **another entity** is the case
+    // where the position means nothing, so it goes back to the top there.
+    //
+    // This is the second reader of [`Shape::of`], and the first one any test
+    // reaches.
+    if shown.0.as_ref().map(|shape| shape.of) != wanted.as_ref().map(|shape| shape.of) {
+        commands.entity(panel).insert(ScrollPosition::DEFAULT);
+    }
+
     commands.entity(panel).despawn_children();
     if let Some(shape) = &wanted {
         let header = commands
@@ -422,7 +438,7 @@ fn fields_of(value: &dyn PartialReflect) -> Vec<Field> {
 #[cfg(test)]
 mod tests {
     use super::UNREGISTERED;
-    use crate::pointer::{click_at, hold_key, in_window, release_key};
+    use crate::pointer::{click_at, hold_key, in_window, release_key, scroll_at};
     use crate::{Region, Selection, editor, headless};
     use bevy::picking::pointer::PointerButton;
     use bevy::prelude::*;
@@ -1355,6 +1371,206 @@ mod tests {
             beneath,
             vec!["Vec3(0.0, 0.0, 0.0)".to_owned()],
             "the indent is on a node wrapping the row rather than on the row"
+        );
+    }
+
+    /// A window position inside the inspector pane.
+    ///
+    /// The pane is 300 wide at the right-hand end of a 1280 window and starts
+    /// 28 down, which `docs/specs/ui.md` §1 lays out and `spawn_regions`
+    /// builds. Spelled out here for the reason `in_window` gives: a test that
+    /// computes it the way the editor does agrees with the editor rather than
+    /// with the drawing.
+    fn in_inspector() -> Vec2 {
+        Vec2::new(1100.0, 200.0)
+    }
+
+    /// Where a row sits on screen, by the words on it.
+    fn top_of(app: &mut App, row: &str) -> f32 {
+        let found = under_the_panel(app)
+            .into_iter()
+            .find(|entity| {
+                app.world()
+                    .entity(*entity)
+                    .get::<Text>()
+                    .is_some_and(|text| text.0 == row)
+            })
+            .unwrap_or_else(|| panic!("no row says {row}"));
+        app.world()
+            .entity(found)
+            .get::<UiGlobalTransform>()
+            .expect("a row is placed")
+            .translation
+            .y
+    }
+
+    /// What the viewport camera is showing, so that a wheel that reached it
+    /// would be visible here.
+    fn world_per_pixel_of(app: &mut App) -> f32 {
+        let projection = app
+            .world_mut()
+            .query_filtered::<&Projection, With<crate::ViewportCamera>>()
+            .single(app.world())
+            .expect("there is one viewport camera");
+        let Projection::Orthographic(orthographic) = projection else {
+            panic!("the viewport camera is not orthographic");
+        };
+        orthographic.scale
+    }
+
+    /// Where the inspector's contents have been scrolled to.
+    fn scrolled_to(app: &mut App) -> f32 {
+        let panel = panel_of(app);
+        app.world()
+            .entity(panel)
+            .get::<ScrollPosition>()
+            .expect("the pane scrolls")
+            .y
+    }
+
+    /// The wheel scrolls the panel.
+    ///
+    /// The panel is longer than the pane from the first click, so the rows past
+    /// the bottom have to be reachable. The wheel is the engine's:
+    /// `ScrollAreaPlugin` arrives with `DefaultPlugins`, and `Pointer<Scroll>`
+    /// bubbles from the label under the pointer up to the pane, which is where
+    /// `ScrollArea` sits.
+    ///
+    /// Asserted on what moved rather than on `ScrollPosition` alone: a position
+    /// that changed while the rows stayed put is not scrolling.
+    ///
+    /// Mutation: drop `ScrollArea` from the inspector region in `lib.rs`, and
+    /// this fails with the position still at the top.
+    #[test]
+    fn the_wheel_scrolls_the_panel() {
+        let mut app = inspector_editor();
+        select_the_middle(&mut app);
+        let before = top_of(&mut app, "Aabb");
+        assert_eq!(
+            scrolled_to(&mut app),
+            0.0,
+            "the panel did not start at the top"
+        );
+
+        scroll_at(&mut app, in_inspector(), -5.0);
+
+        assert!(
+            scrolled_to(&mut app) > 0.0,
+            "the wheel did not move the scroll position"
+        );
+        let after = top_of(&mut app, "Aabb");
+        assert!(
+            after < before,
+            "the rows did not move: {before} then {after}"
+        );
+    }
+
+    /// Scrolling the panel does not zoom the viewport.
+    ///
+    /// The viewport observes the wheel too, for the zoom `docs/specs/ui.md` §4
+    /// decided.
+    ///
+    /// **What keeps them apart is the hierarchy, not the scrolling.** A
+    /// `Pointer<Scroll>` bubbles to its ancestors, and the viewport is the
+    /// inspector's sibling rather than its parent, so the wheel here never
+    /// reaches `zoom` whatever this pane does with it. Measured: taking the
+    /// scrolling away again, so the pane merely clips, leaves this green.
+    ///
+    /// It is still a guard, of the thing that would actually break it.
+    /// Mutation: add `zoom` as a global observer in `ViewportPlugin` rather
+    /// than attaching it to the viewport's own node, and this fails with the
+    /// camera zoomed by a wheel the user turned over the inspector. Applied,
+    /// and two of `viewport`'s own tests fail with it.
+    #[test]
+    fn scrolling_the_panel_does_not_zoom_the_viewport() {
+        let mut app = inspector_editor();
+        select_the_middle(&mut app);
+        let before = world_per_pixel_of(&mut app);
+
+        scroll_at(&mut app, in_inspector(), -5.0);
+
+        assert_eq!(
+            world_per_pixel_of(&mut app),
+            before,
+            "the wheel over the inspector reached the viewport's camera"
+        );
+    }
+
+    /// Choosing another entity puts the panel back at the top.
+    ///
+    /// Scrolled to the bottom of one entity's components and then handed
+    /// another, the panel would otherwise open part way down a list the user
+    /// has not seen. It is **the entity changing** that resets it and not the
+    /// rebuild: the values of the entity being looked at change on their own,
+    /// `PickingInteraction` every time the pointer crosses a sprite, and a
+    /// scroll that jumped to the top for those would be unusable.
+    ///
+    /// Mutation: reset the scroll on every rebuild rather than on a change of
+    /// entity, and the second half of this fails.
+    #[test]
+    fn choosing_another_entity_puts_the_panel_back_at_the_top() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        scroll_at(&mut app, in_inspector(), -5.0);
+        assert!(scrolled_to(&mut app) > 0.0, "nothing was scrolled to reset");
+
+        // A rebuild of the same entity: one more component, same selection.
+        app.world_mut().entity_mut(middle).insert(Unheard);
+        app.update();
+        assert!(
+            scrolled_to(&mut app) > 0.0,
+            "a rebuild of the same entity lost the scroll position"
+        );
+
+        click_at(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+
+        assert_eq!(
+            scrolled_to(&mut app),
+            0.0,
+            "the panel stayed where the last entity was scrolled to"
+        );
+    }
+
+    /// A name too long for its column is cut rather than drawn over its value.
+    ///
+    /// `should_block_lower` on `Pickable` is the one in the tree: measured in
+    /// the running editor at a 110 pixel column, it overlapped the `true`
+    /// beside it and both were unreadable. The column is wider now, and it
+    /// clips, so the next name that does not fit is cut instead.
+    ///
+    /// Read through `CalculatedClip`, which `bevy_ui` puts on the descendants
+    /// of a node that clips and takes away when nothing does.
+    ///
+    /// Mutation: drop `overflow` from the name column in `field.rs`, and this
+    /// fails.
+    #[test]
+    fn a_name_too_long_for_its_column_is_cut_rather_than_drawn_over_its_value() {
+        let mut app = inspector_editor();
+        select_the_middle(&mut app);
+
+        let named = under_the_panel(&mut app)
+            .into_iter()
+            .find(|entity| {
+                app.world()
+                    .entity(*entity)
+                    .get::<Text>()
+                    .is_some_and(|text| text.0 == "should_block_lower")
+            })
+            .expect("Pickable opened into should_block_lower");
+
+        let clip = app
+            .world()
+            .entity(named)
+            .get::<bevy::ui::CalculatedClip>()
+            .map(|clip| clip.clip);
+        let column = clip.expect("the name is clipped by its column");
+        assert!(
+            column.width() <= 140.0,
+            "the name is clipped by something wider than its column: {column:?}"
         );
     }
 }
