@@ -789,6 +789,10 @@ impl EditorCommand for SetLeaf {
 ///
 /// Mutation: answer `false` always, and
 /// `ctrl_z_in_a_box_takes_back_what_was_typed_and_not_the_last_commit` fails.
+/// Mutation: count text that does not parse as the leaf, with
+/// `unwrap_or(leaf)`, and
+/// `ctrl_z_in_a_box_holding_what_is_not_a_number_takes_back_the_typing`
+/// fails.
 pub(crate) fn take_back_typing(world: &mut World) -> bool {
     let Some(inner) = world.resource::<InputFocus>().get() else {
         return false;
@@ -3101,6 +3105,36 @@ mod tests {
             translation(&app, middle).y,
             10.0,
             "letting go of the box wrote something other than the commit"
+        );
+    }
+
+    /// Ctrl+Z in a box holding something that is not a number takes back the
+    /// typing, and not the last commit.
+    ///
+    /// A lone `-` is where every negative number starts, and it does not
+    /// parse. It is still typing the user has not committed, so it is what
+    /// Ctrl+Z takes back.
+    ///
+    /// Mutation: in `take_back_typing`, parse with `unwrap_or(leaf)` so that
+    /// text which does not parse counts as the leaf, and this fails with the
+    /// commit of ten taken back instead.
+    #[test]
+    fn ctrl_z_in_a_box_holding_what_is_not_a_number_takes_back_the_typing() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "-");
+        focus(&mut app, cell);
+        undo(&mut app);
+
+        assert_eq!(text_in(&app, cell), "10", "the box still holds the typing");
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "Ctrl+Z took back the commit rather than the typing"
         );
     }
 
