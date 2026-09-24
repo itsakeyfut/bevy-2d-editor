@@ -147,7 +147,7 @@ mod tests {
         );
         assert!(
             matches!(name_width(&app, line), Val::Px(_)),
-            "the name column has no fixed width, so the comparison above holds              for two columns that are both unset"
+            "the name column has no fixed width, so the comparison above holds for two columns that are both unset"
         );
     }
 

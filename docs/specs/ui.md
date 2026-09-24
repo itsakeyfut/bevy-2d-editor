@@ -239,17 +239,23 @@ which is clear the selection, is overwritten in the same frame. That is a
 property of the order rather than of the editor, so the order is what is held,
 by `a_release_that_ended_a_band_clicks_before_it_ends_the_drag`.
 
-**A box ranks what it covers, front to back, so the last one in it is the one
-in front.** This was deferred, with the condition that it became answerable once
-an edit could be committed through the inspector, and
-[§7](#7-what-the-inspector-can-edit) is that. The rule is the one a click
-already follows: `select` takes the nearest of the entities under the pointer,
-and a box takes the entities it covers in the same order, so that the entity the
-inspector calls active is the front-most of the group rather than whichever one
-the world iterated first. Ties keep the world's order, which is arbitrary and is
-now said to be arbitrary rather than relied on. `crates/editor/src/selection.rs`
-is where the condition on `Selection` is written down, and it is the file this
-changes.
+**A box is to rank what it covers, front to back, so that the last one in it is
+the one in front. This is decided and is not yet built.** It was deferred, with
+the condition that it became answerable once an edit could be committed through
+the inspector, and [§7](#7-what-the-inspector-can-edit) is that edit. The rule
+is the one a click already follows: `select` takes the nearest of the entities
+under the pointer, and a box is to take the entities it covers in the same
+order, so that the entity the inspector calls active is the front-most of the
+group rather than whichever one the world iterated first. Ties keep the world's
+order, which is arbitrary and is said to be arbitrary rather than relied on.
+
+**Until it is built, `finish` in `crates/editor/src/selection.rs` still pushes
+in the order the world iterates**, and that file's own condition on `Selection`
+still says nothing ranks a boxed group, which is true of the code as it stands.
+Issue #47 is the change, and it is where this paragraph stops being a promise.
+Saying which of the two a sentence is matters here more than usual: a reader who
+took this for the present tense would believe an ambiguity had been closed that
+is still open.
 
 The left button is still what every tool that paints will want. What is decided
 here is what it does when no tool has been chosen, which is the state the editor
@@ -653,14 +659,16 @@ strings a frame for one placeholder. A component carrying a large array would
 make it row 5, and phase 2's tile data is the first thing that could; the answer
 then is to bound what a row formats rather than to start watching for changes.
 
-**After a box drag the header named an arbitrary one of what the box covered,
-and no longer does.** This paragraph recorded that §4's box added several
-entities in one gesture while `crates/editor/src/selection.rs` ranked none of
-them, so "the last one chosen" had no answer inside a boxed group, and it named
-the condition under which that would have to be settled: a value being written
-back. [§7](#7-what-the-inspector-can-edit) is that value, so §4 now ranks a
-boxed group front to back and the header names the front-most. The count stays,
-because one of several is still one of several.
+**After a box drag the header still names an arbitrary one of what the box
+covered.** This paragraph recorded that §4's box adds several entities in one
+gesture while `crates/editor/src/selection.rs` ranks none of them, so "the last
+one chosen" has no answer inside a boxed group, and it named the condition under
+which that would have to be settled: a value being written back.
+[§7](#7-what-the-inspector-can-edit) is that value, so §4 has now decided the
+answer, front to back. **The code has not caught up**, and issue #47 is where it
+does; until then an edit committed through the inspector can land on an entity
+the user did not single out, which is what the count in the header makes visible
+rather than fixes.
 
 ---
 

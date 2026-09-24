@@ -115,7 +115,12 @@ enum Row {
         /// with when a box under this row is committed, so that the write goes
         /// to the type the panel read rather than to one looked up again from
         /// a name.
-        of: TypeId,
+        ///
+        /// **Named for the thing rather than called `of`**, which [`Shape`]
+        /// already uses for an `Entity`: the two are read on the same line
+        /// where a box is spawned, and [`Writes`] calls this same quantity
+        /// `component` too.
+        component: TypeId,
         /// One per line under the name, in the order they are drawn.
         fields: Vec<Field>,
     },
@@ -386,9 +391,14 @@ fn show(
     // iterates them, and that only the boundary between gestures is meaningful.
     // So after a click the last element is the one just clicked, and after a box
     // drag it is an arbitrary member of what the box covered. Measured: a box
-    // over two placeholders selects both and this names the second. What the
-    // header should say in that case is not decided; the deferral and its
-    // trigger are in `docs/specs/open-questions.md` §1.
+    // over two placeholders selects both and this names the second.
+    //
+    // **That is now decided and not yet built.** `docs/specs/ui.md` §4 says a
+    // box is to rank what it covers front to back, so that this names the
+    // front-most; issue #47 is the change to `selection.rs` that does it. Until
+    // then the sentence above is what the code does, and an edit committed
+    // through a field row below can land on an entity the user did not single
+    // out.
     let selection = world.resource::<Selection>();
     let wanted = selection.entities().last().and_then(|entity| {
         // `Err` rather than a panic when the entity is gone. **No test holds
@@ -413,7 +423,7 @@ fn show(
                     .get_reflect(*entity, of)
                     .map_or(Row::Unregistered, |value| Row::Named {
                         name: value.reflect_short_type_path().to_owned(),
-                        of,
+                        component: of,
                         fields: fields_of(value.as_partial_reflect()),
                     })
             })
@@ -471,7 +481,11 @@ fn show(
             .id();
         for row in &shape.rows {
             match row {
-                Row::Named { name, of, fields } => {
+                Row::Named {
+                    name,
+                    component,
+                    fields,
+                } => {
                     let group = commands
                         .spawn_scene(bsn! {
                             Node { flex_direction: FlexDirection::Column }
@@ -544,7 +558,7 @@ fn show(
                                             ChildOf(line),
                                             Writes {
                                                 of: shape.of,
-                                                component: *of,
+                                                component: *component,
                                                 field: name.clone(),
                                                 leaf: leaf.name.clone(),
                                             },
