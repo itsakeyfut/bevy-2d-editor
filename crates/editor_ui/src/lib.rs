@@ -13,7 +13,7 @@
 
 mod field;
 
-pub use field::field_row;
+pub use field::{field_line, field_row};
 
 use bevy::app::{App, Plugin};
 use bevy::color::Color;
