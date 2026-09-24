@@ -240,7 +240,7 @@ property of the order rather than of the editor, so the order is what is held,
 by `a_release_that_ended_a_band_clicks_before_it_ends_the_drag`.
 
 **A box is to rank what it covers, front to back, so that the last one in it is
-the one in front. This is decided and is not yet built.** It was deferred, with
+the one in front.** It was deferred, with
 the condition that it became answerable once an edit could be committed through
 the inspector, and [§7](#7-what-the-inspector-can-edit) is that edit. The rule
 is the one a click already follows: `select` takes the nearest of the entities
@@ -249,13 +249,11 @@ order, so that the entity the inspector calls active is the front-most of the
 group rather than whichever one the world iterated first. Ties keep the world's
 order, which is arbitrary and is said to be arbitrary rather than relied on.
 
-**Until it is built, `finish` in `crates/editor/src/selection.rs` still pushes
-in the order the world iterates**, and that file's own condition on `Selection`
-still says nothing ranks a boxed group, which is true of the code as it stands.
-Issue #47 is the change, and it is where this paragraph stops being a promise.
-Saying which of the two a sentence is matters here more than usual: a reader who
-took this for the present tense would believe an ambiguity had been closed that
-is still open.
+**It is built, by `finish` in `crates/editor/src/selection.rs`**, which sorts
+what a box adds by the world `z` of each entity, since a rectangle test has no
+hit depth to read. Issue #47 was the change. The ranking, the tie and the
+boundary between gestures are each held by a test named in that function's doc
+comment.
 
 The left button is still what every tool that paints will want. What is decided
 here is what it does when no tool has been chosen, which is the state the editor
@@ -487,14 +485,15 @@ can point at it.
 
 **The header says how many are selected because the panel now carries values.**
 [§4](#4-what-the-mouse-does-in-the-viewport)'s box drag puts several entities in
-the selection at once and `crates/editor/src/selection.rs` ranks none of them,
-so the entity the panel is about is an arbitrary member of that group. While the
+the selection at once and `crates/editor/src/selection.rs` ranked none of them
+when this was written, so the entity the panel was about was an arbitrary
+member of that group. While the
 panel held names only, that was cosmetic. With values in it, a header naming one
 entity and saying nothing else reads as a claim about the only thing selected,
 and the issue after this one lets that value be edited. Saying `1 of 3` does not
 choose better; it makes the choice visible, which is the difference between row
-4 and row 6. Whether the box drag should rank what it covers is the half of this
-that is still open, in [open-questions.md §1](./open-questions.md).
+4 and row 6. Whether the box drag should rank what it covers was the half of this
+left open then; §4 has since decided it and the code ranks front to back.
 
 **The name is no longer the type registry's**, and that is a measurement rather
 than a preference. `ComponentInfo::name()` returns a `DebugName`, which
@@ -659,16 +658,16 @@ strings a frame for one placeholder. A component carrying a large array would
 make it row 5, and phase 2's tile data is the first thing that could; the answer
 then is to bound what a row formats rather than to start watching for changes.
 
-**After a box drag the header still names an arbitrary one of what the box
-covered.** This paragraph recorded that §4's box adds several entities in one
+**After a box drag the header named an arbitrary one of what the box
+covered, until issue #47.** This paragraph recorded that §4's box adds several entities in one
 gesture while `crates/editor/src/selection.rs` ranks none of them, so "the last
 one chosen" has no answer inside a boxed group, and it named the condition under
 which that would have to be settled: a value being written back.
 [§7](#7-what-the-inspector-can-edit) is that value, so §4 has now decided the
-answer, front to back. **The code has not caught up**, and issue #47 is where it
-does; until then an edit committed through the inspector can land on an entity
-the user did not single out, which is what the count in the header makes visible
-rather than fixes.
+answer, front to back, and issue #47 built it: the header now names the
+front-most of a boxed group. Before that, an edit committed through the
+inspector could land on an entity the user did not single out, which is what
+the count in the header made visible rather than fixed.
 
 ---
 
