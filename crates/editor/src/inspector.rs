@@ -12,6 +12,7 @@
 use core::any::TypeId;
 
 use b2d_editor_ui::{field_line, field_row};
+use bevy::clipboard::Clipboard;
 use bevy::feathers::containers::{pane_body, pane_header};
 use bevy::feathers::controls::{
     FeathersNumberInput, NumberFormat, NumberInputValue, UpdateNumberInput,
@@ -20,7 +21,7 @@ use bevy::feathers::display::{label, label_dim};
 use bevy::input_focus::{InputFocus, IsFocused};
 use bevy::prelude::*;
 use bevy::reflect::{ReflectMut, ReflectRef};
-use bevy::text::{EditableText, TextEdit};
+use bevy::text::{EditableText, FontCx, LayoutCx, TextEdit};
 use bevy::ui::ScrollPosition;
 use bevy::ui_widgets::ValueChange;
 
@@ -782,17 +783,26 @@ impl EditorCommand for SetLeaf {
 /// Take back what is typed in the focused box, and say whether there was any.
 ///
 /// "Typed" is decided by comparing the box's text with the leaf: the leaf is
-/// what the last commit wrote, so a box whose text does not parse to the
-/// leaf's bits holds something the user has not committed. Put back, the box
-/// reads the leaf again and the history is left alone.
+/// what the last commit wrote, so a box holding a number with other bits
+/// holds something the user has not committed. Put back, the box reads the
+/// leaf again and the history is left alone.
 /// [`docs/specs/ui.md` §8](../../../docs/specs/ui.md) is what this is for.
+///
+/// **A number is compared by its bits and not by its text**, because the text
+/// a commit leaves is the user's own: `10.50` committed is a leaf of `10.5`,
+/// and calling that typing would make the next Ctrl+Z put back `10.5` and
+/// change nothing visible. **Text that is not a number is compared with
+/// [`shown_for`]**, which is what the panel itself leaves there, so the empty
+/// box a value too long for it is left with is not taken for typing.
 ///
 /// Mutation: answer `false` always, and
 /// `ctrl_z_in_a_box_takes_back_what_was_typed_and_not_the_last_commit` fails.
 /// Mutation: count text that does not parse as the leaf, with
 /// `unwrap_or(leaf)`, and
 /// `ctrl_z_in_a_box_holding_what_is_not_a_number_takes_back_the_typing`
-/// fails.
+/// fails. Mutation: count every such text as typed, and
+/// `an_undo_to_a_value_the_box_cannot_hold_is_not_written_over` fails, because
+/// Ctrl+Z in the empty box never reaches the history.
 pub(crate) fn take_back_typing(world: &mut World) -> bool {
     let Some(inner) = world.resource::<InputFocus>().get() else {
         return false;
@@ -808,8 +818,12 @@ pub(crate) fn take_back_typing(world: &mut World) -> bool {
     else {
         return false;
     };
-    let typed = text.value().to_string().trim().parse::<f32>().ok();
-    if typed.map(f32::to_bits) == Some(leaf.to_bits()) {
+    let written = text.value().to_string();
+    let typed = match written.trim().parse::<f32>() {
+        Ok(number) => number.to_bits() != leaf.to_bits(),
+        Err(_) => written != shown_for(leaf, text),
+    };
+    if !typed {
         return false;
     }
     put_in_box(world, inner, leaf);
@@ -856,14 +870,69 @@ pub(crate) fn show_values_in_place(world: &mut World) {
     }
 }
 
-/// Replace what a box's text holds with a value, the way `bevy_feathers`
-/// replaces it in `number_input_on_update`.
+/// Replace what a box's text holds with a value, **now**, and not in a later
+/// frame.
+///
+/// The edits are the ones `bevy_feathers` queues in `number_input_on_update`,
+/// `SelectAll` and then `Insert`, but they are applied here through
+/// `EditableText::apply_pending_edits` rather than left for the engine's
+/// `apply_text_edits`. That system runs before `take_back` in `PostUpdate`, so
+/// a queued edit would not land until the next frame, and **the next frame's
+/// keys reach the box first**, in `PreUpdate`: Enter pressed right after
+/// Ctrl+Z would commit the text from before it. That is how a value the user
+/// had just taken back went into the history, found by review.
+///
+/// The character filter is not applied. `EditableTextFilter` keeps its
+/// function private, and what is inserted is this function's own formatting of
+/// an `f32`, not something a user typed.
+///
+/// **A value the box cannot hold leaves it empty**, which is what the panel
+/// draws for such a value anyway; [`shown_for`] says why and how.
+///
+/// Mutation: only queue the edits, and
+/// `enter_right_after_ctrl_z_commits_what_the_box_shows` fails.
 fn put_in_box(world: &mut World, inner: Entity, value: f32) {
-    if let Some(mut text) = world.get_mut::<EditableText>(inner) {
-        text.queue_edit(TextEdit::SelectAll);
-        text.queue_edit(TextEdit::Insert(
-            NumberInputValue::F32(value).to_string().into(),
-        ));
+    world.resource_scope(|world, mut fonts: Mut<FontCx>| {
+        world.resource_scope(|world, mut layout: Mut<LayoutCx>| {
+            world.resource_scope(|world, mut clipboard: Mut<Clipboard>| {
+                let Some(mut text) = world.get_mut::<EditableText>(inner) else {
+                    return;
+                };
+                let shown = shown_for(value, &text);
+                text.queue_edit(TextEdit::SelectAll);
+                text.queue_edit(TextEdit::Insert(shown.into()));
+                text.apply_pending_edits(&mut fonts, &mut layout.0, &mut clipboard, |_| true);
+            });
+        });
+    });
+}
+
+/// What [`put_in_box`] leaves in a box for `value`: its text, or nothing
+/// when that is longer than the box holds.
+///
+/// `f32`'s `Display` never uses an exponent, so a value like `1e20` is more
+/// characters than a `FeathersNumberInput` holds, and the engine refuses such
+/// an insert whole rather than cutting it. Inserted anyway, the box would keep
+/// the text from before the undo and write it over the undo when it is let
+/// go, found by review. An empty box writes nothing when it is let go.
+///
+/// **This is also what "typed" is measured against**, in
+/// [`take_back_typing`]: a box whose text is not this holds something the
+/// panel did not put there. One rule for both, so that the text Ctrl+Z puts
+/// back is never itself taken for typing, which would leave the key taking
+/// back the same nothing for ever.
+///
+/// Mutation: return the text whatever its length, and
+/// `an_undo_to_a_value_the_box_cannot_hold_is_not_written_over` fails.
+fn shown_for(value: f32, text: &EditableText) -> String {
+    let shown = NumberInputValue::F32(value).to_string();
+    if text
+        .max_characters
+        .is_some_and(|limit| shown.chars().count() > limit)
+    {
+        String::new()
+    } else {
+        shown
     }
 }
 
@@ -3135,6 +3204,146 @@ mod tests {
             translation(&app, middle).y,
             10.0,
             "Ctrl+Z took back the commit rather than the typing"
+        );
+    }
+
+    /// Enter in the frame after Ctrl+Z commits what the box shows, not what
+    /// it held before.
+    ///
+    /// Ninety nine is typed over a committed ten and taken back with Ctrl+Z.
+    /// Enter goes down in the very next frame, which reaches the box in
+    /// `PreUpdate`, before anything else has run. If the box's text were only
+    /// queued, Enter would read ninety nine and commit the value the user had
+    /// just taken back, and the next Ctrl+Z would restore it.
+    ///
+    /// Mutation: in `put_in_box`, only queue the edits and do not apply them,
+    /// and this fails with ninety nine coming back.
+    #[test]
+    fn enter_right_after_ctrl_z_commits_what_the_box_shows() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "99");
+        focus(&mut app, cell);
+
+        hold_key(&mut app, KeyCode::ControlLeft);
+        hold_letter(&mut app, KeyCode::KeyZ, "z");
+        app.update();
+        release_letter(&mut app, KeyCode::KeyZ, "z");
+        release_key(&mut app, KeyCode::ControlLeft);
+        hold_key(&mut app, KeyCode::Enter);
+        app.update();
+        release_key(&mut app, KeyCode::Enter);
+        app.update();
+        app.update();
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "Enter committed the typing"
+        );
+
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            0.0,
+            "Ctrl+Z restored a value the user had taken back and never committed"
+        );
+    }
+
+    /// Put a value on the middle placeholder's `translation.y` directly, and
+    /// let the panel settle around it.
+    fn set_y(app: &mut App, entity: Entity, y: f32) {
+        app.world_mut()
+            .entity_mut(entity)
+            .get_mut::<Transform>()
+            .expect("a placeholder has a transform")
+            .translation
+            .y = y;
+        app.update();
+        app.update();
+    }
+
+    /// An undo to a value the box cannot hold is not written over when the
+    /// box is let go.
+    ///
+    /// `1e20` prints as twenty one digits, one more than the box holds, and
+    /// the engine refuses an insert that is too long rather than cutting it.
+    /// Five is committed over it with Enter, and Ctrl+Z puts `1e20` back. If
+    /// the box kept `5`, letting go would write five over the undo.
+    ///
+    /// Mutation: return the text from `shown_for` whatever its length, and
+    /// this fails with five written back.
+    #[test]
+    fn an_undo_to_a_value_the_box_cannot_hold_is_not_written_over() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        set_y(&mut app, middle, 1e20);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "5");
+        focus(&mut app, cell);
+        enter(&mut app);
+        assert_eq!(translation(&app, middle).y, 5.0, "Enter did not commit");
+
+        undo(&mut app);
+        assert_eq!(
+            translation(&app, middle).y,
+            1e20,
+            "the commit was not taken back"
+        );
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+
+        assert_eq!(
+            translation(&app, middle).y,
+            1e20,
+            "letting go of the box wrote the undone value back"
+        );
+    }
+
+    /// Ctrl+Z in a box left empty by a value it cannot hold reaches the
+    /// history.
+    ///
+    /// The box under `1e20` is empty because the panel could not put the value
+    /// there, not because anybody typed. Taking that for typing would make
+    /// Ctrl+Z put back the same nothing every time it was pressed, and never
+    /// reach the commit on `x`.
+    ///
+    /// Mutation: in `take_back_typing`, count every text that is not a number
+    /// as typed, and this fails with `x` still at three.
+    #[test]
+    fn ctrl_z_in_a_box_left_empty_by_a_long_value_reaches_the_history() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        set_y(&mut app, middle, 1e20);
+
+        // With Enter rather than by clicking away: the placeholder is now far
+        // off screen, so a click at the origin lands on empty space and takes
+        // the selection with it.
+        let line = line_of(&mut app, "Transform", 0);
+        let [x, cell] = [boxes_on(&mut app, line)[0], boxes_on(&mut app, line)[1]];
+        type_into(&mut app, x, "3");
+        focus(&mut app, x);
+        enter(&mut app);
+        assert_eq!(translation(&app, middle).x, 3.0, "Enter did not commit");
+        assert_eq!(
+            text_in(&app, cell),
+            "",
+            "the box is not empty, so this says nothing"
+        );
+        focus(&mut app, cell);
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).x,
+            0.0,
+            "Ctrl+Z did not reach the history"
         );
     }
 
