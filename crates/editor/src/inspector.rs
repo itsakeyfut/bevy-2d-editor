@@ -17,12 +17,14 @@ use bevy::feathers::controls::{
     FeathersNumberInput, NumberFormat, NumberInputValue, UpdateNumberInput,
 };
 use bevy::feathers::display::{label, label_dim};
-use bevy::input_focus::IsFocused;
+use bevy::input_focus::{InputFocus, IsFocused};
 use bevy::prelude::*;
 use bevy::reflect::{ReflectMut, ReflectRef};
+use bevy::text::{EditableText, TextEdit};
 use bevy::ui::ScrollPosition;
 use bevy::ui_widgets::ValueChange;
 
+use crate::history::{EditorCommand, History};
 use crate::{Region, Selection};
 
 /// How far a field row sits in from the component name above it.
@@ -701,13 +703,19 @@ fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
 /// more when [`UpdateNumberInput`] fills a box the panel has just spawned:
 /// measured with a throwaway probe, pushing `12.5` into a fresh box produced a
 /// `ValueChange` carrying `12.5` straight back out. Acting on those would move
-/// the sprite through `-`, `-1`, `-12` on the way to `-120`, each of which is
-/// an edit nothing can take back while there is no undo, and would make the
-/// panel's own initial draw write to the world.
+/// the sprite through `-`, `-1`, `-12` on the way to `-120`, each of them an
+/// entry in the history, and would make the panel's own initial draw write to
+/// the world.
 /// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md) carries why.
 ///
+/// The write goes through [`History::record`], and only when [`SetLeaf::read`]
+/// finds the value different from what is there.
+///
 /// Mutation: drop the `is_final` check, and
-/// `a_value_that_is_not_committed_leaves_the_component_alone` fails.
+/// `a_value_that_is_not_committed_leaves_the_component_alone` fails. Mutation:
+/// call [`write_leaf`] here instead of recording, and
+/// `undoing_a_commit_puts_the_component_back_bit_for_bit` fails, because the
+/// history is empty when Ctrl+Z reaches it.
 fn commit(change: On<ValueChange<f32>>, writes: Query<&Writes>, mut commands: Commands) {
     if !change.is_final {
         return;
@@ -717,7 +725,158 @@ fn commit(change: On<ValueChange<f32>>, writes: Query<&Writes>, mut commands: Co
     };
     let target = target.clone();
     let value = change.value;
-    commands.queue(move |world: &mut World| write_leaf(world, &target, value));
+    commands.queue(move |world: &mut World| {
+        if let Some(set) = SetLeaf::read(world, target, value) {
+            History::record(world, set);
+        }
+    });
+}
+
+/// One committed number, and the number it replaced.
+///
+/// The command of [`docs/specs/data-model.md` §1](../../../docs/specs/data-model.md),
+/// writing the component directly because there is no Editor Model yet; that
+/// section says what ends that.
+struct SetLeaf {
+    /// Where it writes.
+    target: Writes,
+    /// What the leaf held before, which is what `undo` writes back.
+    old: f32,
+    /// What was committed.
+    new: f32,
+}
+
+impl SetLeaf {
+    /// The command for committing `new`, or `None` when there is nothing to
+    /// record.
+    ///
+    /// **A commit that leaves the leaf's bits as they were is not an entry.**
+    /// One Enter is two commits, because `bevy_feathers` emits on the key's
+    /// press and on its release, and letting go of the box is a third.
+    /// Recorded, each would be a Ctrl+Z that does nothing visible.
+    /// [`docs/specs/ui.md` §8](../../../docs/specs/ui.md) has the measurement.
+    ///
+    /// **The old value is read here, before anything is written.**
+    ///
+    /// Mutation: drop the bits comparison, and
+    /// `a_commit_that_changes_nothing_is_not_an_entry` fails. Mutation: read
+    /// `old` after writing `new`, and
+    /// `undoing_a_commit_puts_the_component_back_bit_for_bit` fails, because
+    /// the undo writes back the committed value.
+    fn read(world: &World, target: Writes, new: f32) -> Option<SetLeaf> {
+        let old = read_leaf(world, &target)?;
+        (old.to_bits() != new.to_bits()).then_some(SetLeaf { target, old, new })
+    }
+}
+
+impl EditorCommand for SetLeaf {
+    fn execute(&mut self, world: &mut World) {
+        write_leaf(world, &self.target, self.new);
+    }
+
+    fn undo(&mut self, world: &mut World) {
+        write_leaf(world, &self.target, self.old);
+    }
+}
+
+/// Take back what is typed in the focused box, and say whether there was any.
+///
+/// "Typed" is decided by comparing the box's text with the leaf: the leaf is
+/// what the last commit wrote, so a box whose text does not parse to the
+/// leaf's bits holds something the user has not committed. Put back, the box
+/// reads the leaf again and the history is left alone.
+/// [`docs/specs/ui.md` §8](../../../docs/specs/ui.md) is what this is for.
+///
+/// Mutation: answer `false` always, and
+/// `ctrl_z_in_a_box_takes_back_what_was_typed_and_not_the_last_commit` fails.
+pub(crate) fn take_back_typing(world: &mut World) -> bool {
+    let Some(inner) = world.resource::<InputFocus>().get() else {
+        return false;
+    };
+    let Some(target) = world
+        .get::<ChildOf>(inner)
+        .and_then(|parent| world.get::<Writes>(parent.parent()))
+        .cloned()
+    else {
+        return false;
+    };
+    let (Some(leaf), Some(text)) = (read_leaf(world, &target), world.get::<EditableText>(inner))
+    else {
+        return false;
+    };
+    let typed = text.value().to_string().trim().parse::<f32>().ok();
+    if typed.map(f32::to_bits) == Some(leaf.to_bits()) {
+        return false;
+    }
+    put_in_box(world, inner, leaf);
+    true
+}
+
+/// Give every box on the panel its leaf's value, without rebuilding it.
+///
+/// Called after an undo. With no box focused the panel is rebuilt anyway, and
+/// this is harmless. With one focused, the panel is frozen
+/// ([ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)),
+/// and **the focused box is the one that matters**: `UpdateNumberInput` skips
+/// it, and left holding the value from before the undo it writes that value
+/// back when it is let go. So its text is replaced by hand, and the others get
+/// the engine's event.
+///
+/// Mutation: send the focused box `UpdateNumberInput` like the rest, and
+/// `ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit` fails.
+pub(crate) fn show_values_in_place(world: &mut World) {
+    let focused = world.resource::<InputFocus>().get();
+    let cells: Vec<(Entity, Writes)> = world
+        .query::<(Entity, &Writes)>()
+        .iter(world)
+        .map(|(cell, writes)| (cell, writes.clone()))
+        .collect();
+    for (cell, target) in cells {
+        let Some(value) = read_leaf(world, &target) else {
+            continue;
+        };
+        let typing_in_it = focused.filter(|inner| {
+            world
+                .get::<ChildOf>(*inner)
+                .is_some_and(|parent| parent.parent() == cell)
+        });
+        match typing_in_it {
+            Some(inner) => put_in_box(world, inner, value),
+            None => world.trigger(UpdateNumberInput {
+                entity: cell,
+                value: NumberInputValue::F32(value),
+            }),
+        }
+    }
+}
+
+/// Replace what a box's text holds with a value, the way `bevy_feathers`
+/// replaces it in `number_input_on_update`.
+fn put_in_box(world: &mut World, inner: Entity, value: f32) {
+    if let Some(mut text) = world.get_mut::<EditableText>(inner) {
+        text.queue_edit(TextEdit::SelectAll);
+        text.queue_edit(TextEdit::Insert(
+            NumberInputValue::F32(value).to_string().into(),
+        ));
+    }
+}
+
+/// The number a box writes to, as the component holds it now.
+///
+/// The mirror of [`write_leaf`], through [`World::get_reflect`] as [`show`]
+/// reads, so that the value a command remembers is read the way it is shown.
+fn read_leaf(world: &World, writes: &Writes) -> Option<f32> {
+    let component = world.get_reflect(writes.of, writes.component).ok()?;
+    let ReflectRef::Struct(shape) = component.reflect_ref() else {
+        return None;
+    };
+    let ReflectRef::Struct(field) = shape.field(&writes.field)?.reflect_ref() else {
+        return None;
+    };
+    field
+        .field(&writes.leaf)?
+        .try_downcast_ref::<f32>()
+        .copied()
 }
 
 /// Write one committed number onto the component it came from.
@@ -727,23 +886,22 @@ fn commit(change: On<ValueChange<f32>>, writes: Query<&Writes>, mut commands: Co
 /// because `ReflectComponent` would see fewer components than the engine's own
 /// call does, so the set that can be written is exactly the set that is shown.
 ///
-/// **This is the function undo wraps rather than replaces.**
-/// `docs/specs/data-model.md` §1 says the path is an `EditorCommand` through an
-/// Editor Model, and records why there is no Editor Model to write one against
-/// yet and what ends that. `EditorCommand::execute` takes the same `&mut World`
-/// this does.
+/// **Reached only through [`SetLeaf`]**, both ways: `execute` writes the new
+/// value and `undo` the old one, through this same path.
 ///
 /// **Silent on every failure.** Each one means the component went away or
 /// changed shape between the panel being drawn and Enter being pressed, and the
 /// panel is rebuilt from the world the moment focus leaves the box, which is
 /// where the user finds out. Nothing in the editor can reach it today, because
-/// nothing removes a component.
+/// nothing removes a component. **It is also what an undo does when the entity
+/// is gone**: nothing is written, the entry is used up, and `Entity`'s
+/// generation means a reused index is never written to by mistake. Issue #55 is
+/// what makes a deletion undoable without that.
 ///
 /// # Where this lands on `CLAUDE.md`'s failure list
 ///
-/// **Row 4**: it is on screen and the user can see it. An edit cannot be taken
-/// back, because undo is later in the phase, and what that costs is retyping a
-/// number that was on screen the whole time.
+/// **Row 4**: it is on screen and the user can see it, and Ctrl+Z takes it
+/// back.
 ///
 /// **What would make it row 6**, the row that destroys somebody's work, is a
 /// write the user does not see happening. Three things keep it off that row,
@@ -786,11 +944,14 @@ fn write_leaf(world: &mut World, writes: &Writes, value: f32) {
 #[cfg(test)]
 mod tests {
     use super::{UNREGISTERED, Writes};
-    use crate::pointer::{click_at, hold_key, in_window, release_key, scroll_at};
+    use crate::pointer::{
+        click_at, hold_key, hold_letter, in_window, release_key, release_letter, scroll_at,
+        write_input,
+    };
     use crate::{Region, Selection, editor, headless};
     use bevy::feathers::controls::FeathersNumberInput;
     use bevy::input_focus::{FocusCause, InputFocus};
-    use bevy::picking::pointer::PointerButton;
+    use bevy::picking::pointer::{PointerAction, PointerButton};
     use bevy::prelude::*;
     use bevy::text::{EditableText, TextEdit};
 
@@ -2683,6 +2844,460 @@ mod tests {
         assert_eq!(
             before, after,
             "a NaN made the panel rebuild itself every frame"
+        );
+    }
+
+    /// Press a letter with modifiers held, and let everything go.
+    ///
+    /// Two updates after, per RK-013: the undo lands in the first, and the
+    /// panel's rebuild after it settles in the second.
+    fn press_with(app: &mut App, modifiers: &[KeyCode], key: KeyCode, letter: &str) {
+        for modifier in modifiers {
+            hold_key(app, *modifier);
+        }
+        hold_letter(app, key, letter);
+        app.update();
+        release_letter(app, key, letter);
+        for modifier in modifiers {
+            release_key(app, *modifier);
+        }
+        app.update();
+        app.update();
+    }
+
+    /// Ctrl+Z, as a user on a US layout presses it.
+    fn undo(app: &mut App) {
+        press_with(app, &[KeyCode::ControlLeft], KeyCode::KeyZ, "z");
+    }
+
+    /// Press Enter in the focused box and let it go.
+    fn enter(app: &mut App) {
+        hold_key(app, KeyCode::Enter);
+        app.update();
+        release_key(app, KeyCode::Enter);
+        app.update();
+        app.update();
+    }
+
+    /// Where an entity is.
+    fn translation(app: &App, entity: Entity) -> Vec3 {
+        app.world()
+            .entity(entity)
+            .get::<Transform>()
+            .expect("a placeholder has a transform")
+            .translation
+    }
+
+    /// What a box's text holds.
+    fn text_in(app: &App, cell: Entity) -> String {
+        let inner = editable_under(app.world(), cell);
+        app.world()
+            .entity(inner)
+            .get::<EditableText>()
+            .expect("the buffer is on the entity that was found by it")
+            .value()
+            .to_string()
+    }
+
+    /// Commit a number into box `index` of the middle placeholder's
+    /// translation, by clicking away.
+    fn commit_translation(app: &mut App, index: usize, text: &str) {
+        let line = line_of(app, "Transform", 0);
+        let cell = boxes_on(app, line)[index];
+        type_and_commit(app, cell, text);
+    }
+
+    /// Undoing a commit puts the component back to what it held, bit for bit.
+    ///
+    /// The value it starts from is `PI` rather than the placeholder's zero,
+    /// so that a restore that went through text, or through a rounding, would
+    /// show.
+    ///
+    /// Mutation: return before calling `undo` in `History::undo`, and this
+    /// fails holding the committed value. Mutation: read `old` in
+    /// `SetLeaf::read` after writing `new`, and it fails the same way, because
+    /// the undo writes back what was committed. Mutation: call `write_leaf`
+    /// from `commit` instead of recording, and it fails the same way again,
+    /// because the history is empty: this is the guard that the inspector's
+    /// commit goes through a command.
+    #[test]
+    fn undoing_a_commit_puts_the_component_back_bit_for_bit() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut()
+            .entity_mut(middle)
+            .get_mut::<Transform>()
+            .expect("a placeholder has a transform")
+            .translation
+            .y = core::f32::consts::PI;
+        app.update();
+        app.update();
+
+        commit_translation(&mut app, 1, "-42.5");
+        assert_eq!(
+            translation(&app, middle).y,
+            -42.5,
+            "the commit did not land"
+        );
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y.to_bits(),
+            core::f32::consts::PI.to_bits(),
+            "Ctrl+Z did not put back what the component held before the commit"
+        );
+    }
+
+    /// After an undo, the box shows the restored value.
+    ///
+    /// With no box focused, the panel is rebuilt from the world as it is
+    /// after any change, so what holds this is `show`'s own rebuild, guarded
+    /// by its tests. The case that is new code, a box that is focused when
+    /// the undo lands, is
+    /// `ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit`.
+    ///
+    /// Mutation: return before calling `undo` in `History::undo`, and this
+    /// fails reading `-42.5`.
+    #[test]
+    fn after_an_undo_the_box_shows_the_restored_value() {
+        let mut app = inspector_editor();
+        select_the_middle(&mut app);
+
+        commit_translation(&mut app, 1, "-42.5");
+        undo(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        assert_eq!(
+            numbers_on(&mut app, line),
+            ["0", "0", "0"],
+            "the row does not show what the undo restored"
+        );
+    }
+
+    /// Undo with nothing in the history changes nothing, and does not panic.
+    ///
+    /// Mutation: `expect` the `pop` in `History::undo`, and this panics.
+    #[test]
+    fn undo_with_nothing_in_the_history_changes_nothing() {
+        let mut app = inspector_editor();
+        select_the_middle(&mut app);
+        let before: Vec<Transform> = app
+            .world_mut()
+            .query::<&Transform>()
+            .iter(app.world())
+            .copied()
+            .collect();
+
+        undo(&mut app);
+
+        let after: Vec<Transform> = app
+            .world_mut()
+            .query::<&Transform>()
+            .iter(app.world())
+            .copied()
+            .collect();
+        assert_eq!(
+            before, after,
+            "an undo with nothing to undo moved something"
+        );
+    }
+
+    /// Two commits come back in reverse order.
+    ///
+    /// `x` first and then `y`, so that the first undo taking back the wrong
+    /// one is visible: it leaves `x` at zero and `y` at twenty.
+    ///
+    /// Mutation: `remove(0)` in place of `pop()` in `History::undo`, and this
+    /// fails on the first undo.
+    #[test]
+    fn two_commits_come_back_in_reverse_order() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        commit_translation(&mut app, 0, "10");
+        commit_translation(&mut app, 1, "20");
+        assert_eq!(translation(&app, middle), Vec3::new(10.0, 20.0, 0.0));
+
+        undo(&mut app);
+        assert_eq!(
+            translation(&app, middle),
+            Vec3::new(10.0, 0.0, 0.0),
+            "the first undo did not take back the last commit"
+        );
+        undo(&mut app);
+        assert_eq!(
+            translation(&app, middle),
+            Vec3::ZERO,
+            "the second undo did not take back the first commit"
+        );
+    }
+
+    /// A commit that changes nothing is not an entry.
+    ///
+    /// One Enter is two commits, on the key's press and on its release, and
+    /// letting go of the box is a third. All three carry `10`, and only the
+    /// first changes anything, so one Ctrl+Z is enough to take it back.
+    /// `docs/specs/ui.md` §8 has why.
+    ///
+    /// Mutation: drop the bits comparison in `SetLeaf::read`, and this fails
+    /// with the placeholder still at ten, because the undo took back a commit
+    /// of ten over ten.
+    #[test]
+    fn a_commit_that_changes_nothing_is_not_an_entry() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "10");
+        focus(&mut app, cell);
+        enter(&mut app);
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+        assert_eq!(translation(&app, middle).y, 10.0, "the commit did not land");
+
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            0.0,
+            "one Ctrl+Z did not take back one edit"
+        );
+    }
+
+    /// Ctrl+Z in a box takes back what was typed, and not the last commit.
+    ///
+    /// Ten is committed, ninety nine is typed over it and not committed, and
+    /// Ctrl+Z puts the box back to ten. Letting go afterwards commits ten over
+    /// ten, which is nothing.
+    ///
+    /// Mutation: answer `false` always from `take_back_typing`, and this fails
+    /// with the commit of ten taken back instead.
+    #[test]
+    fn ctrl_z_in_a_box_takes_back_what_was_typed_and_not_the_last_commit() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "99");
+        focus(&mut app, cell);
+        undo(&mut app);
+
+        assert_eq!(text_in(&app, cell), "10", "the box still holds the typing");
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "taking back the typing touched the component"
+        );
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "letting go of the box wrote something other than the commit"
+        );
+    }
+
+    /// Ctrl+Z in a box with nothing typed takes back the last commit, and the
+    /// box follows it.
+    ///
+    /// Enter commits without the focus leaving, so the box is still focused
+    /// when the undo lands and the panel is frozen. `UpdateNumberInput` skips
+    /// a focused box, so unless its text is replaced by hand it keeps ten, and
+    /// letting go of it writes ten back over the undo.
+    ///
+    /// **This is also the test that reports Bevy's own text undo arriving.**
+    /// If the box starts taking Ctrl+Z for itself, the key stops reaching the
+    /// history here and this fails. `docs/specs/ui.md` §8's last accepted risk
+    /// is that.
+    ///
+    /// Mutation: send the focused box `UpdateNumberInput` like the others in
+    /// `show_values_in_place`, and this fails on the box's text and then on
+    /// the component.
+    #[test]
+    fn ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "10");
+        focus(&mut app, cell);
+        enter(&mut app);
+        assert_eq!(translation(&app, middle).y, 10.0, "Enter did not commit");
+
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            0.0,
+            "the commit was not taken back"
+        );
+        assert_eq!(
+            text_in(&app, cell),
+            "0",
+            "the focused box kept the undone value"
+        );
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+        assert_eq!(
+            translation(&app, middle).y,
+            0.0,
+            "letting go of the box wrote the undone value back"
+        );
+    }
+
+    /// Letting go of a box and pressing Ctrl+Z in one frame takes back what
+    /// letting go committed.
+    ///
+    /// The press lands on empty space in the viewport, which takes the focus
+    /// out of the box, and Ctrl+Z goes down in the same frame. The box commits
+    /// in `PostUpdate`; the undo has to come after it.
+    ///
+    /// Written as one frame by hand rather than through `click_at`, which
+    /// runs updates between its actions, per RK-014: the defect this guards
+    /// lives inside a frame.
+    ///
+    /// Mutation: add `take_back` to `Update` instead of after
+    /// `FocusChangeEvents`, and this fails with ten still in place.
+    #[test]
+    fn letting_go_of_a_box_and_pressing_ctrl_z_in_one_frame_takes_back_what_letting_go_committed() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "10");
+        focus(&mut app, cell);
+
+        let empty = in_window(Vec2::new(0.0, 200.0));
+        write_input(&mut app, empty, PointerAction::Move { delta: Vec2::ONE });
+        app.update();
+        app.update();
+        hold_key(&mut app, KeyCode::ControlLeft);
+        hold_letter(&mut app, KeyCode::KeyZ, "z");
+        write_input(
+            &mut app,
+            empty,
+            PointerAction::Press(PointerButton::Primary),
+        );
+        app.update();
+        assert_ne!(
+            app.world().resource::<InputFocus>().get(),
+            Some(editable_under(app.world(), cell)),
+            "the press did not take the focus out of the box in its own frame"
+        );
+        write_input(
+            &mut app,
+            empty,
+            PointerAction::Release(PointerButton::Primary),
+        );
+        release_letter(&mut app, KeyCode::KeyZ, "z");
+        release_key(&mut app, KeyCode::ControlLeft);
+        app.update();
+        app.update();
+
+        assert_eq!(
+            translation(&app, middle).y,
+            0.0,
+            "the undo ran before the commit it was pressed after"
+        );
+    }
+
+    /// Undoing an edit to an entity that is gone writes nothing, and does not
+    /// panic.
+    ///
+    /// Nothing in the editor despawns an editable entity yet; this does it by
+    /// hand. `docs/specs/ui.md` §8 decided the entry is used up, and issue
+    /// #55 is what makes a deletion undoable.
+    ///
+    /// Mutation: `expect` the `get_reflect_mut` in `write_leaf`, and this
+    /// panics.
+    #[test]
+    fn undoing_an_edit_to_an_entity_that_is_gone_writes_nothing() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        let others: Vec<(Entity, Transform)> = app
+            .world_mut()
+            .query::<(Entity, &Transform)>()
+            .iter(app.world())
+            .filter(|(entity, _)| *entity != middle)
+            .map(|(entity, transform)| (entity, *transform))
+            .collect();
+
+        app.world_mut().entity_mut(middle).despawn();
+        app.update();
+        undo(&mut app);
+
+        for (entity, transform) in others {
+            assert_eq!(
+                app.world().get::<Transform>(entity),
+                Some(&transform),
+                "an undo for an entity that is gone moved something else"
+            );
+        }
+    }
+
+    /// Ctrl+Shift+Z is not undo. It is left for redo.
+    ///
+    /// Mutation: drop the Shift check in `take_back`, and this fails with the
+    /// commit taken back.
+    #[test]
+    fn ctrl_shift_z_is_not_undo() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+
+        press_with(
+            &mut app,
+            &[KeyCode::ControlLeft, KeyCode::ShiftLeft],
+            KeyCode::KeyZ,
+            "Z",
+        );
+
+        assert_eq!(translation(&app, middle).y, 10.0, "Ctrl+Shift+Z undid");
+    }
+
+    /// Cmd+Z is undo, as Ctrl+Z is, on every platform.
+    ///
+    /// Mutation: drop the `Super` keys in `take_back`, and this fails with the
+    /// commit still in place.
+    #[test]
+    fn cmd_z_is_undo_as_ctrl_z_is() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+
+        press_with(&mut app, &[KeyCode::SuperLeft], KeyCode::KeyZ, "z");
+
+        assert_eq!(translation(&app, middle).y, 0.0, "Cmd+Z did not undo");
+    }
+
+    /// Undo is the key that says Z, wherever it sits.
+    ///
+    /// On a French keyboard the key that produces `z` is where a US keyboard
+    /// has W, so this presses `KeyCode::KeyW` producing `z`.
+    ///
+    /// Mutation: read `KeyCode::KeyZ` in `take_back` in place of the letter,
+    /// and this fails with the commit still in place.
+    #[test]
+    fn undo_is_the_key_that_says_z_wherever_it_is() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+
+        press_with(&mut app, &[KeyCode::ControlLeft], KeyCode::KeyW, "z");
+
+        assert_eq!(
+            translation(&app, middle).y,
+            0.0,
+            "the key that says z did not undo"
         );
     }
 }
