@@ -44,6 +44,31 @@ trait EditorCommand: Send + Sync + 'static {
 Because a command takes `&mut World`, one command can touch both the Editor
 Model and the tile data. **There is one history, not two.**
 
+### What phase 1 does instead, and until when
+
+**The inspector writes straight to the component, and this section knows it.**
+[ui.md §7](./ui.md) lets a number be typed into a field row and committed, and
+the commit reaches the entity through `World::get_reflect_mut` with no command
+and no Editor Model in between. That is the flow above with three of its four
+boxes missing.
+
+It is a divergence rather than a change of mind, and what makes it one is that
+there is nothing yet to diverge into: `LevelDocument` does not exist, `b2d_data`
+is a doc comment, and the entities the inspector edits are the three placeholders
+`crates/editor/src/viewport.rs` spawns rather than anything projected from a
+document. A command shaped against no model would be a guess at the model.
+
+What holds it to one place is that the write is one function taking
+`&mut World`, an entity, and where the value goes: the same shape
+`EditorCommand::execute` takes. **Undo does not rebuild the write path, it
+wraps it**, and that requirement is the reason the function exists rather than
+the observer writing the component itself.
+
+**The condition that ends this** is undo arriving, which is later in the same
+phase ([roadmap.md §3](./roadmap.md)). When it does, this paragraph says what to
+delete: the observer calls a command instead of the function, and the flow above
+is whole for the first path that ever needed it.
+
 ---
 
 ## 2. BSN and scenes
