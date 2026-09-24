@@ -24,12 +24,17 @@ pub trait EditorCommand: Send + Sync + 'static {
 
 /// Every change the user has made, oldest first.
 ///
-/// **The field is private and [`History::record`] is the only way in.** That
-/// is what makes "one history" a thing the compiler holds rather than a rule:
-/// a writer that changes the world on the user's behalf has to hand its change
-/// to `record`, and a writer that does not is one a reader can find by
-/// looking for who calls `World::get_reflect_mut`. The inspector's commit is
-/// the first; the gizmos will be the second, and belong here the same way.
+/// **The field is private and [`History::record`] is the only way in.** What
+/// the compiler holds is that nothing enters the history except through
+/// `record`. **It does not hold that nothing changes the world except
+/// through it**: a system can write a component or a resource without ever
+/// touching this type, and that compiles. So "one history" is still a rule a
+/// writer has to follow, and there is no single search that finds every
+/// writer that does not. A reflected write goes through
+/// `World::get_reflect_mut`; the selection (issue #54) is a resource written
+/// in `selection.rs`; a deletion (issue #55) is a despawn. The inspector's
+/// commit is the first writer through here, and the gizmos, the selection and
+/// the deletion are each the next.
 #[derive(Resource, Default)]
 pub struct History(Vec<Box<dyn EditorCommand>>);
 
