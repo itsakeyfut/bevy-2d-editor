@@ -35,10 +35,13 @@ use crate::viewport::ViewportCamera;
 ///   chosen. That is the one Unity calls active.
 /// * removing one leaves the rest in the order they were chosen in.
 /// * an entity appears at most once.
-/// * several added by one gesture go on the end together, in the order the
-///   world iterates them. Nothing in a box drag ranks what it covers, so only
-///   the boundary between gestures is meaningful, and a test that reads this
-///   after one compares it sorted.
+/// * several added by one gesture go on the end together, back to front, so
+///   the last of them is the one in front. Two at the same depth keep the
+///   order the world iterates them in, which is arbitrary and is not relied
+///   on, and which is not the one a click on the pair would take: sprite
+///   picking hands a click the world's first of a tie, and this leaves the
+///   world's last active. Both are
+///   [`docs/specs/ui.md` §4](../../../docs/specs/ui.md).
 ///
 /// Those are conditions on this type, not a description of who writes it
 /// today. `select` and `finish` below are the writers as this stands, and
@@ -338,6 +341,13 @@ fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
 /// for them: a box with no area touches nothing, and an entity sharing an edge
 /// with the box and no area with it is not selected.
 ///
+/// **Back to front, by `z`**, which `docs/specs/ui.md` §4 decided. A box is a
+/// rectangle test rather than a picking hit, so there is no `HitData::depth` to
+/// read, and the world `z` of the entity's origin stands in for it: for a 2D
+/// camera the nearest hit a click takes is the largest `z`. The sort is stable,
+/// so a tie keeps the order the world iterated in, and only what this gesture
+/// adds is sorted, so what was already selected stays where it was.
+///
 /// Mutation: return before writing the selection, and
 /// `a_band_over_two_entities_selects_both` fails. Mutation: `Rect::contains` in
 /// place of the intersection, and
@@ -354,6 +364,11 @@ fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
 /// `the_band_is_gone_once_the_button_is_let_go` fails. Mutation: drop the
 /// `!selection.0.contains(&entity)`, and
 /// `a_modifier_box_over_something_already_selected_leaves_it_in_once` fails.
+/// Mutation: delete the sort, and `a_box_leaves_the_front_most_entity_active`
+/// fails. Mutation: sort descending and reverse, and
+/// `entities_at_the_same_depth_keep_the_order_the_world_gave_them` fails.
+/// Mutation: sort the whole selection by `z` rather than the new group, and
+/// `an_additive_box_leaves_what_was_already_selected_where_it_was` fails.
 ///
 /// **The button check is the one line here no test holds.** Reaching it means
 /// letting go of a second button during a box drag, which takes two buttons at
@@ -385,11 +400,17 @@ fn finish(
     if !pressed.additive {
         selection.0.clear();
     }
-    for (entity, at, aabb) in &bounds {
-        if !band.intersect(world_bounds(at, aabb)).is_empty() && !selection.0.contains(&entity) {
-            selection.0.push(entity);
-        }
-    }
+    let mut covered: Vec<(Entity, f32)> = bounds
+        .iter()
+        .filter(|(entity, at, aabb)| {
+            !band.intersect(world_bounds(at, aabb)).is_empty() && !selection.0.contains(entity)
+        })
+        .map(|(entity, at, _)| (entity, at.translation().z))
+        .collect();
+    covered.sort_by(|a, b| a.1.total_cmp(&b.1));
+    selection
+        .0
+        .extend(covered.into_iter().map(|(entity, _)| entity));
 }
 
 /// Whether the modifier that adds to and removes from the selection is held.
@@ -651,9 +672,11 @@ mod tests {
 
     /// What is selected, in an order a test can compare.
     ///
-    /// `Selection` says the entities one gesture added have no order among
-    /// themselves, so a test over a box drag asks what is in it and not what
-    /// order the world iterated in.
+    /// A box ranks what it covers by depth, but every placeholder is at
+    /// `z == 0`, and `Selection` says a tie keeps the order the world iterated
+    /// in, which is not relied on. So a test over a box across placeholders
+    /// asks what is in it and not what order it is in. The order is what the
+    /// tests that spawn their own entities at different depths are for.
     fn sorted(app: &App) -> Vec<Entity> {
         let mut entities = selected(app);
         entities.sort();
@@ -684,6 +707,30 @@ mod tests {
     /// What is selected.
     fn selected(app: &App) -> Vec<Entity> {
         app.world().resource::<Selection>().entities().to_vec()
+    }
+
+    /// A 64 by 64 selectable sprite at a place in the world, spawned now.
+    fn sprite_at(app: &mut App, at: Vec3) -> Entity {
+        let entity = app
+            .world_mut()
+            .spawn((
+                Sprite::from_color(Color::WHITE, Vec2::splat(64.0)),
+                Transform::from_translation(at),
+                Selectable,
+            ))
+            .id();
+        app.update();
+        entity
+    }
+
+    /// A box around `sprite_at` entities near `(0, -150)` and `(20, -150)`,
+    /// pressed and let go on empty space, and touching no placeholder.
+    fn box_below_the_placeholders(app: &mut App) {
+        press_then_release(
+            app,
+            in_window(Vec2::new(-60.0, -200.0)),
+            in_window(Vec2::new(60.0, -100.0)),
+        );
     }
 
     /// The placeholder at a world x, by the order they are spawned in.
@@ -1754,6 +1801,88 @@ mod tests {
         let mut wanted = vec![left, middle];
         wanted.sort();
         assert_eq!(sorted(&app), wanted);
+    }
+
+    /// A box over two overlapping entities leaves the one in front active.
+    ///
+    /// `docs/specs/ui.md` §4: the last of what a box adds is the front-most,
+    /// which is the one a click there would take. The one in front is spawned
+    /// first, so the world hands the pair back in the wrong order and only the
+    /// ranking puts it last. The pair is spawned here rather than taken from
+    /// the placeholders, which all sit at `z == 0` and would rank as a tie,
+    /// which is RK-006's shape.
+    ///
+    /// Mutation: delete the sort in `finish`, and this fails.
+    #[test]
+    fn a_box_leaves_the_front_most_entity_active() {
+        let mut app = selection_editor();
+        let in_front = sprite_at(&mut app, Vec3::new(0.0, -150.0, 1.0));
+        let behind = sprite_at(&mut app, Vec3::new(20.0, -150.0, 0.0));
+
+        box_below_the_placeholders(&mut app);
+
+        assert_eq!(selected(&app), [behind, in_front]);
+    }
+
+    /// Two entities at the same depth keep the order the world gave them.
+    ///
+    /// That is the tie-break `docs/specs/ui.md` §4 records, and it is one on
+    /// purpose rather than by accident: the sort in `finish` is stable. The
+    /// order wanted is read from a query over the pair, not from which was
+    /// spawned first, because the claim is about the world's order and not
+    /// about what that order happens to be.
+    ///
+    /// Mutation: sort by descending `z` and reverse the result, which ranks
+    /// the same and breaks the tie the other way, and this fails.
+    ///
+    /// **`sort_unstable_by` in place of `sort_by` does not fail it.** Measured:
+    /// on two elements the unstable sort happens to leave a tie where it was,
+    /// so the stability this test is about is held for a pair and not for a
+    /// box over many entities at one depth.
+    #[test]
+    fn entities_at_the_same_depth_keep_the_order_the_world_gave_them() {
+        let mut app = selection_editor();
+        let first = sprite_at(&mut app, Vec3::new(0.0, -150.0, 0.0));
+        let second = sprite_at(&mut app, Vec3::new(20.0, -150.0, 0.0));
+        let world_order: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<Selectable>>()
+            .iter(app.world())
+            .filter(|entity| [first, second].contains(entity))
+            .collect();
+
+        box_below_the_placeholders(&mut app);
+
+        assert_eq!(selected(&app), world_order);
+    }
+
+    /// An additive box leaves what was already selected where it was.
+    ///
+    /// What was chosen first is in front of both the box's entities, so a sort
+    /// over the whole selection would move it to the end. Only the group this
+    /// gesture adds is ranked, and the boundary between gestures is still the
+    /// only order that means anything across them.
+    ///
+    /// Mutation: sort the whole selection rather than the new group, and this
+    /// fails.
+    #[test]
+    fn an_additive_box_leaves_what_was_already_selected_where_it_was() {
+        let mut app = selection_editor();
+        let chosen_first = sprite_at(&mut app, Vec3::new(150.0, -150.0, 2.0));
+        let in_front = sprite_at(&mut app, Vec3::new(0.0, -150.0, 1.0));
+        let behind = sprite_at(&mut app, Vec3::new(20.0, -150.0, 0.0));
+        click_at(
+            &mut app,
+            in_window(Vec2::new(150.0, -150.0)),
+            PointerButton::Primary,
+        );
+        assert_eq!(selected(&app), [chosen_first], "the click did not select");
+
+        hold_key(&mut app, KeyCode::ControlLeft);
+        box_below_the_placeholders(&mut app);
+        release_key(&mut app, KeyCode::ControlLeft);
+
+        assert_eq!(selected(&app), [chosen_first, behind, in_front]);
     }
 
     /// The box is drawn on the layer only the viewport's camera has.
