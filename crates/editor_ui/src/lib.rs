@@ -6,9 +6,14 @@
 //! which `docs/specs/architecture.md` §6 forbids. It depends on neither
 //! `b2d_data` nor `b2d_runtime`, and `docs/specs/crates.md` §3 says why.
 //!
-//! What it carries today is the theme. `docs/specs/ui.md` §3 settles the stack
-//! as Bevy UI plus `bevy_feathers` and says that what Feathers supplies is
-//! widget structure and behaviour, not appearance.
+//! What it carries today is the theme and the inspector's field row.
+//! `docs/specs/ui.md` §3 settles the stack as Bevy UI plus `bevy_feathers` and
+//! says that what Feathers supplies is widget structure and behaviour, not
+//! appearance.
+
+mod field;
+
+pub use field::field_row;
 
 use bevy::app::{App, Plugin};
 use bevy::color::Color;
