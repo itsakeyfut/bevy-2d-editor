@@ -824,6 +824,8 @@ pub(crate) fn take_back_typing(world: &mut World) -> bool {
 ///
 /// Mutation: send the focused box `UpdateNumberInput` like the rest, and
 /// `ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit` fails.
+/// Mutation: do nothing for the others, and
+/// `an_undo_reaches_the_boxes_that_are_not_focused` fails.
 pub(crate) fn show_values_in_place(world: &mut World) {
     let focused = world.resource::<InputFocus>().get();
     let cells: Vec<(Entity, Writes)> = world
@@ -3149,6 +3151,46 @@ mod tests {
             translation(&app, middle).y,
             0.0,
             "letting go of the box wrote the undone value back"
+        );
+    }
+
+    /// A box other than the focused one shows what an undo restored, while the
+    /// panel is still frozen.
+    ///
+    /// `x` is committed, then the focus goes into `y`'s box with nothing typed,
+    /// so Ctrl+Z takes back `x`. The panel is not rebuilt while `y` has focus,
+    /// so `x`'s box shows the restored value only because it was sent it. Row 4
+    /// if it did not, and only until the focus left, but
+    /// `show_values_in_place` says it does this and a claim with no test is
+    /// what RK-005 is about.
+    ///
+    /// Mutation: do nothing in the `None` arm of `show_values_in_place`, and
+    /// this fails with `x`'s box still reading ten.
+    #[test]
+    fn an_undo_reaches_the_boxes_that_are_not_focused() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 0, "10");
+
+        let line = line_of(&mut app, "Transform", 0);
+        let [x, y] = [boxes_on(&mut app, line)[0], boxes_on(&mut app, line)[1]];
+        focus(&mut app, y);
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).x,
+            0.0,
+            "the commit was not taken back"
+        );
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(editable_under(app.world(), y)),
+            "the focus left, so the panel was rebuilt and this says nothing"
+        );
+        assert_eq!(
+            text_in(&app, x),
+            "0",
+            "the box that was not focused kept ten"
         );
     }
 
