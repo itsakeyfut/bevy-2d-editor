@@ -8,8 +8,12 @@ use bevy::ui::{AlignItems, Display, FlexDirection, Node, Val};
 
 /// How wide the name column is.
 ///
-/// Fixed rather than a fraction, so that every value in a panel starts at the
-/// same x and a column of numbers reads down. It is a `const` and not a design
+/// Fixed rather than a fraction, so that the values in a run of these rows
+/// start at the same x and a column of numbers reads down. **It says nothing
+/// about a panel**, only about the rows that go through here: a caller that
+/// draws some of its lines another way gets no alignment between the two, and
+/// the inspector is one, drawing a component that is not a named struct as a
+/// bare value with no name beside it. It is a `const` and not a design
 /// token because colour is the only token kind `ThemeProps` carries in 0.19.1,
 /// which [`docs/specs/ui.md` §3](../../../docs/specs/ui.md) records; Feathers
 /// keeps its own spacing in `constants.rs` the same way.

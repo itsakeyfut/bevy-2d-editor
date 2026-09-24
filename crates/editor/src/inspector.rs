@@ -231,8 +231,8 @@ impl Plugin for InspectorPlugin {
 /// `showing_a_component_does_not_change_it` fails. Mutation: drop the count
 /// from the title, and `the_header_says_how_many_are_selected_when_several_are`
 /// fails, naming the entity without it. Mutation: drop the
-/// `of` field from [`Shape`], and
-/// `the_panel_follows_the_selection_to_a_look_alike` fails. Mutation: drop the
+/// `of` field from [`Shape`], and **nothing fails**, which is measured and is
+/// written on that field rather than here. Mutation: drop the
 /// `into` field from [`Shape`], and
 /// `the_panel_is_rebuilt_when_the_region_it_draws_into_is_replaced` fails. Each
 /// was applied and the named test watched to fail.
@@ -898,11 +898,16 @@ mod tests {
 
     /// The panel is rebuilt when the region it draws into is replaced.
     ///
-    /// The same argument as `the_panel_follows_the_selection_to_a_look_alike`
-    /// one level out: there the content was the same and the entity differed,
-    /// here the content and the entity are both the same and the pane differs.
+    /// The compared value is a claim about three things, and this is the third:
+    /// the content, the entity it is about, and the pane its children were
+    /// spawned under. Here the content and the entity are both the same and
+    /// only the pane differs, so a comparison that carried the first two and
+    /// not the third would say "already shown" and leave the new pane blank.
     /// Nothing else in this module ever hands `show` a second region, which is
     /// why nothing else can reach it.
+    ///
+    /// The same argument one level in, about the entity, is on `Shape::of`,
+    /// which no test reaches any more and which says so.
     ///
     /// **Nothing in the editor can reach it either**, today: `spawn_regions`
     /// runs once at `Startup`. This is written for the docking that
@@ -1155,11 +1160,17 @@ mod tests {
     ///
     /// A panel whose content is longer than the window is what this change
     /// first put on screen: 14 components and 22 value lines, which with the
-    /// header is 37 rows, in a pane 512 pixels tall. **Measured before `spawn_regions` bounded the middle row**: one
-    /// click made that row 882 pixels in an 800 pixel window, which shrank the
-    /// menu bar from 28 pixels to 17, the bottom panel from 180 to 105, and
-    /// moved the viewport out from under the pointer. Eight tests in this
-    /// module failed with it, and none of them named the cause.
+    /// header is 37 rows, in a pane 512 pixels tall.
+    ///
+    /// **Measured before `spawn_regions` bounded the middle row**, in the
+    /// default 1280 by 720 window: one click made that row 882 pixels, which
+    /// left the menu bar and the bottom panel **one pixel each** where
+    /// `docs/specs/ui.md` §1 asks for 28 and 180, and moved the viewport out
+    /// from under the pointer. Eight tests in this module failed with it, and
+    /// none of them named the cause. Bounding the row with `min_height` alone
+    /// was not enough: the row then measured 598 and the two bars 17 and 105,
+    /// because the row still asked for its content and the bars shrank against
+    /// it.
     ///
     /// Mutation: drop `flex_basis: px(0)` or `min_height: px(0)` from the
     /// middle row in `lib.rs`, and this fails.

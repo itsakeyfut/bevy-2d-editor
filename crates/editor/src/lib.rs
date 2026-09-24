@@ -221,16 +221,18 @@ fn spawn_regions(mut commands: Commands) {
                 // The row is what is left over, so it starts from nothing and
                 // grows into the space the menu bar and the bottom panel do not
                 // take. Without this its base size is its content, which the
-                // two fixed bars then shrink against: measured, a menu bar 17
-                // pixels tall where §1 asks for 28.
+                // two fixed bars then shrink against: measured with only the
+                // `min_height` below, a menu bar 17 pixels tall and a bottom
+                // panel of 105, where §1 asks for 28 and 180.
                 flex_basis: px(0),
                 // Without this the row is as tall as the tallest thing in it,
                 // and a flex item's default `min_height` is its content. The
                 // inspector's content is as long as the selected entity's
                 // component list, so a click on a placeholder made this row
-                // 882 pixels in an 800 pixel window, which shrank the menu bar
-                // and the bottom panel to one pixel each and moved the viewport
-                // out from under the pointer. Measured, before this line.
+                // 882 pixels in the default 720 pixel window, which left the
+                // menu bar and the bottom panel one pixel each and moved the
+                // viewport out from under the pointer. Measured, before this
+                // line.
                 min_height: px(0),
             }
         })

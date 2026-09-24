@@ -593,10 +593,10 @@ of type names that phase 3 deletes.
 Fourteen component names fit a 512-pixel pane; the 22 value lines under them do
 not, and the panel is 37 rows from the first click. What holds today is that the
 pane clips: the rows past its edge are not drawn, and they are not reachable
-either. **Measured before the pane was bounded**: the row of panes grew to 882
-pixels in an 800 pixel window, the menu bar shrank from 28 pixels to 17, the
-bottom panel from 180 to 105, and the viewport moved out from under the pointer,
-which is row 4 and row 5 at once. Scrolling is what makes the clipped rows
+either. **Measured before the pane was bounded**, in the default 1280 by 720
+window: the row of panes grew to 882 pixels, the menu bar and the bottom panel
+were left one pixel each where §1 asks for 28 and 180, and the viewport moved
+out from under the pointer, which is row 4 and row 5 at once. Scrolling is what makes the clipped rows
 reachable, and it is the next thing this panel needs rather than a deferral with
 no cost.
 
