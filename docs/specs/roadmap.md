@@ -359,6 +359,9 @@ implementing.
 ### Alongside phase 1
 
 1. Confirm Bevy 0.19's reflection in practice, while building the inspector.
+   Done: reading goes through `World::get_reflect` and writing through
+   `World::get_reflect_mut`, and why not `ReflectComponent` is in
+   [ui.md §6](./ui.md) and [ui.md §7](./ui.md).
 2. Confirm Bevy's asset system in practice, while building the asset browser.
 3. Confirm Bevy's gizmos in practice, while building transform editing.
 4. Define the level data model, in the `data` crate; the approach is
