@@ -691,7 +691,7 @@ the panel is editable.
 | Where the write lands | one `f32` leaf, of one field, of one component, on the active entity, through `World::get_reflect_mut` |
 | While a box has focus | **the panel is not rebuilt**, so the box survives the value it just changed, and for one frame after the focus leaves, so that it survives its own commit. [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) |
 | More than one entity selected | only the active entity, which is the one the header names and, since §4, the front-most of the group |
-| Taking it back | **not yet.** Undo is later in the phase ([roadmap.md §3](./roadmap.md)); typing the old number back is what there is |
+| Taking it back | **Ctrl+Z, decided in [§8](#8-what-ctrlz-takes-back) and not yet built.** Until issue #51 merges, typing the old number back is what there is |
 
 ### Rationale
 
@@ -798,3 +798,120 @@ gizmos and the undo of [roadmap.md §3](./roadmap.md) are the first that would
 be, and what it would look like then is the user's own older number quietly
 coming back. Row 6 in miniature, reachable only once a second writer exists,
 and the thing that would close it is a box that knows whether it was edited.
+For undo, [§8](#8-what-ctrlz-takes-back) closes it another way: an undo gives
+the focused box its leaf's new value, so what the box writes when it is let go
+is the value the undo restored.
+
+---
+
+## 8. What Ctrl+Z takes back
+
+**Decided on issue #51, and not yet built.** Until that issue merges, nothing
+in this section is what the code does.
+
+### Decision
+
+| | |
+| --- | --- |
+| The key | **Ctrl or Cmd with Z, and not Shift**, on every platform, for the reason [§4](#4-what-the-mouse-does-in-the-viewport) takes both modifiers. Shift is left for redo, issue #52 |
+| Which Z | **the key that says Z**, read as a logical key through `ButtonInput<Key>`, not the key in Z's place on a US layout |
+| What is an entry | **a committed number that changed the bits of the leaf it was written to.** A commit that writes the value already there is not an entry |
+| No box has focus | the last entry is taken back, and the panel rebuilds from the world as it does after any change |
+| A number box has focus, and what is typed in it differs from the leaf | **the typing is taken back**: the box is put back to the leaf's value, and the history is left alone |
+| A number box has focus, and what is in it is the leaf's value | the last entry is taken back, **and every box on the panel is given its leaf's new value in place**, the focused one included, without the panel being rebuilt |
+| Nothing to take back | nothing happens |
+| The entity an entry names is gone | nothing is written and the entry is used up. Issue #55 is what makes a deletion undoable without this |
+| A change of selection | **not an entry yet.** Issue #54 makes it one, as Unity records it |
+
+### Rationale
+
+**Ctrl+Z takes back one step, wherever the focus is.** Inside a box, the step
+the user just took is either what they typed or, when they have typed nothing
+since the last commit, that commit. Comparing the box's text with the leaf tells
+the two apart with no state of its own: the leaf is what the last commit wrote.
+
+**One Enter is two commits, and a box commits again when it is let go.**
+`bevy_feathers` emits a final value on the Enter key's press and on its release,
+because `number_input_on_enter_key` does not look at the key's state, and once
+more on focus loss. Measured with a throwaway probe: typing `5` and pressing and
+releasing Enter heard `(5.0, true)` twice. Recording each of those would put
+three entries in the history for one edit, two of which change nothing, and a
+Ctrl+Z that does nothing visible looks like a Ctrl+Z that is broken. **Not
+recording what changes nothing** removes both without merging anything, and it
+is also where the old value is read, before the write.
+
+**The key is read after the frame's focus changes, not in `Update`.** Clicking
+out of a box and pressing Ctrl+Z can land in one frame. The engine clears the
+focus in `PreUpdate` and the box commits in `PostUpdate`, so an undo read in
+`Update` would take back the entry before, and the box's commit would then write
+the value that was just undone. Reading the key after
+`InputFocusSystems::FocusChangeEvents` puts the commit first and the undo after
+it, which is the order the user did them in.
+
+**The focused box is refreshed by writing its text, because the engine's event
+skips it.** `number_input_on_update` in `bevy_feathers` does nothing to the box
+that has focus. Left alone, that box keeps the value from before the undo, and
+the commit it makes when it is let go writes that value back over the undo.
+The text is replaced the way `bevy_feathers` itself replaces it, with
+`TextEdit::SelectAll` and then `TextEdit::Insert`. The other boxes get
+`UpdateNumberInput`. Neither despawns anything, so
+[ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)
+still holds: the panel is not rebuilt while the user is in it.
+
+**The logical key, because that is what the box itself reads.**
+`bevy_ui_widgets`' text input takes Ctrl+A, C, X and V by the letter the key
+produces. Reading Z by position would put undo under the key marked W on a
+French keyboard while copy stayed under C: two rules in one window.
+
+**Bevy's text input leaves Ctrl+Z alone.** Its handler matches no arm for it and
+lets it propagate, and `bevy_text` lists undo as planned and not implemented.
+Measured with the same probe: Ctrl+Z in a box holding `5` left the text `5` and
+emitted nothing.
+
+### Rejected options
+
+**Ctrl+Z does nothing while a box has focus.** The smallest thing that is safe,
+and turned down: Ctrl+Z should take back one step wherever the focus is, and a
+key that works only after clicking somewhere else looks broken.
+
+**Undoing a keystroke at a time inside a box**, `-12` back to `-1`. It needs a
+stack of text per box, recorded on every edit, and it is what `bevy_text` says
+it will provide. Taking back the whole of what was typed is one step coarser and
+needs no state. Waiting for the engine is deferred with a trigger in
+[open-questions.md §1](./open-questions.md).
+
+**Dropping the focus on Ctrl+Z and undoing in the next frame.** The drop commits
+what was typed, so one key would write a value and take it back again, across a
+frame boundary whose order is the whole of its correctness.
+
+**Recording every commit and merging repeats.** It keeps entries that change
+nothing and has to decide what counts as a repeat. Not recording them is one
+comparison.
+
+**A selection change as an entry, in the same change.** Wanted, and split out to
+issue #54 so that the change to `selection.rs`'s writers is read on its own.
+
+**Skipping an entry whose entity is gone and undoing the one below it.** Every
+Ctrl+Z would visibly do something, but once a deletion can be undone the entity
+comes back under a new `Entity`, and skipping would silently pass over every
+edit older than the deletion. Issue #55 is where that is designed.
+
+### Accepted risk
+
+**After Ctrl+Z, the viewport can move while the inspector shows something
+else.** Commit a number on one sprite, click another, press Ctrl+Z: the first
+sprite moves back and the panel is about the second. Row 4, because the viewport
+shows it, and issue #54 closes it by making the click an entry.
+
+**Inside a box, Ctrl+Z takes back all of what was typed, not the last
+character.** Row 4, and bounded by what one box holds.
+
+**An entry whose entity has gone does nothing when it is undone.** Nothing can
+reach it today, because nothing despawns an editable entity. Row 4 when
+something does, and issue #55 is filed blocked on exactly that.
+
+**When `bevy_text` implements undo, its box may take Ctrl+Z for itself.** Its
+handler would then stop the key propagating, and Ctrl+Z in a box with nothing
+typed would stop reaching the history. A named test pins that case, so the
+upgrade that brings it fails a test rather than changing what the key does
+unnoticed.
