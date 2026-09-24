@@ -188,6 +188,15 @@ struct Leaf {
 }
 
 impl PartialEq for Leaf {
+    /// **Only the value half of this is guarded, and the name half cannot
+    /// be.** Measured: deleting the name comparison leaves the whole suite
+    /// green. Nothing can reach it either, because a leaf's name comes from
+    /// the field names of the component's own type, so for two leaves in the
+    /// same position to differ by name the component would have to be a
+    /// different type, which [`Row`] already compares. It is written out
+    /// rather than dropped because a `PartialEq` that ignores half of what it
+    /// is defined over is a trap for whoever adds the next field, and saying
+    /// so beats letting a green suite imply a guard, which is RK-005.
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name && self.value.to_bits() == other.value.to_bits()
     }
@@ -619,13 +628,17 @@ fn fields_of(value: &dyn PartialReflect) -> Vec<Field> {
 /// yes or no: there is no depth to bound, and no enum, map or list to decide
 /// about, because anything that is not a struct of `f32` is simply a `no`.
 ///
-/// The empty struct answers `no` rather than an empty line of boxes, which
-/// keeps §6's rule that a struct with no fields opens into nothing.
+/// The empty struct answers `no` rather than an empty line of boxes. Every
+/// field of it is an `f32`, vacuously, so the question alone would open it into
+/// nothing at all: a name with a gap beside it, where the line used to read the
+/// value's own text.
 ///
 /// Mutation: return `None` always, and
 /// `a_field_of_numbers_opens_into_one_box_per_leaf` fails. Mutation: accept a
 /// struct with one field that is not an `f32`, and
-/// `a_field_that_is_not_all_numbers_stays_one_line` fails.
+/// `a_field_that_is_not_all_numbers_stays_one_line` fails. Mutation: drop the
+/// `field_len() == 0` check, and `a_field_with_nothing_in_it_stays_one_line`
+/// fails.
 fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
     let ReflectRef::Struct(shape) = value.reflect_ref() else {
         return None;
@@ -828,6 +841,10 @@ mod tests {
         wide: bool,
     }
 
+    /// A named-field struct with nothing in it.
+    #[derive(Reflect)]
+    struct Nothing;
+
     /// A component carrying both, so one entity answers both questions.
     #[derive(Component, Reflect)]
     struct Measured {
@@ -835,6 +852,8 @@ mod tests {
         pair: Pair,
         /// Stays one line of text.
         mixed: Mixed,
+        /// Stays one line of text too, for a different reason.
+        nothing: Nothing,
     }
 
     /// The editor, run until a test can look at the world.
@@ -2097,6 +2116,7 @@ mod tests {
                 width: 4.0,
                 wide: true,
             },
+            nothing: Nothing,
         });
         app.update();
 
@@ -2136,6 +2156,7 @@ mod tests {
                 width: 4.0,
                 wide: true,
             },
+            nothing: Nothing,
         });
         app.update();
 
@@ -2149,6 +2170,53 @@ mod tests {
             text_under(app.world(), line).first().map(String::as_str),
             Some("mixed"),
             "the line being read is not the one this test is about"
+        );
+    }
+
+    /// A field with nothing in it stays one line.
+    ///
+    /// The other end of the bound, and the one the fixture could not reach on
+    /// its own: every field of a struct with no fields is an `f32`, vacuously.
+    /// Opening it would draw a name with a gap beside it and lose the text the
+    /// line used to read, which is `docs/specs/ui.md` §6's rule about a struct
+    /// with no fields seen one level down.
+    ///
+    /// **Found by the coverage pass rather than written with the rest.** The
+    /// mutation below left the whole suite green, because nothing on a
+    /// placeholder has a field of this shape.
+    ///
+    /// Mutation: drop the `field_len() == 0` check in `leaves_of`, and this
+    /// fails with the line drawing no text at all.
+    #[test]
+    fn a_field_with_nothing_in_it_stays_one_line() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut().entity_mut(middle).insert(Measured {
+            pair: Pair {
+                width: 4.0,
+                height: 8.0,
+            },
+            mixed: Mixed {
+                width: 4.0,
+                wide: true,
+            },
+            nothing: Nothing,
+        });
+        app.update();
+
+        let line = line_of(&mut app, "Measured", 2);
+
+        assert!(
+            boxes_on(&mut app, line).is_empty(),
+            "a field with no fields at all opened into boxes"
+        );
+        assert_eq!(
+            text_under(app.world(), line),
+            vec![
+                "nothing".to_owned(),
+                "b2d_editor::inspector::tests::Nothing".to_owned()
+            ],
+            "the line lost the text it used to read"
         );
     }
 
