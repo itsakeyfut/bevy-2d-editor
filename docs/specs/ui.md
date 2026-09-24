@@ -858,8 +858,19 @@ skips it.** `number_input_on_update` in `bevy_feathers` does nothing to the box
 that has focus. Left alone, that box keeps the value from before the undo, and
 the commit it makes when it is let go writes that value back over the undo.
 The text is replaced the way `bevy_feathers` itself replaces it, with
-`TextEdit::SelectAll` and then `TextEdit::Insert`. The other boxes get
-`UpdateNumberInput`. Neither despawns anything, so
+`TextEdit::SelectAll` and then `TextEdit::Insert`, **and applied in the same
+frame** rather than left for the engine to apply in the next one: the next
+frame's keys reach the box before that, so Enter pressed right after Ctrl+Z
+would commit the text from before it. A review found that path putting a value
+the user had taken back into the history. The other boxes get
+`UpdateNumberInput`.
+
+**A value the box cannot hold leaves it empty.** `f32` prints without an
+exponent, so `1e20` is more characters than the box takes, and the engine
+refuses the insert whole. The panel already draws such a box empty; an undo
+does the same, because a box left holding the old text would write it back
+when it is let go, and an empty box writes nothing. The same rule decides what
+counts as typing, so that empty box is not taken for something the user typed. Neither despawns anything, so
 [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)
 still holds: the panel is not rebuilt while the user is in it.
 
