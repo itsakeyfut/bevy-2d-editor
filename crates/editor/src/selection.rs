@@ -362,6 +362,11 @@ fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
 /// `the_band_is_gone_once_the_button_is_let_go` fails. Mutation: drop the
 /// `!selection.0.contains(&entity)`, and
 /// `a_modifier_box_over_something_already_selected_leaves_it_in_once` fails.
+/// Mutation: delete the sort, and `a_box_leaves_the_front_most_entity_active`
+/// fails. Mutation: sort descending and reverse, and
+/// `entities_at_the_same_depth_keep_the_order_the_world_gave_them` fails.
+/// Mutation: sort the whole selection by `z` rather than the new group, and
+/// `an_additive_box_leaves_what_was_already_selected_where_it_was` fails.
 ///
 /// **The button check is the one line here no test holds.** Reaching it means
 /// letting go of a second button during a box drag, which takes two buttons at
@@ -401,7 +406,9 @@ fn finish(
         .map(|(entity, at, _)| (entity, at.translation().z))
         .collect();
     covered.sort_by(|a, b| a.1.total_cmp(&b.1));
-    selection.0.extend(covered.into_iter().map(|(entity, _)| entity));
+    selection
+        .0
+        .extend(covered.into_iter().map(|(entity, _)| entity));
 }
 
 /// Whether the modifier that adds to and removes from the selection is held.
@@ -1825,6 +1832,11 @@ mod tests {
     ///
     /// Mutation: sort by descending `z` and reverse the result, which ranks
     /// the same and breaks the tie the other way, and this fails.
+    ///
+    /// **`sort_unstable_by` in place of `sort_by` does not fail it.** Measured:
+    /// on two elements the unstable sort happens to leave a tie where it was,
+    /// so the stability this test is about is held for a pair and not for a
+    /// box over many entities at one depth.
     #[test]
     fn entities_at_the_same_depth_keep_the_order_the_world_gave_them() {
         let mut app = selection_editor();
@@ -1857,7 +1869,11 @@ mod tests {
         let chosen_first = sprite_at(&mut app, Vec3::new(150.0, -150.0, 2.0));
         let in_front = sprite_at(&mut app, Vec3::new(0.0, -150.0, 1.0));
         let behind = sprite_at(&mut app, Vec3::new(20.0, -150.0, 0.0));
-        click_at(&mut app, in_window(Vec2::new(150.0, -150.0)), PointerButton::Primary);
+        click_at(
+            &mut app,
+            in_window(Vec2::new(150.0, -150.0)),
+            PointerButton::Primary,
+        );
         assert_eq!(selected(&app), [chosen_first], "the click did not select");
 
         hold_key(&mut app, KeyCode::ControlLeft);
