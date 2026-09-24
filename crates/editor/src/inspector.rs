@@ -1,16 +1,27 @@
 //! The inspector: what the active entity is, and what it is made of.
 //!
 //! What it shows, what it calls an entity, and in what order are settled in
-//! [`docs/specs/ui.md` §6](../../../docs/specs/ui.md). That the panel is
-//! rebuilt rather than reconciled is
-//! [ADR-0002](../../../docs/adr/0002-rebuild-the-inspector-rather-than-diff-it.md).
+//! [`docs/specs/ui.md` §6](../../../docs/specs/ui.md); what it lets the user
+//! edit, and what that rejected, is
+//! [§7](../../../docs/specs/ui.md). That the panel is rebuilt rather than
+//! reconciled is
+//! [ADR-0002](../../../docs/adr/0002-rebuild-the-inspector-rather-than-diff-it.md),
+//! and that it is left alone while the user is in it is
+//! [ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md).
 
-use b2d_editor_ui::field_row;
+use core::any::TypeId;
+
+use b2d_editor_ui::{field_line, field_row};
 use bevy::feathers::containers::{pane_body, pane_header};
+use bevy::feathers::controls::{
+    FeathersNumberInput, NumberFormat, NumberInputValue, UpdateNumberInput,
+};
 use bevy::feathers::display::{label, label_dim};
+use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
-use bevy::reflect::ReflectRef;
+use bevy::reflect::{ReflectMut, ReflectRef};
 use bevy::ui::ScrollPosition;
+use bevy::ui_widgets::ValueChange;
 
 use crate::{Region, Selection};
 
@@ -86,26 +97,45 @@ struct Shape {
 
 /// One component's row, and what it opens into.
 ///
-/// **The order of the two variants is the order they sort in**, which is what
-/// puts every named component above every unregistered one: a derived `Ord` on
-/// an enum ranks by declaration first and by the fields second, so `Named`
-/// against `Named` compares the names. Swapping these two lines changes what is
-/// on screen, which is why they are not in the other order by accident.
-///
-/// **`name` stays the first field of `Named`** for the same reason: the derive
-/// ranks by declaration order, so `rows.sort()` sorts by name and not by what
-/// the component happens to contain.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+/// **What the rows sort on is [`Row::key`] and not a derive.** It used to be
+/// `#[derive(Ord)]`, which ranked by variant declaration order and then by the
+/// fields, so the order on screen turned on the order of two lines in this
+/// enum and on `name` being declared first. That could not survive a `f32`
+/// arriving in [`Leaf`], which has no `Ord`, and saying the rule outright is
+/// better than a derive whose meaning has to be explained.
+#[derive(PartialEq)]
 enum Row {
     /// A component whose value could be read, and the lines under it.
     Named {
         /// What the panel calls it.
         name: String,
+        /// Which type it is, by the same id the walk read the value with.
+        ///
+        /// Nothing draws it. It is what [`write_leaf`] reaches the component
+        /// with when a box under this row is committed, so that the write goes
+        /// to the type the panel read rather than to one looked up again from
+        /// a name.
+        of: TypeId,
         /// One per line under the name, in the order they are drawn.
         fields: Vec<Field>,
     },
     /// A component with no reflection, so with neither a name nor a value.
     Unregistered,
+}
+
+impl Row {
+    /// What the rows sort on: every unregistered row after every named one,
+    /// then the name.
+    ///
+    /// Mutation: drop the `bool`, and
+    /// `the_rows_are_in_the_order_the_names_sort_in` fails, because
+    /// `<no reflection>` sorts among the names rather than after them.
+    fn key(&self) -> (bool, &str) {
+        match self {
+            Row::Named { name, .. } => (false, name.as_str()),
+            Row::Unregistered => (true, ""),
+        }
+    }
 }
 
 /// One line under a component.
@@ -115,15 +145,71 @@ enum Row {
 /// finished picture, and a picture that carried only the names would be equal
 /// to itself while the numbers moved.
 ///
-/// Mutation: write `PartialEq` by hand so that it compares `name` and not
-/// `value`, and `a_field_row_follows_the_component_it_reads` fails.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct Field {
-    /// The field's name, or `None` when the component is not a named struct
-    /// and the line carries the whole value.
-    name: Option<String>,
-    /// What the value reads as.
-    value: String,
+/// Mutation: write `PartialEq` by hand so that [`Field::Text`] compares `name`
+/// and not `value`, and `a_field_row_follows_the_component_it_reads` fails.
+#[derive(PartialEq)]
+enum Field {
+    /// A line carrying text, which is what every line was before
+    /// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md).
+    Text {
+        /// The field's name, or `None` when the component is not a named
+        /// struct and the line carries the whole value.
+        name: Option<String>,
+        /// What the value reads as.
+        value: String,
+    },
+    /// A line whose value is numbers, drawn as one box per number.
+    Numbers {
+        /// The field's name. There is always one, because only a named field
+        /// can reach this arm.
+        name: String,
+        /// One per box, in the order the type declares them.
+        leaves: Vec<Leaf>,
+    },
+}
+
+/// One editable number under a field.
+///
+/// **`PartialEq` is written by hand, and compares the bits.** A derived one
+/// would use `f32`'s, under which `NaN` is equal to nothing including itself,
+/// so a `Transform` holding a `NaN` would make [`Shape`] differ from itself
+/// every frame and the panel would be despawned and respawned every frame.
+/// That is row 5 of `CLAUDE.md`'s list, and it is the failure
+/// [ADR-0002](../../../docs/adr/0002-rebuild-the-inspector-rather-than-diff-it.md)
+/// rejected *rebuild every frame* over.
+///
+/// Mutation: derive `PartialEq` instead, and
+/// `a_panel_holding_a_nan_is_not_rebuilt_every_frame` fails.
+struct Leaf {
+    /// What the box is labelled with, from the type's own field name.
+    name: String,
+    /// What it holds.
+    value: f32,
+}
+
+impl PartialEq for Leaf {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.value.to_bits() == other.value.to_bits()
+    }
+}
+
+/// What a number box writes to when it is committed.
+///
+/// Patched onto the [`FeathersNumberInput`] entity itself rather than onto the
+/// line it sits in, because that entity is what `ValueChange::source` names.
+///
+/// Mutation: put it on the line instead, and
+/// `a_number_box_carries_what_it_writes_to` fails.
+#[derive(Component, Clone)]
+struct Writes {
+    /// The entity the panel was drawn about.
+    of: Entity,
+    /// The component, by the id the walk read it with.
+    component: TypeId,
+    /// The field's name, from the same walk.
+    field: String,
+    /// The leaf's name, likewise.
+    leaf: String,
 }
 
 /// The inspector, showing what is selected.
@@ -134,7 +220,9 @@ pub struct InspectorPlugin;
 
 impl Plugin for InspectorPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Shown>().add_systems(Update, show);
+        app.init_resource::<Shown>()
+            .add_systems(Update, show)
+            .add_observer(commit);
     }
 }
 
@@ -220,7 +308,16 @@ impl Plugin for InspectorPlugin {
 /// `the_inspector_shows_the_last_entity_chosen` fails. Mutation: drop the
 /// `shown.0 == wanted` guard, and
 /// `the_inspector_does_not_rebuild_what_has_not_changed` fails. Mutation: drop
-/// the `rows.sort()`, and `the_rows_are_in_the_order_the_names_sort_in` fails.
+/// the `rows.sort_by`, and `the_rows_are_in_the_order_the_names_sort_in`
+/// fails. Mutation: delete the focus guard, and
+/// `a_focused_field_survives_the_edit_it_commits` fails, along with
+/// `the_panel_is_frozen_while_a_box_has_focus_and_catches_up_after`. Mutation:
+/// make that guard read `focus.get().is_some()`, and
+/// `focus_outside_the_panel_does_not_freeze_it` fails. Mutation: drop the
+/// `UpdateNumberInput` where a box is spawned, and
+/// `the_row_shows_what_the_component_holds_after_a_commit` fails on an empty
+/// box. Mutation: give `Writes::of` the first selected entity rather than
+/// `Shape::of`, and `an_edit_touches_one_field_of_one_entity` fails.
 /// Mutation: return `Row::Named` for the unregistered arm, and
 /// `a_component_with_no_reflection_appears_as_unregistered` fails. Mutation:
 /// despawn the children only when there is something to put back, and
@@ -228,8 +325,7 @@ impl Plugin for InspectorPlugin {
 /// entity without asking for its `Name`, and
 /// `the_header_uses_the_entitys_name_when_it_has_one` fails. Mutation: give a
 /// field row an empty value in [`fields_of`], and
-/// `a_field_row_reads_the_entitys_own_value` and
-/// `a_field_row_follows_the_component_it_reads` both fail. Mutation: write to
+/// `a_field_row_reads_the_entitys_own_value` fails. Mutation: write to
 /// the entity through `commands` here, and
 /// `showing_a_component_does_not_change_it` fails. Mutation: drop the count
 /// from the title, and `the_header_says_how_many_are_selected_when_several_are`
@@ -242,6 +338,7 @@ impl Plugin for InspectorPlugin {
 fn show(
     world: &World,
     shown: Res<Shown>,
+    focus: Res<InputFocus>,
     regions: Query<(Entity, &Region)>,
     mut commands: Commands,
 ) {
@@ -253,6 +350,23 @@ fn show(
     else {
         return;
     };
+
+    // While the user is in the panel, the panel is theirs: a rebuild would
+    // despawn the box being typed into, and committing a value is itself a
+    // change that would trigger one.
+    // [ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)
+    // is where the options were weighed.
+    //
+    // `Shown` is left unwritten too. Writing it would record a picture that
+    // was never drawn, and the panel would then compare equal to something
+    // that is not on screen, which is what `Shape::into` exists to prevent one
+    // level out.
+    if focus
+        .get()
+        .is_some_and(|focused| is_under(world, focused, panel))
+    {
+        return;
+    }
 
     // The last element is the one Unity calls active, and `Selection` in
     // `selection.rs` is where that condition is written down; this is its first
@@ -283,15 +397,19 @@ fn show(
             .inspect_entity(*entity)
             .ok()?
             .map(|info| {
-                info.type_id()
-                    .and_then(|of| world.get_reflect(*entity, of).ok())
+                let Some(of) = info.type_id() else {
+                    return Row::Unregistered;
+                };
+                world
+                    .get_reflect(*entity, of)
                     .map_or(Row::Unregistered, |value| Row::Named {
                         name: value.reflect_short_type_path().to_owned(),
+                        of,
                         fields: fields_of(value.as_partial_reflect()),
                     })
             })
             .collect();
-        rows.sort();
+        rows.sort_by(|a, b| a.key().cmp(&b.key()));
         let named = world.get::<Name>(*entity).map_or_else(
             || format!("Entity {entity}"),
             |name| name.as_str().to_owned(),
@@ -344,7 +462,7 @@ fn show(
             .id();
         for row in &shape.rows {
             match row {
-                Row::Named { name, fields } => {
+                Row::Named { name, of, fields } => {
                     let group = commands
                         .spawn_scene(bsn! {
                             Node { flex_direction: FlexDirection::Column }
@@ -367,10 +485,12 @@ fn show(
                         // line was 119 entities under the panel against 97,
                         // which ADR-0002 spawns and despawns on every rebuild.
                         let indent = UiRect::left(FIELD_INDENT);
-                        let value = field.value.clone();
-                        match &field.name {
-                            Some(name) => {
-                                let name = name.clone();
+                        match field {
+                            Field::Text {
+                                name: Some(name),
+                                value,
+                            } => {
+                                let (name, value) = (name.clone(), value.clone());
                                 commands
                                     .spawn_scene(bsn! {
                                         field_row(name, value)
@@ -378,13 +498,54 @@ fn show(
                                     })
                                     .insert(ChildOf(group));
                             }
-                            None => {
+                            Field::Text { name: None, value } => {
+                                let value = value.clone();
                                 commands
                                     .spawn_scene(bsn! {
                                         label_dim(value)
                                         Node { padding: {indent} }
                                     })
                                     .insert(ChildOf(group));
+                            }
+                            Field::Numbers { name, leaves } => {
+                                let named = name.clone();
+                                let line = commands
+                                    .spawn_scene(bsn! {
+                                        field_line(named)
+                                        Node { padding: {indent} }
+                                    })
+                                    .insert(ChildOf(group))
+                                    .id();
+                                for leaf in leaves {
+                                    commands
+                                        .spawn_scene(label_dim(leaf.name.clone()))
+                                        .insert(ChildOf(line));
+                                    // The box goes up empty and is filled by
+                                    // the event `bevy_feathers` provides for
+                                    // it. The `ValueChange` that comes back
+                                    // out carries `is_final: false`, which is
+                                    // what `commit` declines to act on.
+                                    let cell = commands
+                                        .spawn_scene(bsn! {
+                                            @FeathersNumberInput {
+                                                @number_format: NumberFormat::F32,
+                                            }
+                                        })
+                                        .insert((
+                                            ChildOf(line),
+                                            Writes {
+                                                of: shape.of,
+                                                component: *of,
+                                                field: name.clone(),
+                                                leaf: leaf.name.clone(),
+                                            },
+                                        ))
+                                        .id();
+                                    commands.trigger(UpdateNumberInput {
+                                        entity: cell,
+                                        value: NumberInputValue::F32(leaf.value),
+                                    });
+                                }
                             }
                         }
                     }
@@ -421,27 +582,182 @@ fn show(
 fn fields_of(value: &dyn PartialReflect) -> Vec<Field> {
     match value.reflect_ref() {
         ReflectRef::Struct(shape) => (0..shape.field_len())
-            .map(|index| Field {
-                name: shape.name_at(index).map(ToOwned::to_owned),
-                value: shape
-                    .field_at(index)
-                    .map_or_else(String::new, |field| format!("{field:?}")),
+            .map(|index| {
+                let name = shape.name_at(index);
+                let field = shape.field_at(index);
+                match (name, field.and_then(leaves_of)) {
+                    (Some(name), Some(leaves)) => Field::Numbers {
+                        name: name.to_owned(),
+                        leaves,
+                    },
+                    _ => Field::Text {
+                        name: name.map(ToOwned::to_owned),
+                        value: field.map_or_else(String::new, |field| format!("{field:?}")),
+                    },
+                }
             })
             .collect(),
-        _ => vec![Field {
+        _ => vec![Field::Text {
             name: None,
             value: format!("{value:?}"),
         }],
     }
 }
 
+/// The numbers a field opens into, or `None` when it is not a line of numbers.
+///
+/// A named-field struct whose fields are **all** `f32`, and at least one of
+/// them. `Vec3` and `Quat` are both that; `Srgba` is not, because it is behind
+/// an enum, and `Aabb` is, which
+/// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md) carries as an accepted
+/// risk.
+///
+/// **This is not a recursion, and that is the whole reason it is allowed to
+/// exist.** [`docs/specs/ui.md` §6](../../../docs/specs/ui.md) rejected
+/// descending to the leaves because a recursion whose stop condition is wrong
+/// is row 5, the viewport not answering. This looks at one level and answers
+/// yes or no: there is no depth to bound, and no enum, map or list to decide
+/// about, because anything that is not a struct of `f32` is simply a `no`.
+///
+/// The empty struct answers `no` rather than an empty line of boxes, which
+/// keeps §6's rule that a struct with no fields opens into nothing.
+///
+/// Mutation: return `None` always, and
+/// `a_field_of_numbers_opens_into_one_box_per_leaf` fails. Mutation: accept a
+/// struct with one field that is not an `f32`, and
+/// `a_field_that_is_not_all_numbers_stays_one_line` fails.
+fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
+    let ReflectRef::Struct(shape) = value.reflect_ref() else {
+        return None;
+    };
+    if shape.field_len() == 0 {
+        return None;
+    }
+    (0..shape.field_len())
+        .map(|index| {
+            Some(Leaf {
+                name: shape.name_at(index)?.to_owned(),
+                value: *shape.field_at(index)?.try_downcast_ref::<f32>()?,
+            })
+        })
+        .collect()
+}
+
+/// Whether one entity is the panel, or sits somewhere under it.
+///
+/// Walks `ChildOf` upwards, which is bounded by the depth of the panel's tree.
+/// The alternative, asking the panel for its descendants, would walk the whole
+/// subtree to answer a question about one entity.
+fn is_under(world: &World, entity: Entity, panel: Entity) -> bool {
+    let mut next = Some(entity);
+    while let Some(current) = next {
+        if current == panel {
+            return true;
+        }
+        next = world.entity(current).get::<ChildOf>().map(ChildOf::parent);
+    }
+    false
+}
+
+/// Commit what a number box holds, when the user says so.
+///
+/// **`is_final` is the whole shape of this.** It is Enter, or the box losing
+/// focus. `bevy_feathers` also emits on every keystroke with it false, and once
+/// more when [`UpdateNumberInput`] fills a box the panel has just spawned:
+/// measured with a throwaway probe, pushing `12.5` into a fresh box produced a
+/// `ValueChange` carrying `12.5` straight back out. Acting on those would move
+/// the sprite through `-`, `-1`, `-12` on the way to `-120`, each of which is
+/// an edit nothing can take back while there is no undo, and would make the
+/// panel's own initial draw write to the world.
+/// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md) carries why.
+///
+/// Mutation: drop the `is_final` check, and
+/// `a_value_that_is_not_committed_leaves_the_component_alone` fails.
+fn commit(change: On<ValueChange<f32>>, writes: Query<&Writes>, mut commands: Commands) {
+    if !change.is_final {
+        return;
+    }
+    let Ok(target) = writes.get(change.source) else {
+        return;
+    };
+    let target = target.clone();
+    let value = change.value;
+    commands.queue(move |world: &mut World| write_leaf(world, &target, value));
+}
+
+/// Write one committed number onto the component it came from.
+///
+/// It takes `&mut World` because [`World::get_reflect_mut`] does, and that call
+/// is the mirror of the read: [`show`] reads through `World::get_reflect`
+/// because `ReflectComponent` would see fewer components than the engine's own
+/// call does, so the set that can be written is exactly the set that is shown.
+///
+/// **This is the function undo wraps rather than replaces.**
+/// `docs/specs/data-model.md` §1 says the path is an `EditorCommand` through an
+/// Editor Model, and records why there is no Editor Model to write one against
+/// yet and what ends that. `EditorCommand::execute` takes the same `&mut World`
+/// this does.
+///
+/// **Silent on every failure.** Each one means the component went away or
+/// changed shape between the panel being drawn and Enter being pressed, and the
+/// panel is rebuilt from the world the moment focus leaves the box, which is
+/// where the user finds out. Nothing in the editor can reach it today, because
+/// nothing removes a component.
+///
+/// # Where this lands on `CLAUDE.md`'s failure list
+///
+/// **Row 4**: it is on screen and the user can see it. An edit cannot be taken
+/// back, because undo is later in the phase, and what that costs is retyping a
+/// number that was on screen the whole time.
+///
+/// **What would make it row 6**, the row that destroys somebody's work, is a
+/// write the user does not see happening. Three things keep it off that row,
+/// and each has a guard rather than an intention:
+///
+/// * the write only ever happens on a box the user is in, because [`commit`]
+///   acts on `is_final` alone, which is Enter or the focus leaving that box:
+///   `a_value_that_is_not_committed_leaves_the_component_alone`
+/// * it lands on the entity the header names and on nothing else:
+///   `an_edit_touches_one_field_of_one_entity`
+/// * nothing is written that could not be parsed, so no zero goes over a
+///   number: `an_unparseable_value_is_never_written`, which pins
+///   `bevy_feathers` rather than this file and says so
+///
+/// The fourth thing, that the box and the component agree afterwards, is
+/// `the_row_shows_what_the_component_holds_after_a_commit`. A read path and a
+/// write path that disagree is row 6 in miniature.
+///
+/// Mutation: replace the `try_apply` with `Ok(())`, and
+/// `committing_a_field_writes_it_to_the_component` fails.
+fn write_leaf(world: &mut World, writes: &Writes, value: f32) {
+    let Ok(mut component) = world.get_reflect_mut(writes.of, writes.component) else {
+        return;
+    };
+    let ReflectMut::Struct(shape) = component.reflect_mut() else {
+        return;
+    };
+    let Some(field) = shape.field_mut(&writes.field) else {
+        return;
+    };
+    let ReflectMut::Struct(field) = field.reflect_mut() else {
+        return;
+    };
+    let Some(leaf) = field.field_mut(&writes.leaf) else {
+        return;
+    };
+    let _ = leaf.try_apply(&value);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::UNREGISTERED;
+    use super::{UNREGISTERED, Writes};
     use crate::pointer::{click_at, hold_key, in_window, release_key, scroll_at};
     use crate::{Region, Selection, editor, headless};
+    use bevy::feathers::controls::FeathersNumberInput;
+    use bevy::input_focus::{FocusCause, InputFocus};
     use bevy::picking::pointer::PointerButton;
     use bevy::prelude::*;
+    use bevy::text::{EditableText, TextEdit};
 
     /// A component this code has never heard of, standing in for one a user
     /// defines in phase 3.
@@ -476,6 +792,50 @@ mod tests {
     /// line saying nothing.
     #[derive(Component, Reflect)]
     struct Marked;
+
+    /// A named-field struct whose field is not a number.
+    ///
+    /// The line it draws is the one every line was before
+    /// `docs/specs/ui.md` §7, and it is here so that the tests about that
+    /// shape do not have to borrow a field off an engine type whose contents
+    /// are Bevy's to change. `Transform`'s three fields are all numbers now,
+    /// so it can no longer stand in for this.
+    #[derive(Component, Reflect)]
+    struct Titled {
+        /// What the line reads.
+        title: String,
+    }
+
+    /// A named-field struct of numbers that this file declares.
+    ///
+    /// The second level opens on the shape rather than on the type, so this
+    /// reaches it without `Vec3`, and the test that says a mixed struct does
+    /// **not** open has a matching pair to compare against.
+    #[derive(Reflect)]
+    struct Pair {
+        /// One number.
+        width: f32,
+        /// Another.
+        height: f32,
+    }
+
+    /// The same shape with one field that is not a number.
+    #[derive(Reflect)]
+    struct Mixed {
+        /// A number.
+        width: f32,
+        /// Not one.
+        wide: bool,
+    }
+
+    /// A component carrying both, so one entity answers both questions.
+    #[derive(Component, Reflect)]
+    struct Measured {
+        /// Opens into two boxes.
+        pair: Pair,
+        /// Stays one line of text.
+        mixed: Mixed,
+    }
 
     /// The editor, run until a test can look at the world.
     ///
@@ -623,6 +983,122 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The line one field draws, as one entity.
+    ///
+    /// The lines under a component are its row's children after the first,
+    /// which is the component's own name, and they are in the order the type
+    /// declares its fields.
+    fn line_of(app: &mut App, component: &str, index: usize) -> Entity {
+        let panel = panel_of(app);
+        let world = app.world();
+        let body = world
+            .entity(panel)
+            .get::<Children>()
+            .and_then(|children| children.iter().nth(1))
+            .expect("the panel has a body");
+        let row = world
+            .entity(body)
+            .get::<Children>()
+            .map(|rows| rows.iter().collect::<Vec<Entity>>())
+            .unwrap_or_default()
+            .into_iter()
+            .find(|row| {
+                text_under(world, *row)
+                    .first()
+                    .is_some_and(|first| first == component)
+            })
+            .unwrap_or_else(|| panic!("no component row says {component}"));
+        world
+            .entity(row)
+            .get::<Children>()
+            .and_then(|children| children.iter().nth(index + 1))
+            .unwrap_or_else(|| panic!("{component} has no line {index}"))
+    }
+
+    /// The number boxes on one line, in the order they are drawn.
+    ///
+    /// A box carries no `Text`, so nothing that reads the panel's words can
+    /// see it: what it holds is in `EditableText`, on a child of the entity
+    /// the box's own components sit on.
+    fn boxes_on(app: &mut App, line: Entity) -> Vec<Entity> {
+        let world = app.world();
+        world
+            .entity(line)
+            .get::<Children>()
+            .map(|children| {
+                children
+                    .iter()
+                    .filter(|child| world.entity(*child).contains::<FeathersNumberInput>())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// What the boxes on one line read, in the order they are drawn.
+    fn numbers_on(app: &mut App, line: Entity) -> Vec<String> {
+        boxes_on(app, line)
+            .into_iter()
+            .map(|cell| {
+                let inner = editable_under(app.world(), cell);
+                app.world()
+                    .entity(inner)
+                    .get::<EditableText>()
+                    .expect("the buffer is on the entity that was found by it")
+                    .value()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The entity inside a box that holds the text being edited.
+    ///
+    /// `bevy_feathers` puts `EditableText` on a child of the box rather than
+    /// on the box itself, and focus is about that child.
+    fn editable_under(world: &World, cell: Entity) -> Entity {
+        let mut stack = vec![cell];
+        while let Some(next) = stack.pop() {
+            if next != cell && world.entity(next).contains::<EditableText>() {
+                return next;
+            }
+            if let Some(children) = world.entity(next).get::<Children>() {
+                for child in children.iter() {
+                    stack.push(child);
+                }
+            }
+        }
+        panic!("the box has nothing to type into");
+    }
+
+    /// Type into a box, and commit it by letting the focus go.
+    ///
+    /// The whole path, rather than a `ValueChange` made up here: the buffer is
+    /// edited, the box takes focus, and the focus leaves, which is one of the
+    /// two things `docs/specs/ui.md` §7 commits on.
+    fn type_and_commit(app: &mut App, cell: Entity, text: &str) {
+        type_into(app, cell, text);
+        let inner = editable_under(app.world(), cell);
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(inner, FocusCause::Pressed);
+        app.update();
+        app.world_mut().resource_mut::<InputFocus>().clear();
+        app.update();
+        app.update();
+    }
+
+    /// Put something in a box without committing it.
+    fn type_into(app: &mut App, cell: Entity, text: &str) {
+        let inner = editable_under(app.world(), cell);
+        let mut entity = app.world_mut().entity_mut(inner);
+        let mut buffer = entity
+            .get_mut::<EditableText>()
+            .expect("the buffer is on the entity that was found by it");
+        buffer.queue_edit(TextEdit::SelectAll);
+        buffer.queue_edit(TextEdit::Insert(text.into()));
+        app.update();
+        app.update();
     }
 
     /// Select the middle placeholder, and say which entity it is.
@@ -812,8 +1288,9 @@ mod tests {
     /// the type registration order, which is plugin build order, and it puts
     /// `GlobalTransform` before `Transform`.
     ///
-    /// Mutation: drop the `rows.sort()` in `show`, and this fails. Mutation:
-    /// swap the two variants of `Row`, and the second half fails.
+    /// Mutation: drop the `rows.sort_by` in `show`, and this fails. Mutation:
+    /// drop the `bool` from [`Row::key`], so that `<no reflection>` sorts
+    /// among the names rather than after them, and the second half fails.
     ///
     /// It reads the component level rather than every word on screen, because
     /// a component opens into field rows now and those are in the order the
@@ -1003,30 +1480,54 @@ mod tests {
     /// value any placeholder starts with, so a row showing `Transform`'s
     /// default cannot pass.
     ///
-    /// Mutation: give a field row an empty value in `fields_of`, and this
-    /// fails. There is no default path to mutate into: the value comes off the
-    /// entity by construction, which is row 1 rather than row 2.
+    /// Both line shapes at once, because there are two now and each has its
+    /// own arm: the boxes read the numbers, and a field that is not a number
+    /// still reads its `Debug` text.
+    ///
+    /// Mutation: give a field row an empty value in `fields_of`, and the text
+    /// half fails. Mutation: pass `NumberInputValue::F32(0.0)` rather than the
+    /// leaf's own value where a box is spawned, and the numbers half does.
+    /// There is no default path to mutate into: the value comes off the entity
+    /// by construction, which is row 1 rather than row 2.
     #[test]
     fn a_field_row_reads_the_entitys_own_value() {
         let mut app = inspector_editor();
         let middle = select_the_middle(&mut app);
-        app.world_mut()
-            .entity_mut(middle)
-            .insert(Transform::from_xyz(12.5, -7.25, 3.0));
+        app.world_mut().entity_mut(middle).insert((
+            Transform::from_xyz(12.5, -7.25, 3.0),
+            Titled {
+                title: "the middle one".to_owned(),
+            },
+        ));
         app.update();
 
-        let lines = lines_under(&mut app, "Transform");
+        let numbers = line_of(&mut app, "Transform", 0);
+        let text = lines_under(&mut app, "Titled");
 
         assert_eq!(
-            lines.first().map(Vec::as_slice),
+            lines_under(&mut app, "Transform")
+                .first()
+                .map(Vec::as_slice),
             Some(
                 [
                     "translation".to_owned(),
-                    "Vec3(12.5, -7.25, 3.0)".to_owned()
+                    "x".to_owned(),
+                    "y".to_owned(),
+                    "z".to_owned()
                 ]
                 .as_slice()
             ),
-            "the translation row is not the entity's own: {lines:?}"
+            "the translation line is not one box per leaf"
+        );
+        assert_eq!(
+            numbers_on(&mut app, numbers),
+            ["12.5", "-7.25", "3"],
+            "the boxes are not the entity's own numbers"
+        );
+        assert_eq!(
+            text.first().map(Vec::as_slice),
+            Some(["title".to_owned(), "\"the middle one\"".to_owned()].as_slice()),
+            "a field that is not a number stopped reading the entity's own value: {text:?}"
         );
     }
 
@@ -1048,22 +1549,24 @@ mod tests {
             .entity_mut(middle)
             .insert(Transform::from_xyz(1.0, 0.0, 0.0));
         app.update();
-        let before = lines_under(&mut app, "Transform");
+        let line = line_of(&mut app, "Transform", 0);
+        let before = numbers_on(&mut app, line);
 
         app.world_mut()
             .entity_mut(middle)
             .insert(Transform::from_xyz(2.0, 0.0, 0.0));
         app.update();
-        let after = lines_under(&mut app, "Transform");
+        let line = line_of(&mut app, "Transform", 0);
+        let after = numbers_on(&mut app, line);
 
         assert_eq!(
-            before.first().map(Vec::as_slice),
-            Some(["translation".to_owned(), "Vec3(1.0, 0.0, 0.0)".to_owned()].as_slice()),
+            before.first().map(String::as_str),
+            Some("1"),
             "the fixture never showed the first value: {before:?}"
         );
         assert_eq!(
-            after.first().map(Vec::as_slice),
-            Some(["translation".to_owned(), "Vec3(2.0, 0.0, 0.0)".to_owned()].as_slice()),
+            after.first().map(String::as_str),
+            Some("2"),
             "the row did not follow the component: {after:?}"
         );
     }
@@ -1298,65 +1801,69 @@ mod tests {
     /// the panel against 97, one extra per value line, and ADR-0002 spawns and
     /// despawns all of them on every rebuild.
     ///
-    /// Read through the row that draws `translation`: it has the indent, and it
-    /// is the same entity that has the two words on it.
+    /// Read through both line shapes, because there are two now: a line of
+    /// text, and a line of number boxes. They are spawned by different arms of
+    /// `show` and each one could grow a wrapper on its own.
     ///
-    /// Mutation: spawn the indent as a node of its own and parent the row under
-    /// it, and this fails with the row's own padding at zero.
+    /// Mutation: spawn the indent as a node of its own and parent either line
+    /// under it, and this fails with that line's own padding at zero.
     #[test]
     fn a_field_line_carries_its_indent_on_the_row_itself() {
         let mut app = inspector_editor();
-        select_the_middle(&mut app);
+        let middle = select_the_middle(&mut app);
+        app.world_mut().entity_mut(middle).insert(Titled {
+            title: "the middle one".to_owned(),
+        });
+        app.update();
 
-        let panel = panel_of(&mut app);
-        let world = app.world();
-        let body = world
-            .entity(panel)
-            .get::<Children>()
-            .and_then(|children| children.iter().nth(1))
-            .expect("the panel has a body");
-        let group = world
-            .entity(body)
-            .get::<Children>()
-            .map(|rows| rows.iter().collect::<Vec<Entity>>())
-            .unwrap_or_default()
-            .into_iter()
-            .find(|row| {
-                text_under(world, *row)
-                    .first()
-                    .is_some_and(|first| first == "Transform")
-            })
-            .expect("Transform has a row");
-        // The first child is the component's name; the second is its first
-        // field, which is the line this is about.
-        let line = world
-            .entity(group)
-            .get::<Children>()
-            .and_then(|children| children.iter().nth(1))
-            .expect("Transform opened into at least one line");
+        let text = line_of(&mut app, "Titled", 0);
+        let numbers = line_of(&mut app, "Transform", 0);
 
-        assert_eq!(
-            text_under(world, line),
-            vec!["translation".to_owned(), "Vec3(0.0, 0.0, 0.0)".to_owned()],
-            "the entity being measured is not the row that draws the field"
-        );
-        assert_eq!(
-            world
-                .entity(line)
-                .get::<Node>()
-                .expect("a row is a node")
-                .padding
-                .left,
-            Val::Px(12.0),
-            "the indent is not on this entity at all"
-        );
-        // **The value's own text has to hang directly off it**, and reading the
+        for (line, what) in [(text, "a line of text"), (numbers, "a line of boxes")] {
+            assert_eq!(
+                app.world()
+                    .entity(line)
+                    .get::<Node>()
+                    .expect("a row is a node")
+                    .padding
+                    .left,
+                Val::Px(12.0),
+                "{what} does not carry the indent on this entity at all"
+            );
+        }
+
+        // **What the line draws has to hang directly off it**, and reading the
         // padding alone does not say that: a node wrapping the row carries the
-        // same padding and the same words underneath it, so the first two
-        // assertions hold under either shape. Measured, on a version of this
-        // test that stopped there: the wrapper form left all 93 green.
-        let beneath: Vec<String> = world
-            .entity(line)
+        // same padding and the same words underneath it, so the assertion
+        // above holds under either shape. Measured, on a version of this test
+        // that stopped there: the wrapper form left all 93 green. That is
+        // RK-012.
+        assert_eq!(
+            directly_under(app.world(), text),
+            vec!["\"the middle one\"".to_owned()],
+            "the indent is on a node wrapping the line of text rather than on it"
+        );
+        assert_eq!(
+            directly_under(app.world(), numbers),
+            vec!["x".to_owned(), "y".to_owned(), "z".to_owned()],
+            "the indent is on a node wrapping the line of boxes rather than on it"
+        );
+        assert_eq!(
+            boxes_on(&mut app, numbers).len(),
+            3,
+            "the boxes are not children of the line either"
+        );
+    }
+
+    /// The words on the direct children of one entity, in the order they are
+    /// drawn.
+    ///
+    /// Direct rather than every descendant, which is the whole point: a
+    /// flattened read is satisfied by a wrapper and guards nothing about the
+    /// tree. RK-012.
+    fn directly_under(world: &World, entity: Entity) -> Vec<String> {
+        world
+            .entity(entity)
             .get::<Children>()
             .map(|children| {
                 children
@@ -1366,12 +1873,7 @@ mod tests {
                     })
                     .collect()
             })
-            .unwrap_or_default();
-        assert_eq!(
-            beneath,
-            vec!["Vec3(0.0, 0.0, 0.0)".to_owned()],
-            "the indent is on a node wrapping the row rather than on the row"
-        );
+            .unwrap_or_default()
     }
 
     /// A window position inside the inspector pane.
@@ -1571,6 +2073,488 @@ mod tests {
         assert!(
             column.width() <= 140.0,
             "the name is clipped by something wider than its column: {column:?}"
+        );
+    }
+
+    /// A field of numbers opens into one box per leaf.
+    ///
+    /// `docs/specs/ui.md` §6's second level, on a struct this file declares
+    /// rather than on `Vec3`: the descent opens on the shape and not on the
+    /// type, and saying so with a type Bevy does not own is what shows it.
+    ///
+    /// Mutation: return `None` from `leaves_of` always, and this fails with
+    /// the line reading its `Debug` text instead.
+    #[test]
+    fn a_field_of_numbers_opens_into_one_box_per_leaf() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut().entity_mut(middle).insert(Measured {
+            pair: Pair {
+                width: 4.0,
+                height: 8.0,
+            },
+            mixed: Mixed {
+                width: 4.0,
+                wide: true,
+            },
+        });
+        app.update();
+
+        let line = line_of(&mut app, "Measured", 0);
+
+        assert_eq!(
+            directly_under(app.world(), line),
+            vec!["width".to_owned(), "height".to_owned()],
+            "the leaves are not labelled one per box"
+        );
+        assert_eq!(
+            numbers_on(&mut app, line),
+            ["4", "8"],
+            "the boxes do not hold the numbers the field holds"
+        );
+    }
+
+    /// A field that is not all numbers stays one line.
+    ///
+    /// The bound on the second level. `Mixed` is a named-field struct whose
+    /// first field is an `f32` and whose second is not, so anything that
+    /// looked at the first field and stopped would open it.
+    ///
+    /// Mutation: accept a struct with one field that is not an `f32` in
+    /// `leaves_of`, for instance by returning the leaves it did manage to
+    /// read, and this fails with boxes on a line that should be text.
+    #[test]
+    fn a_field_that_is_not_all_numbers_stays_one_line() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut().entity_mut(middle).insert(Measured {
+            pair: Pair {
+                width: 4.0,
+                height: 8.0,
+            },
+            mixed: Mixed {
+                width: 4.0,
+                wide: true,
+            },
+        });
+        app.update();
+
+        let line = line_of(&mut app, "Measured", 1);
+
+        assert!(
+            boxes_on(&mut app, line).is_empty(),
+            "a field with something that is not a number in it opened into boxes"
+        );
+        assert_eq!(
+            text_under(app.world(), line).first().map(String::as_str),
+            Some("mixed"),
+            "the line being read is not the one this test is about"
+        );
+    }
+
+    /// A number box carries what it writes to.
+    ///
+    /// Read off the `FeathersNumberInput` entity itself, because that is the
+    /// entity `ValueChange::source` names: on the line, or on a node wrapping
+    /// the box, the observer would find nothing. RK-012.
+    ///
+    /// Mutation: insert `Writes` on the line rather than on the box, and this
+    /// fails.
+    #[test]
+    fn a_number_box_carries_what_it_writes_to() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cells = boxes_on(&mut app, line);
+
+        assert_eq!(cells.len(), 3, "translation did not open into three boxes");
+        let leaves: Vec<String> = cells
+            .iter()
+            .map(|cell| {
+                let writes = app
+                    .world()
+                    .entity(*cell)
+                    .get::<Writes>()
+                    .expect("a box says what it writes to, on the box itself");
+                assert_eq!(writes.of, middle, "a box names the wrong entity");
+                assert_eq!(
+                    writes.component,
+                    core::any::TypeId::of::<Transform>(),
+                    "a box names the wrong component"
+                );
+                assert_eq!(writes.field, "translation", "a box names the wrong field");
+                writes.leaf.clone()
+            })
+            .collect();
+        assert_eq!(leaves, ["x", "y", "z"]);
+    }
+
+    /// Committing a field writes it to the component.
+    ///
+    /// The whole path: the buffer is edited, the box takes focus, and the
+    /// focus leaves, which is one of the two things `docs/specs/ui.md` §7
+    /// commits on.
+    ///
+    /// Mutation: replace the `try_apply` in `write_leaf` with `Ok(())`, and
+    /// this fails with the placeholder still where it started.
+    #[test]
+    fn committing_a_field_writes_it_to_the_component() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_and_commit(&mut app, cell, "-42.5");
+
+        assert_eq!(
+            app.world()
+                .entity(middle)
+                .get::<Transform>()
+                .expect("a placeholder has a transform")
+                .translation,
+            Vec3::new(0.0, -42.5, 0.0),
+            "the committed number did not reach the component"
+        );
+    }
+
+    /// A value that is not committed leaves the component alone.
+    ///
+    /// `bevy_feathers` emits a value on every keystroke, carrying
+    /// `is_final: false`, and once more when `UpdateNumberInput` fills a box
+    /// the panel has just spawned. Neither is a commit.
+    ///
+    /// Mutation: drop the `is_final` check in `commit`, and this fails with
+    /// the placeholder already moved.
+    #[test]
+    fn a_value_that_is_not_committed_leaves_the_component_alone() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "-42.5");
+
+        assert_eq!(
+            app.world()
+                .entity(middle)
+                .get::<Transform>()
+                .expect("a placeholder has a transform")
+                .translation,
+            Vec3::ZERO,
+            "typing moved the placeholder before anything was committed"
+        );
+    }
+
+    /// A value that is not a number is never written.
+    ///
+    /// `bevy_feathers` refuses every character that is not a digit or one of
+    /// `.-+eE`, so what can get this far is something like `1.2.3`, and it
+    /// emits nothing at all for it. **Measured with a throwaway probe**: the
+    /// same run that heard `(12.5, false)` and `(12.5, true)` for `12.5` heard
+    /// nothing at either point for `1.2.3`.
+    ///
+    /// Saying so in the row is upstream's open question and is not guarded
+    /// here, which `docs/specs/ui.md` §7 records.
+    ///
+    /// **No mutation of this file makes this fail, and that is what it is
+    /// for.** Measured: with the `is_final` check deleted, so that `commit`
+    /// writes whatever it is handed, this still passed, because for `1.2.3`
+    /// `bevy_feathers` hands it nothing. What it pins is the upstream
+    /// behaviour `docs/specs/ui.md` §7's rationale rests on. A release that
+    /// started emitting a parsed-as-far-as-possible value, or a zero, would
+    /// put that value into somebody's component, which is row 6, and this is
+    /// what would say so. Written down rather than left to a green suite to
+    /// imply a guard, per RK-005.
+    #[test]
+    fn an_unparseable_value_is_never_written() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut()
+            .entity_mut(middle)
+            .insert(Transform::from_xyz(0.0, 7.5, 0.0));
+        // Twice, because the first frame draws the new `Transform` beside a
+        // `GlobalTransform` that has not caught up yet and the second one
+        // rebuilds the panel again. A box taken from the first would be
+        // despawned before it could be typed into.
+        app.update();
+        app.update();
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_and_commit(&mut app, cell, "1.2.3");
+
+        assert_eq!(
+            app.world()
+                .entity(middle)
+                .get::<Transform>()
+                .expect("a placeholder has a transform")
+                .translation,
+            Vec3::new(0.0, 7.5, 0.0),
+            "something that is not a number reached the component"
+        );
+    }
+
+    /// An edit touches one field of one entity.
+    ///
+    /// Two entities are selected, per RK-007: with one, "the active entity"
+    /// and "every selected entity" are the same program. The whole world's
+    /// transforms are compared, so an edit that reached anything else shows
+    /// up wherever it landed.
+    ///
+    /// Mutation: have `write_leaf` write every leaf of the field rather than
+    /// the one `writes.leaf` names, and this fails on the leaf half. Mutation:
+    /// give `Writes::of` the first selected entity rather than
+    /// `Shape::of`, and it fails on the entity half. Both applied, and this
+    /// test watched to fail.
+    #[test]
+    fn an_edit_touches_one_field_of_one_entity() {
+        let mut app = inspector_editor();
+        let [_, active] = select_the_middle_then_the_left(&mut app);
+
+        let transforms = |app: &mut App| -> Vec<(Entity, Transform)> {
+            let mut found: Vec<(Entity, Transform)> = app
+                .world_mut()
+                .query::<(Entity, &Transform)>()
+                .iter(app.world())
+                .map(|(entity, at)| (entity, *at))
+                .collect();
+            found.sort_by_key(|(entity, _)| *entity);
+            found
+        };
+        let before = transforms(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_and_commit(&mut app, cell, "-42.5");
+        let after = transforms(&mut app);
+
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "the edit added or removed something with a transform"
+        );
+        let moved: Vec<Entity> = before
+            .iter()
+            .zip(&after)
+            .filter(|((_, was), (_, now))| was.translation != now.translation)
+            .map(|((entity, _), _)| *entity)
+            .collect();
+        assert_eq!(
+            moved,
+            [active],
+            "the edit did not land on the active entity alone"
+        );
+        let (_, now) = after
+            .iter()
+            .find(|(entity, _)| *entity == active)
+            .expect("the active entity still has a transform");
+        let (_, was) = before
+            .iter()
+            .find(|(entity, _)| *entity == active)
+            .expect("the active entity had a transform");
+        assert_eq!(
+            (now.rotation, now.scale),
+            (was.rotation, was.scale),
+            "the edit reached a field it was not committed on"
+        );
+        assert_eq!(
+            (now.translation.x, now.translation.z),
+            (was.translation.x, was.translation.z),
+            "the edit reached a leaf it was not committed on"
+        );
+    }
+
+    /// The row shows what the component holds after a commit.
+    ///
+    /// The read path and the write path disagreeing is what row 6 of
+    /// `CLAUDE.md`'s list is about, in miniature. Once focus has left, the
+    /// panel is rebuilt from the world, so the box has to come back up holding
+    /// what was actually written.
+    ///
+    /// Mutation: drop the `UpdateNumberInput` trigger where a box is spawned,
+    /// and this fails with an empty box.
+    #[test]
+    fn the_row_shows_what_the_component_holds_after_a_commit() {
+        let mut app = inspector_editor();
+        select_the_middle(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_and_commit(&mut app, cell, "-42.5");
+
+        let line = line_of(&mut app, "Transform", 0);
+        assert_eq!(
+            numbers_on(&mut app, line),
+            ["0", "-42.5", "0"],
+            "the row and the component do not agree after a commit"
+        );
+    }
+
+    /// A focused field survives the edit it commits.
+    ///
+    /// Enter commits without the focus going anywhere, so the box the user is
+    /// in is still the box they are in afterwards. `Shape` carries the values,
+    /// so without the guard in `show` the commit changes `Transform`, the
+    /// panel is rebuilt, and the box is despawned under the cursor.
+    /// [ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)
+    /// is where that was weighed.
+    ///
+    /// Mutation: delete the focus guard at the top of `show`, and this fails
+    /// with the box gone.
+    #[test]
+    fn a_focused_field_survives_the_edit_it_commits() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        let inner = editable_under(app.world(), cell);
+        type_into(&mut app, cell, "-42.5");
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(inner, FocusCause::Pressed);
+        app.update();
+        hold_key(&mut app, KeyCode::Enter);
+        app.update();
+        app.update();
+        release_key(&mut app, KeyCode::Enter);
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .entity(middle)
+                .get::<Transform>()
+                .expect("a placeholder has a transform")
+                .translation,
+            Vec3::new(0.0, -42.5, 0.0),
+            "Enter did not commit, so this says nothing about surviving it"
+        );
+        assert!(
+            app.world().get_entity(cell).is_ok(),
+            "the box was despawned by the rebuild its own commit caused"
+        );
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(inner),
+            "the focus did not survive either"
+        );
+    }
+
+    /// The panel is frozen while a box has focus, and catches up after.
+    ///
+    /// The cost of ADR-0003, stated as a guard rather than left to be
+    /// discovered: every other line is stale for as long as one box holds
+    /// focus. The second half is what makes it a freeze rather than a stop.
+    ///
+    /// Mutation: delete the focus guard at the top of `show`, and the first
+    /// assertion fails. Mutation: make that return happen whenever anything is
+    /// already shown, rather than only while the focus is in the panel, and
+    /// the last one does. Both applied, and this test watched to fail.
+    #[test]
+    fn the_panel_is_frozen_while_a_box_has_focus_and_catches_up_after() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        let inner = editable_under(app.world(), cell);
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(inner, FocusCause::Pressed);
+        app.update();
+
+        // Something else moves the entity while the user is typing.
+        app.world_mut()
+            .entity_mut(middle)
+            .insert(Transform::from_xyz(0.0, 99.0, 0.0));
+        app.update();
+        app.update();
+
+        assert_eq!(
+            numbers_on(&mut app, line),
+            ["0", "0", "0"],
+            "the panel was rebuilt while a box had focus"
+        );
+
+        app.world_mut().resource_mut::<InputFocus>().clear();
+        app.update();
+        app.update();
+
+        let line = line_of(&mut app, "Transform", 0);
+        assert_eq!(
+            numbers_on(&mut app, line),
+            ["0", "99", "0"],
+            "the panel never caught up after the focus left"
+        );
+    }
+
+    /// Focus outside the panel does not freeze it.
+    ///
+    /// The guard is about the inspector's own subtree, not about focus in
+    /// general. Anything else the editor grows that can take focus, a toolbar
+    /// or a search field, would otherwise stop the panel from following the
+    /// world.
+    ///
+    /// Mutation: return whenever `InputFocus` holds anything at all, rather
+    /// than only when it is inside the panel, and this fails.
+    #[test]
+    fn focus_outside_the_panel_does_not_freeze_it() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        let elsewhere = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(elsewhere, FocusCause::Pressed);
+        app.update();
+
+        app.world_mut()
+            .entity_mut(middle)
+            .insert(Transform::from_xyz(0.0, 99.0, 0.0));
+        app.update();
+        app.update();
+
+        let line = line_of(&mut app, "Transform", 0);
+        assert_eq!(
+            numbers_on(&mut app, line),
+            ["0", "99", "0"],
+            "focus somewhere else stopped the panel following the world"
+        );
+    }
+
+    /// A panel holding a `NaN` is not rebuilt every frame.
+    ///
+    /// `f32`'s own `PartialEq` says `NaN` is equal to nothing, itself
+    /// included, so a compared value holding one differs from itself and the
+    /// panel is despawned and respawned on every update. That is row 5 of
+    /// `CLAUDE.md`'s list, and it is the failure ADR-0002 rejected *rebuild
+    /// every frame* over. `Leaf` compares the bits for this reason.
+    ///
+    /// Mutation: derive `PartialEq` on `Leaf` instead of writing it, and this
+    /// fails with none of the entities surviving.
+    #[test]
+    fn a_panel_holding_a_nan_is_not_rebuilt_every_frame() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut()
+            .entity_mut(middle)
+            .insert(Transform::from_xyz(f32::NAN, 0.0, 0.0));
+        app.update();
+        app.update();
+
+        let before = under_the_panel(&mut app);
+        app.update();
+        app.update();
+        let after = under_the_panel(&mut app);
+
+        assert!(
+            !before.is_empty(),
+            "the panel is empty, so this tests nothing"
+        );
+        assert_eq!(
+            before, after,
+            "a NaN made the panel rebuild itself every frame"
         );
     }
 }
