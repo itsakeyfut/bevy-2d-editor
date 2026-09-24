@@ -38,8 +38,9 @@ code to look at, it is a record.
 | --- | --- | --- | --- |
 | [0001](./0001-compose-the-editor-from-a-table-a-test-can-read.md) | Compose the editor from a table a test can read, not from Bevy's `plugin_group!` | accepted | `the_group_carries_the_members_the_table_names` |
 | [0002](./0002-rebuild-the-inspector-rather-than-diff-it.md) | Rebuild the inspector's panel rather than reconcile it, and walk the entity from an ordinary system | accepted | `the_inspector_does_not_rebuild_what_has_not_changed` |
+| [0003](./0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) | The inspector panel belongs to the user while focus is inside it, so `show` does not rebuild it | accepted | `a_focused_field_survives_the_edit_it_commits` |
 
-**By status**: accepted: 0001, 0002 · proposed: none · superseded: none
+**By status**: accepted: 0001, 0002, 0003 · proposed: none · superseded: none
 
 Records are numbered consecutively from `0001`.
 
