@@ -972,7 +972,8 @@ fn read_leaf(world: &World, writes: &Writes) -> Option<f32> {
 /// panel is rebuilt from the world the moment focus leaves the box, which is
 /// where the user finds out. Nothing in the editor can reach it today, because
 /// nothing removes a component. **It is also what an undo does when the entity
-/// is gone**: nothing is written, the entry is used up, and `Entity`'s
+/// is gone**, and a redo after it: nothing is written, the entry moves between
+/// the two sides of the history as any other does, and `Entity`'s
 /// generation means a reused index is never written to by mistake. Issue #55 is
 /// what makes a deletion undoable without that.
 ///
