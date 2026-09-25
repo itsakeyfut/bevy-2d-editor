@@ -72,7 +72,11 @@ impl History {
     /// `undoing_a_commit_puts_the_component_back_bit_for_bit` fails.
     /// The entry moves to the redo side whatever its `undo` did, including
     /// when its entity is gone and it wrote nothing: redo then writes
-    /// nothing either.
+    /// nothing either. That holds because the push is unconditional, and
+    /// the history cannot tell which entries wrote anything.
+    ///
+    /// Mutation: drop the `undone.push`, and
+    /// `redo_puts_back_the_commit_undo_took_back_and_the_box_shows_it` fails.
     fn undo(world: &mut World) -> bool {
         let Some(mut command) = world.resource_mut::<History>().done.pop() else {
             return false;
@@ -89,6 +93,8 @@ impl History {
     /// `two_undos_come_back_in_order_under_two_redos` fails. Mutation: return
     /// before calling `execute`, and
     /// `redo_puts_back_the_commit_undo_took_back_and_the_box_shows_it` fails.
+    /// Mutation: drop the `done.push`, and
+    /// `an_undo_after_a_redo_takes_the_redone_commit_back` fails.
     fn redo(world: &mut World) -> bool {
         let Some(mut command) = world.resource_mut::<History>().undone.pop() else {
             return false;
@@ -196,8 +202,9 @@ fn take_back(
 /// letter as [`take_back`] reads Z.
 /// [`docs/specs/ui.md` §9](../../../docs/specs/ui.md) has why both.
 ///
-/// Mutation: drop the Shift and Z arm, and `ctrl_shift_z_is_redo_as_ctrl_y_is`
-/// fails. Mutation: drop the `Super` keys, and `cmd_y_is_redo_as_ctrl_y_is`
+/// Mutation: stop requiring Ctrl or Cmd, and
+/// `y_without_ctrl_or_cmd_is_not_redo` fails. Mutation: drop the Shift and Z
+/// arm, and `ctrl_shift_z_is_redo_as_ctrl_y_is` fails. Mutation: drop the `Super` keys, and `cmd_y_is_redo_as_ctrl_y_is`
 /// fails. Mutation: drop the Shift check on Y, and `ctrl_shift_y_is_not_redo`
 /// fails.
 ///

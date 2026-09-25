@@ -3983,4 +3983,53 @@ mod tests {
 
         assert_eq!(translation(&app, middle).y, 0.0, "Ctrl+Shift+Y redid");
     }
+
+    /// An undo after a redo takes the redone commit back, and not the one
+    /// before it.
+    ///
+    /// `x` and then `y` are committed, `y` is taken back and put back again,
+    /// and Ctrl+Z has to take `y` back once more. A redo that did not return
+    /// its entry to the history would leave `y` on screen with nothing
+    /// holding it, and this Ctrl+Z would take back `x` instead.
+    ///
+    /// Mutation: drop the `done.push` in `History::redo`, and this fails with
+    /// `x` taken back and `y` left in place.
+    #[test]
+    fn an_undo_after_a_redo_takes_the_redone_commit_back() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 0, "10");
+        commit_translation(&mut app, 1, "20");
+        undo(&mut app);
+        redo(&mut app);
+        assert_eq!(
+            translation(&app, middle),
+            Vec3::new(10.0, 20.0, 0.0),
+            "the redo did not land"
+        );
+
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle),
+            Vec3::new(10.0, 0.0, 0.0),
+            "the undo after a redo did not take the redone commit back"
+        );
+    }
+
+    /// Y without Ctrl or Cmd is not redo.
+    ///
+    /// Mutation: stop requiring Ctrl or Cmd in `put_back`, and this fails
+    /// with the commit put back.
+    #[test]
+    fn y_without_ctrl_or_cmd_is_not_redo() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        undo(&mut app);
+
+        press_with(&mut app, &[], KeyCode::KeyY, "y");
+
+        assert_eq!(translation(&app, middle).y, 0.0, "Y alone redid");
+    }
 }
