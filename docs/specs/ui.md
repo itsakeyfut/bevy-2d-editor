@@ -818,14 +818,14 @@ comments.
 
 | | |
 | --- | --- |
-| The key | **Ctrl or Cmd with Z, and not Shift**, on every platform, for the reason [§4](#4-what-the-mouse-does-in-the-viewport) takes both modifiers. Shift is left for redo, issue #52 |
+| The key | **Ctrl or Cmd with Z, and not Shift**, on every platform, for the reason [§4](#4-what-the-mouse-does-in-the-viewport) takes both modifiers. Shift is redo's, [§9](#9-what-redo-puts-back) |
 | Which Z | **the key that says Z**, read as a logical key through `ButtonInput<Key>`, not the key in Z's place on a US layout |
 | What is an entry | **a committed number that changed the bits of the leaf it was written to.** A commit that writes the value already there is not an entry |
 | No box has focus | the last entry is taken back, and the panel rebuilds from the world as it does after any change |
 | A number box has focus, and what is typed in it differs from the leaf | **the typing is taken back**: the box is put back to the leaf's value, and the history is left alone |
 | A number box has focus, and what is in it is the leaf's value | the last entry is taken back, **and every box on the panel is given its leaf's new value in place**, the focused one included, without the panel being rebuilt |
 | Nothing to take back | nothing happens |
-| The entity an entry names is gone | nothing is written and the entry is used up. Issue #55 is what makes a deletion undoable without this |
+| The entity an entry names is gone | nothing is written, and the entry goes to the redo side as any other does ([§9](#9-what-redo-puts-back)). Issue #55 is what makes a deletion undoable without this |
 | A change of selection | **not an entry yet.** Issue #54 makes it one, as Unity records it |
 
 ### Rationale
@@ -931,3 +931,92 @@ handler would then stop the key propagating, and Ctrl+Z in a box with nothing
 typed would stop reaching the history. A named test pins that case, so the
 upgrade that brings it fails a test rather than changing what the key does
 unnoticed.
+
+---
+
+## 9. What redo puts back
+
+Decided on issue #52, and built by it: `put_back` in
+`crates/editor/src/history.rs` reads the keys, `History::record` and
+`History::redo` beside it keep the redo side, and `typing_in_focus` in
+`crates/editor/src/inspector.rs` is what holds redo back. Each row below is
+held by a test named in those functions' doc comments.
+
+It extends [§8](#8-what-ctrlz-takes-back) rather than replacing it:
+everything there about what an entry is, and about reading the key after the
+frame's focus changes, holds for redo as well.
+
+### Decision
+
+| | |
+| --- | --- |
+| The keys | **Ctrl or Cmd with Shift and Z, and Ctrl or Cmd with Y**, both on every platform, with the same modifier rule as undo |
+| Which Y and Z | **the keys that say Y and Z**, read as logical keys, as [§8](#8-what-ctrlz-takes-back) reads Z |
+| What it puts back | the last entry undo took back, by running the command again |
+| An undo | moves the entry it takes back to the redo side, **including one whose entity is gone**: redo then writes nothing either, as the undo did |
+| A new entry | **drops everything that could still be redone.** The history stays one line, not a tree |
+| A commit that is not an entry | leaves the redo side alone. It changes nothing, so there is nothing for a redo to be written over |
+| A number box has focus, and what is typed in it differs from the leaf | **nothing happens.** The typing stays, and so does the redo side |
+| A number box has focus, and what is in it is the leaf's value | the entry is put back, and every box is given its leaf's new value in place, as after an undo |
+| Nothing to put back | nothing happens |
+
+### Rationale
+
+**Both keys, on every platform.** Ctrl+Y is what a Windows user presses and
+Ctrl+Shift+Z is what a macOS or Linux user presses, and the editor takes both
+modifiers everywhere for the reason [§4](#4-what-the-mouse-does-in-the-viewport)
+gives. Cmd+Y is not a macOS habit, but nothing else in the editor wants it, so
+taking it costs nothing and keeps one rule without a platform branch.
+
+**A new entry drops the redo side, because the alternative writes a value the
+user did not choose.** Commit A, undo it, commit B, redo: if A were still there,
+redo would write A over B. Keeping it is a branching history, which is a history
+panel's feature and waits for one.
+
+**Only an entry drops it.** Letting go of a box after an undo commits the value
+the undo left there, which is not an entry by [§8](#8-what-ctrlz-takes-back)'s
+rule. If that commit dropped the redo side, clicking away after Ctrl+Z would
+silently make Ctrl+Y do nothing.
+
+**Typing in the focused box holds redo back.** Typing is the start of a new
+edit that has not been committed. Committed, it would drop the redo side; not
+yet committed, it is still the newest thing the user did, and a redo that put an
+older value into the box would throw the typing away. Doing nothing loses
+nothing, and Ctrl+Z, which takes the typing back, makes redo reachable again.
+
+**Bevy's text input leaves both keys alone.** `on_focused_keyboard_input` in
+`bevy_ui_widgets` 0.19.1 inserts a character only with no modifier or with
+Shift alone, and has no arm for Ctrl+Y or Ctrl+Shift+Z, so both propagate as
+Ctrl+Z does.
+
+### Rejected options
+
+**Only Ctrl or Cmd with Shift and Z.** The smallest rule, and turned down: to a
+Windows user Ctrl+Y is redo, and a redo key that does nothing looks broken.
+
+**The keys as Unity binds them per platform**, Ctrl+Y and Ctrl+Shift+Z on
+Windows and Linux and only Cmd+Shift+Z on macOS. It needs a
+`cfg(target_os)` branch, and the tests run on one platform, so the branch they
+do not run on is one nobody would see break.
+
+**Throwing the typing away and redoing.** The key would always do something
+visible, but what it does first is discard what the user typed.
+
+**Committing the typing and then redoing.** The commit is a new entry, which
+drops the redo side, so the key would write the typed value and then redo
+nothing: a write the user did not ask for.
+
+**A branching history.** Out of scope for the reason above.
+
+### Accepted risk
+
+**Ctrl+Y in a box with something typed does nothing.** Row 4: the user sees the
+key do nothing, and Ctrl+Z or Enter gets them out of it.
+
+**Typing that Ctrl+Z took back cannot be put back.** Only entries are on the
+redo side, and what was typed was never an entry. Row 4, and bounded by what one
+box holds, as [§8](#8-what-ctrlz-takes-back) accepts for its undo.
+
+**When `bevy_text` implements undo, its box may take the redo keys for
+itself**, as [§8](#8-what-ctrlz-takes-back) accepts for Ctrl+Z, and the same
+deferral in [open-questions.md §1](./open-questions.md) covers it.
