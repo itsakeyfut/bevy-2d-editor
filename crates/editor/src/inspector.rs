@@ -804,8 +804,8 @@ impl EditorCommand for SetLeaf {
 /// `unwrap_or(leaf)`, and
 /// `ctrl_z_in_a_box_holding_what_is_not_a_number_takes_back_the_typing`
 /// fails. Mutation: count every such text as typed, and
-/// `an_undo_to_a_value_the_box_cannot_hold_is_not_written_over` fails, because
-/// Ctrl+Z in the empty box never reaches the history.
+/// `ctrl_z_in_a_box_left_empty_by_a_long_value_reaches_the_history` fails,
+/// because Ctrl+Z in the empty box never reaches the history.
 pub(crate) fn typing_in_focus(world: &World) -> Option<(Entity, f32)> {
     let inner = world.resource::<InputFocus>().get()?;
     let target = world
@@ -920,7 +920,7 @@ fn put_in_box(world: &mut World, inner: Entity, value: f32) {
 /// go, found by review. An empty box writes nothing when it is let go.
 ///
 /// **This is also what "typed" is measured against**, in
-/// [`take_back_typing`]: a box whose text is not this holds something the
+/// [`typing_in_focus`]: a box whose text is not this holds something the
 /// panel did not put there. One rule for both, so that the text Ctrl+Z puts
 /// back is never itself taken for typing, which would leave the key taking
 /// back the same nothing for ever.
@@ -3150,7 +3150,7 @@ mod tests {
     /// Ctrl+Z puts the box back to ten. Letting go afterwards commits ten over
     /// ten, which is nothing.
     ///
-    /// Mutation: answer `false` always from `take_back_typing`, and this fails
+    /// Mutation: answer `None` always from `typing_in_focus`, and this fails
     /// with the commit of ten taken back instead.
     #[test]
     fn ctrl_z_in_a_box_takes_back_what_was_typed_and_not_the_last_commit() {
@@ -3187,7 +3187,7 @@ mod tests {
     /// parse. It is still typing the user has not committed, so it is what
     /// Ctrl+Z takes back.
     ///
-    /// Mutation: in `take_back_typing`, parse with `unwrap_or(leaf)` so that
+    /// Mutation: in `typing_in_focus`, parse with `unwrap_or(leaf)` so that
     /// text which does not parse counts as the leaf, and this fails with the
     /// commit of ten taken back instead.
     #[test]
@@ -3318,7 +3318,7 @@ mod tests {
     /// Ctrl+Z put back the same nothing every time it was pressed, and never
     /// reach the commit on `x`.
     ///
-    /// Mutation: in `take_back_typing`, count every text that is not a number
+    /// Mutation: in `typing_in_focus`, count every text that is not a number
     /// as typed, and this fails with `x` still at three.
     #[test]
     fn ctrl_z_in_a_box_left_empty_by_a_long_value_reaches_the_history() {
