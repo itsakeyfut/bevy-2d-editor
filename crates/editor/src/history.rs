@@ -143,7 +143,6 @@ impl Plugin for HistoryPlugin {
 /// how `bevy_ui_widgets` reads Ctrl+A, C, X and V inside the box, and one
 /// window should not have two rules.
 ///
-/// Mutation: drop the `Super` keys, and `cmd_z_is_undo_as_ctrl_z_is` fails.
 /// Mutation: drop the Shift check, and `ctrl_shift_z_is_not_undo` fails.
 /// Mutation: read `KeyCode::KeyZ` in place of the letter, and
 /// `undo_is_the_key_that_says_z_wherever_it_is` fails.
@@ -161,17 +160,8 @@ fn take_back(
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
 ) {
-    let z = letters
-        .get_just_pressed()
-        .any(|key| matches!(key, Key::Character(letter) if letter.eq_ignore_ascii_case("z")));
-    let command = keys.any_pressed([
-        KeyCode::ControlLeft,
-        KeyCode::ControlRight,
-        KeyCode::SuperLeft,
-        KeyCode::SuperRight,
-    ]);
-    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    if !(z && command) || shift {
+    let (command, shift) = command_and_shift(&keys);
+    if !(just_pressed_letter(&letters, "z") && command) || shift {
         return;
     }
     commands.queue(|world: &mut World| {
@@ -204,9 +194,8 @@ fn take_back(
 ///
 /// Mutation: stop requiring Ctrl or Cmd, and
 /// `y_without_ctrl_or_cmd_is_not_redo` fails. Mutation: drop the Shift and Z
-/// arm, and `ctrl_shift_z_is_redo_as_ctrl_y_is` fails. Mutation: drop the `Super` keys, and `cmd_y_is_redo_as_ctrl_y_is`
-/// fails. Mutation: drop the Shift check on Y, and `ctrl_shift_y_is_not_redo`
-/// fails.
+/// arm, and `ctrl_shift_z_is_redo_as_ctrl_y_is` fails. Mutation: drop the
+/// Shift check on Y, and `ctrl_shift_y_is_not_redo` fails.
 ///
 /// # Not while something is typed
 ///
@@ -221,18 +210,8 @@ fn put_back(
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
 ) {
-    let pressed = |wanted: &str| {
-        letters
-            .get_just_pressed()
-            .any(|key| matches!(key, Key::Character(letter) if letter.eq_ignore_ascii_case(wanted)))
-    };
-    let command = keys.any_pressed([
-        KeyCode::ControlLeft,
-        KeyCode::ControlRight,
-        KeyCode::SuperLeft,
-        KeyCode::SuperRight,
-    ]);
-    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let (command, shift) = command_and_shift(&keys);
+    let pressed = |letter| just_pressed_letter(&letters, letter);
     if !(command && ((pressed("y") && !shift) || (pressed("z") && shift))) {
         return;
     }
@@ -244,4 +223,31 @@ fn put_back(
             inspector::show_values_in_place(world);
         }
     });
+}
+
+/// Whether Ctrl or Cmd is held, and whether Shift is, as undo and redo both
+/// read them.
+///
+/// Ctrl and Cmd count alike on every platform, for the reason
+/// `docs/specs/ui.md` §4 takes both for the selection.
+///
+/// Mutation: drop the `Super` keys, and `cmd_z_is_undo_as_ctrl_z_is` and
+/// `cmd_y_is_redo_as_ctrl_y_is` fail.
+fn command_and_shift(keys: &ButtonInput<KeyCode>) -> (bool, bool) {
+    let command = keys.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ]);
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    (command, shift)
+}
+
+/// Whether the key that produces `letter` went down this frame, wherever it
+/// sits on the keyboard.
+fn just_pressed_letter(letters: &ButtonInput<Key>, letter: &str) -> bool {
+    letters
+        .get_just_pressed()
+        .any(|key| matches!(key, Key::Character(pressed) if pressed.eq_ignore_ascii_case(letter)))
 }
