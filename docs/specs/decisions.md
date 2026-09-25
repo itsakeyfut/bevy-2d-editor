@@ -55,6 +55,7 @@ Quotations are left in the language of their source.
 | What the inspector shows: every component, named through reflection and opened into the values it carries | [ui.md §6](./ui.md) |
 | What the inspector can edit: an `f32` leaf, typed into a box and committed on Enter | [ui.md §7](./ui.md) |
 | What Ctrl+Z takes back: the last committed number, or what is typed in the focused box | [ui.md §8](./ui.md) |
+| What redo puts back: the last entry undo took back, on Ctrl/Cmd+Y and Ctrl/Cmd+Shift+Z, dropped by a new entry | [ui.md §9](./ui.md) |
 | Tilemaps ride on Bevy's own `TilemapChunk` | [level-editor.md §2](./level-editor.md) |
 | Colliders: a physics-neutral shape, avian2d behind a default-on feature | [level-editor.md §3](./level-editor.md) |
 | Sprite animation | [level-editor.md §4](./level-editor.md) |
@@ -99,6 +100,7 @@ Quotations are left in the language of their source.
 | Inspector | **every component on the entity**, sorted by name, each opened into one line per field with the value as its `Debug` text ([ui.md §6](./ui.md)) |
 | Editing in the inspector | **`f32` leaves only**, one box each, committed on Enter or focus loss, written to the component through a command in the history ([ui.md §7](./ui.md)) |
 | Undo | **Ctrl/Cmd+Z over one history of commands**, taking back what is typed in a focused box before the history ([ui.md §8](./ui.md)) |
+| Redo | **Ctrl/Cmd+Y and Ctrl/Cmd+Shift+Z**, a history that stays one line, held back while a focused box has typing in it ([ui.md §9](./ui.md)) |
 | Aseprite | an external authoring tool |
 | Blender | an external 3D authoring tool |
 | Tilemap | **Bevy's own `TilemapChunk`**, no third-party crate |

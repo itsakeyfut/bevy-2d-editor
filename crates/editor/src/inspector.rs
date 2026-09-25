@@ -780,13 +780,16 @@ impl EditorCommand for SetLeaf {
     }
 }
 
-/// Take back what is typed in the focused box, and say whether there was any.
+/// The focused box, and its leaf's value, when what is typed in it is not
+/// that value.
 ///
 /// "Typed" is decided by comparing the box's text with the leaf: the leaf is
 /// what the last commit wrote, so a box holding a number with other bits
-/// holds something the user has not committed. Put back, the box reads the
-/// leaf again and the history is left alone.
-/// [`docs/specs/ui.md` §8](../../../docs/specs/ui.md) is what this is for.
+/// holds something the user has not committed. Undo takes that back
+/// ([`take_back_typing`]) and redo waits for it; both ask here, so the two
+/// keys cannot disagree about what typing is.
+/// [`docs/specs/ui.md` §8 and §9](../../../docs/specs/ui.md) are what this is
+/// for.
 ///
 /// **A number is compared by its bits and not by its text**, because the text
 /// a commit leaves is the user's own: `10.50` committed is a leaf of `10.5`,
@@ -795,37 +798,37 @@ impl EditorCommand for SetLeaf {
 /// [`shown_for`]**, which is what the panel itself leaves there, so the empty
 /// box a value too long for it is left with is not taken for typing.
 ///
-/// Mutation: answer `false` always, and
+/// Mutation: answer `None` always, and
 /// `ctrl_z_in_a_box_takes_back_what_was_typed_and_not_the_last_commit` fails.
 /// Mutation: count text that does not parse as the leaf, with
 /// `unwrap_or(leaf)`, and
 /// `ctrl_z_in_a_box_holding_what_is_not_a_number_takes_back_the_typing`
 /// fails. Mutation: count every such text as typed, and
-/// `an_undo_to_a_value_the_box_cannot_hold_is_not_written_over` fails, because
-/// Ctrl+Z in the empty box never reaches the history.
-pub(crate) fn take_back_typing(world: &mut World) -> bool {
-    let Some(inner) = world.resource::<InputFocus>().get() else {
-        return false;
-    };
-    let Some(target) = world
+/// `ctrl_z_in_a_box_left_empty_by_a_long_value_reaches_the_history` fails,
+/// because Ctrl+Z in the empty box never reaches the history.
+pub(crate) fn typing_in_focus(world: &World) -> Option<(Entity, f32)> {
+    let inner = world.resource::<InputFocus>().get()?;
+    let target = world
         .get::<ChildOf>(inner)
-        .and_then(|parent| world.get::<Writes>(parent.parent()))
-        .cloned()
-    else {
-        return false;
-    };
-    let (Some(leaf), Some(text)) = (read_leaf(world, &target), world.get::<EditableText>(inner))
-    else {
-        return false;
-    };
+        .and_then(|parent| world.get::<Writes>(parent.parent()))?;
+    let leaf = read_leaf(world, target)?;
+    let text = world.get::<EditableText>(inner)?;
     let written = text.value().to_string();
     let typed = match written.trim().parse::<f32>() {
         Ok(number) => number.to_bits() != leaf.to_bits(),
         Err(_) => written != shown_for(leaf, text),
     };
-    if !typed {
+    typed.then_some((inner, leaf))
+}
+
+/// Take back what is typed in the focused box, and say whether there was any.
+///
+/// Put back, the box reads the leaf again and the history is left alone.
+/// [`typing_in_focus`] decides what counts as typed.
+pub(crate) fn take_back_typing(world: &mut World) -> bool {
+    let Some((inner, leaf)) = typing_in_focus(world) else {
         return false;
-    }
+    };
     put_in_box(world, inner, leaf);
     true
 }
@@ -917,7 +920,7 @@ fn put_in_box(world: &mut World, inner: Entity, value: f32) {
 /// go, found by review. An empty box writes nothing when it is let go.
 ///
 /// **This is also what "typed" is measured against**, in
-/// [`take_back_typing`]: a box whose text is not this holds something the
+/// [`typing_in_focus`]: a box whose text is not this holds something the
 /// panel did not put there. One rule for both, so that the text Ctrl+Z puts
 /// back is never itself taken for typing, which would leave the key taking
 /// back the same nothing for ever.
@@ -969,7 +972,8 @@ fn read_leaf(world: &World, writes: &Writes) -> Option<f32> {
 /// panel is rebuilt from the world the moment focus leaves the box, which is
 /// where the user finds out. Nothing in the editor can reach it today, because
 /// nothing removes a component. **It is also what an undo does when the entity
-/// is gone**: nothing is written, the entry is used up, and `Entity`'s
+/// is gone**, and a redo after it: nothing is written, the entry moves between
+/// the two sides of the history as any other does, and `Entity`'s
 /// generation means a reused index is never written to by mistake. Issue #55 is
 /// what makes a deletion undoable without that.
 ///
@@ -3147,7 +3151,7 @@ mod tests {
     /// Ctrl+Z puts the box back to ten. Letting go afterwards commits ten over
     /// ten, which is nothing.
     ///
-    /// Mutation: answer `false` always from `take_back_typing`, and this fails
+    /// Mutation: answer `None` always from `typing_in_focus`, and this fails
     /// with the commit of ten taken back instead.
     #[test]
     fn ctrl_z_in_a_box_takes_back_what_was_typed_and_not_the_last_commit() {
@@ -3184,7 +3188,7 @@ mod tests {
     /// parse. It is still typing the user has not committed, so it is what
     /// Ctrl+Z takes back.
     ///
-    /// Mutation: in `take_back_typing`, parse with `unwrap_or(leaf)` so that
+    /// Mutation: in `typing_in_focus`, parse with `unwrap_or(leaf)` so that
     /// text which does not parse counts as the leaf, and this fails with the
     /// commit of ten taken back instead.
     #[test]
@@ -3315,7 +3319,7 @@ mod tests {
     /// Ctrl+Z put back the same nothing every time it was pressed, and never
     /// reach the commit on `x`.
     ///
-    /// Mutation: in `take_back_typing`, count every text that is not a number
+    /// Mutation: in `typing_in_focus`, count every text that is not a number
     /// as typed, and this fails with `x` still at three.
     #[test]
     fn ctrl_z_in_a_box_left_empty_by_a_long_value_reaches_the_history() {
@@ -3498,8 +3502,8 @@ mod tests {
     /// panic.
     ///
     /// Nothing in the editor despawns an editable entity yet; this does it by
-    /// hand. `docs/specs/ui.md` §8 decided the entry is used up, and issue
-    /// #55 is what makes a deletion undoable.
+    /// hand. `docs/specs/ui.md` §8 decided nothing is written, and issue #55
+    /// is what makes a deletion undoable.
     ///
     /// Mutation: `expect` the `get_reflect_mut` in `write_leaf`, and this
     /// panics.
@@ -3584,5 +3588,449 @@ mod tests {
             0.0,
             "the key that says z did not undo"
         );
+    }
+
+    /// Ctrl+Y, as a user on a US layout presses it.
+    fn redo(app: &mut App) {
+        press_with(app, &[KeyCode::ControlLeft], KeyCode::KeyY, "y");
+    }
+
+    /// Redo puts back the commit undo took back, and the box shows it.
+    ///
+    /// Mutation: return before calling `execute` in `History::redo`, and this
+    /// fails holding the undone value. Mutation: drop the `undone.push` in
+    /// `History::undo`, and it fails the same way, because there is nothing
+    /// to redo.
+    #[test]
+    fn redo_puts_back_the_commit_undo_took_back_and_the_box_shows_it() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        undo(&mut app);
+        assert_eq!(translation(&app, middle).y, 0.0, "the undo did not land");
+
+        redo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "Ctrl+Y did not put back the commit"
+        );
+        let line = line_of(&mut app, "Transform", 0);
+        assert_eq!(
+            numbers_on(&mut app, line),
+            ["0", "10", "0"],
+            "the row does not show what the redo put back"
+        );
+    }
+
+    /// Redo with nothing undone changes nothing, and does not panic.
+    ///
+    /// There is a commit in the history, so a redo that reached for the wrong
+    /// side would find something to write.
+    ///
+    /// Mutation: `expect` the `pop` in `History::redo`, and this panics.
+    #[test]
+    fn redo_with_nothing_undone_changes_nothing() {
+        let mut app = inspector_editor();
+        select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        let before: Vec<Transform> = app
+            .world_mut()
+            .query::<&Transform>()
+            .iter(app.world())
+            .copied()
+            .collect();
+
+        redo(&mut app);
+
+        let after: Vec<Transform> = app
+            .world_mut()
+            .query::<&Transform>()
+            .iter(app.world())
+            .copied()
+            .collect();
+        assert_eq!(before, after, "a redo with nothing to redo moved something");
+    }
+
+    /// A new commit after an undo leaves nothing to redo.
+    ///
+    /// Ten is committed and taken back, and twenty is committed in its place.
+    /// A redo that still held ten would write it over twenty, a value the user
+    /// did not choose: row 6. `docs/specs/ui.md` §9 has why the history stays
+    /// one line.
+    ///
+    /// Mutation: leave out the `clear` in `History::record`, and this fails
+    /// with ten written over twenty.
+    #[test]
+    fn a_new_commit_after_an_undo_leaves_nothing_to_redo() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        undo(&mut app);
+        commit_translation(&mut app, 1, "20");
+
+        redo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            20.0,
+            "the redo put back a commit the new one had replaced"
+        );
+    }
+
+    /// Two undos come back in order under two redos.
+    ///
+    /// `x` and then `y` are committed and both taken back, so the first redo
+    /// has to put back `x`, the one undone last.
+    ///
+    /// Mutation: `remove(0)` in place of `pop()` in `History::redo`, and this
+    /// fails on the first redo.
+    #[test]
+    fn two_undos_come_back_in_order_under_two_redos() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 0, "10");
+        commit_translation(&mut app, 1, "20");
+        undo(&mut app);
+        undo(&mut app);
+        assert_eq!(
+            translation(&app, middle),
+            Vec3::ZERO,
+            "the undos did not land"
+        );
+
+        redo(&mut app);
+        assert_eq!(
+            translation(&app, middle),
+            Vec3::new(10.0, 0.0, 0.0),
+            "the first redo did not put back the first commit"
+        );
+        redo(&mut app);
+        assert_eq!(
+            translation(&app, middle),
+            Vec3::new(10.0, 20.0, 0.0),
+            "the second redo did not put back the second commit"
+        );
+    }
+
+    /// Letting go of a box after an undo leaves the redo in place.
+    ///
+    /// The focus goes into the box with nothing typed and Ctrl+Z takes back
+    /// the commit, which gives the box the undone value. Letting go commits
+    /// that value over itself, which is not an entry, so the redo side
+    /// survives it. If it did not, clicking away after Ctrl+Z would make
+    /// Ctrl+Y do nothing.
+    ///
+    /// Mutation: drop the bits comparison in `SetLeaf::read`, and this fails
+    /// with the commit not put back, because letting go became an entry.
+    #[test]
+    fn letting_go_of_a_box_after_an_undo_leaves_the_redo_in_place() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        focus(&mut app, cell);
+        undo(&mut app);
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+        assert_eq!(translation(&app, middle).y, 0.0, "the undo did not land");
+
+        redo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "letting go of the box dropped what could be redone"
+        );
+    }
+
+    /// Letting go of a box and pressing Ctrl+Y in one frame does not redo
+    /// under the commit letting go makes.
+    ///
+    /// Five is committed and taken back, and seven is typed. The press on
+    /// empty space and Ctrl+Y land in one frame. Letting go commits seven,
+    /// which drops the redo side, so the redo finds nothing. Had the redo run
+    /// first, five would be put back and seven committed over it, and the next
+    /// Ctrl+Z would stop at five: an entry the user never made.
+    ///
+    /// Written as one frame by hand, per RK-014.
+    ///
+    /// Mutation: add `put_back` to `Update` instead of after
+    /// `FocusChangeEvents`, and this fails with the undo stopping at five.
+    #[test]
+    fn letting_go_of_a_box_and_pressing_ctrl_y_in_one_frame_does_not_redo_under_the_commit() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "5");
+        undo(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "7");
+        focus(&mut app, cell);
+
+        let empty = in_window(Vec2::new(0.0, 200.0));
+        write_input(&mut app, empty, PointerAction::Move { delta: Vec2::ONE });
+        app.update();
+        app.update();
+        hold_key(&mut app, KeyCode::ControlLeft);
+        hold_letter(&mut app, KeyCode::KeyY, "y");
+        write_input(
+            &mut app,
+            empty,
+            PointerAction::Press(PointerButton::Primary),
+        );
+        app.update();
+        write_input(
+            &mut app,
+            empty,
+            PointerAction::Release(PointerButton::Primary),
+        );
+        release_letter(&mut app, KeyCode::KeyY, "y");
+        release_key(&mut app, KeyCode::ControlLeft);
+        app.update();
+        app.update();
+        assert_eq!(
+            translation(&app, middle).y,
+            7.0,
+            "letting go did not commit seven"
+        );
+
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            0.0,
+            "the redo ran before the commit it was pressed with"
+        );
+    }
+
+    /// Redo does nothing while the focused box holds typing, and the typing
+    /// stays.
+    ///
+    /// Ten is committed and taken back, and ninety nine is typed. Ctrl+Y
+    /// leaves both alone. Ctrl+Z then takes the typing back, and Ctrl+Y puts
+    /// back ten, because the redo side was kept. `docs/specs/ui.md` §9 has
+    /// why.
+    ///
+    /// Mutation: drop the `typing_in_focus` check in `put_back`, and this
+    /// fails with ten put back over the typing.
+    #[test]
+    fn redo_does_nothing_while_the_focused_box_holds_typing() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        undo(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "99");
+        focus(&mut app, cell);
+        redo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            0.0,
+            "Ctrl+Y redid while something was typed"
+        );
+        assert_eq!(text_in(&app, cell), "99", "Ctrl+Y threw the typing away");
+
+        undo(&mut app);
+        redo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "the redo side did not survive the typing"
+        );
+    }
+
+    /// Ctrl+Y in a box with nothing typed reaches the history, and the box
+    /// follows it.
+    ///
+    /// Enter commits without the focus leaving, so the box is still focused
+    /// through the undo and the redo, and its text is only right because
+    /// `show_values_in_place` was called. Letting go afterwards then commits
+    /// ten over ten.
+    ///
+    /// **This is also the test that reports Bevy's own text undo arriving**,
+    /// if its box starts taking Ctrl+Y for itself. `docs/specs/ui.md` §9's
+    /// last accepted risk is that.
+    ///
+    /// Mutation: in `put_back`, redo only when `typing_in_focus` finds
+    /// something, and this fails with the commit not put back. Mutation: do
+    /// not call `show_values_in_place` after the redo, and this fails on the
+    /// box's text.
+    #[test]
+    fn ctrl_y_in_a_box_with_nothing_typed_reaches_the_history() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "10");
+        focus(&mut app, cell);
+        enter(&mut app);
+        undo(&mut app);
+        assert_eq!(translation(&app, middle).y, 0.0, "the undo did not land");
+
+        redo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "Ctrl+Y in the box did not reach the history"
+        );
+        assert_eq!(
+            text_in(&app, cell),
+            "10",
+            "the focused box kept the undone value"
+        );
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "letting go of the box wrote the undone value back"
+        );
+    }
+
+    /// Ctrl+Shift+Z is redo, as Ctrl+Y is.
+    ///
+    /// Mutation: drop the Shift and Z arm in `put_back`, and this fails with
+    /// the commit still taken back.
+    #[test]
+    fn ctrl_shift_z_is_redo_as_ctrl_y_is() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        undo(&mut app);
+
+        press_with(
+            &mut app,
+            &[KeyCode::ControlLeft, KeyCode::ShiftLeft],
+            KeyCode::KeyZ,
+            "Z",
+        );
+
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "Ctrl+Shift+Z did not redo"
+        );
+    }
+
+    /// Cmd+Y is redo, as Ctrl+Y is, on every platform.
+    ///
+    /// Mutation: drop the `Super` keys in `put_back`, and this fails with the
+    /// commit still taken back.
+    #[test]
+    fn cmd_y_is_redo_as_ctrl_y_is() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        undo(&mut app);
+
+        press_with(&mut app, &[KeyCode::SuperLeft], KeyCode::KeyY, "y");
+
+        assert_eq!(translation(&app, middle).y, 10.0, "Cmd+Y did not redo");
+    }
+
+    /// Redo is the key that says Y, wherever it sits.
+    ///
+    /// On a German keyboard the key that produces `y` is where a US keyboard
+    /// has Z, so this presses `KeyCode::KeyZ` producing `y`.
+    ///
+    /// Mutation: read `KeyCode::KeyY` in `put_back` in place of the letter,
+    /// and this fails with the commit still taken back.
+    #[test]
+    fn redo_is_the_key_that_says_y_wherever_it_is() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        undo(&mut app);
+
+        press_with(&mut app, &[KeyCode::ControlLeft], KeyCode::KeyZ, "y");
+
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "the key that says y did not redo"
+        );
+    }
+
+    /// Ctrl+Shift+Y is not redo.
+    ///
+    /// Mutation: drop the Shift check on Y in `put_back`, and this fails with
+    /// the commit put back.
+    #[test]
+    fn ctrl_shift_y_is_not_redo() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        undo(&mut app);
+
+        press_with(
+            &mut app,
+            &[KeyCode::ControlLeft, KeyCode::ShiftLeft],
+            KeyCode::KeyY,
+            "Y",
+        );
+
+        assert_eq!(translation(&app, middle).y, 0.0, "Ctrl+Shift+Y redid");
+    }
+
+    /// An undo after a redo takes the redone commit back, and not the one
+    /// before it.
+    ///
+    /// `x` and then `y` are committed, `y` is taken back and put back again,
+    /// and Ctrl+Z has to take `y` back once more. A redo that did not return
+    /// its entry to the history would leave `y` on screen with nothing
+    /// holding it, and this Ctrl+Z would take back `x` instead.
+    ///
+    /// Mutation: drop the `done.push` in `History::redo`, and this fails with
+    /// `x` taken back and `y` left in place.
+    #[test]
+    fn an_undo_after_a_redo_takes_the_redone_commit_back() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 0, "10");
+        commit_translation(&mut app, 1, "20");
+        undo(&mut app);
+        redo(&mut app);
+        assert_eq!(
+            translation(&app, middle),
+            Vec3::new(10.0, 20.0, 0.0),
+            "the redo did not land"
+        );
+
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle),
+            Vec3::new(10.0, 0.0, 0.0),
+            "the undo after a redo did not take the redone commit back"
+        );
+    }
+
+    /// Y without Ctrl or Cmd is not redo.
+    ///
+    /// Mutation: stop requiring Ctrl or Cmd in `put_back`, and this fails
+    /// with the commit put back.
+    #[test]
+    fn y_without_ctrl_or_cmd_is_not_redo() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        undo(&mut app);
+
+        press_with(&mut app, &[], KeyCode::KeyY, "y");
+
+        assert_eq!(translation(&app, middle).y, 0.0, "Y alone redid");
     }
 }
