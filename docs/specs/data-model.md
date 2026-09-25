@@ -66,10 +66,11 @@ document. A command shaped against no model would be a guess at the model.
 
 **What changes with undo is that the write goes through a command.** Until
 issue #51 the inspector's observer called the write function itself, and this
-section named undo arriving as the condition that ended that. Issue #51 decided
-that the observer hands a command to the history instead, and that the command
-reads the value it is about to replace before it writes. **Decided and not yet
-built**: until #51 merges, the observer still writes directly.
+section named undo arriving as the condition that ended that. Since issue #51
+the observer hands a command to the history instead, `SetLeaf` in
+`crates/editor/src/inspector.rs`, and the command reads the value it is about
+to replace before it writes. The trait and the history are
+`crates/editor/src/history.rs`.
 
 The trait and the history live in `crates/editor`, because the history is
 editor state and every writer that will go through it, the gizmos included, is

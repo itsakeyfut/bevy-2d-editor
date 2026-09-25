@@ -93,19 +93,49 @@ fn primary_window(app: &mut App) -> Entity {
 /// clears only what was just pressed and just released, so one message holds
 /// for the six updates [`click_at`] runs.
 pub(crate) fn hold_key(app: &mut App, key: KeyCode) {
-    write_key(app, key, ButtonState::Pressed);
+    write_key(app, key, UNIDENTIFIED, ButtonState::Pressed);
 }
 
 /// Let a key back up.
 pub(crate) fn release_key(app: &mut App, key: KeyCode) {
-    write_key(app, key, ButtonState::Released);
+    write_key(app, key, UNIDENTIFIED, ButtonState::Released);
 }
+
+/// Hold a key down that produces a letter, and leave it down.
+///
+/// The key and the letter are given separately because a layout decides the
+/// second from the first, and the undo key is read by the letter: a French
+/// keyboard's Z is where a US keyboard's W is, and
+/// `undo_is_the_key_that_says_z_wherever_it_is` writes exactly that pair.
+pub(crate) fn hold_letter(app: &mut App, key: KeyCode, letter: &str) {
+    write_key(
+        app,
+        key,
+        Key::Character(letter.into()),
+        ButtonState::Pressed,
+    );
+}
+
+/// Let a key that produces a letter back up.
+pub(crate) fn release_letter(app: &mut App, key: KeyCode, letter: &str) {
+    write_key(
+        app,
+        key,
+        Key::Character(letter.into()),
+        ButtonState::Released,
+    );
+}
+
+/// What a key that produces no letter reports as its logical key.
+const UNIDENTIFIED: Key = Key::Unidentified(NativeKey::Unidentified);
 
 /// Write one keyboard input for the primary window.
 ///
-/// `logical_key` is left unidentified rather than given what a layout would
-/// produce, because nothing here reads `ButtonInput<Key>`; saying so is cheaper
-/// than a table of layouts nothing consults. `window` is required by the
+/// `logical_key` is what the caller says, and [`hold_key`] leaves it
+/// unidentified rather than giving it what a layout would produce: the
+/// modifiers are read by `KeyCode`, and a table of layouts nothing consults
+/// would say nothing. The undo key is the one thing read by its letter, and
+/// [`hold_letter`] is how a test names it. `window` is required by the
 /// message and read by nobody on this path: `keyboard_input_system` takes
 /// `key_code`, `logical_key` and `state` and ignores the rest, so a key cannot
 /// be aimed at one window rather than another.
@@ -115,11 +145,11 @@ pub(crate) fn release_key(app: &mut App, key: KeyCode) {
 /// reads anything runs one; a trailing [`release_key`] before an assertion does
 /// not, and does not need to. An `app.update()` was here and nothing in the
 /// workspace failed without it.
-fn write_key(app: &mut App, key: KeyCode, state: ButtonState) {
+fn write_key(app: &mut App, key: KeyCode, logical_key: Key, state: ButtonState) {
     let window = primary_window(app);
     app.world_mut().write_message(KeyboardInput {
         key_code: key,
-        logical_key: Key::Unidentified(NativeKey::Unidentified),
+        logical_key,
         state,
         text: None,
         repeat: false,

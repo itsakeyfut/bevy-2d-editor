@@ -688,10 +688,10 @@ the panel is editable.
 | The name beside it | the leaf's own name through reflection, `x`, `y`, `z`, `w`, dimmed, drawn by this project rather than by the widget |
 | What commits | **Enter, or the box losing focus.** Typing moves nothing |
 | A value that does not parse | **nothing is written.** The box keeps the typed text until it loses focus, and the real value comes back with the rebuild that follows |
-| Where the write lands | one `f32` leaf, of one field, of one component, on the active entity, through `World::get_reflect_mut` |
+| Where the write lands | one `f32` leaf, of one field, of one component, on the active entity, through `World::get_reflect_mut`, as a command the history holds ([data-model.md §1](./data-model.md)) |
 | While a box has focus | **the panel is not rebuilt**, so the box survives the value it just changed, and for one frame after the focus leaves, so that it survives its own commit. [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) |
 | More than one entity selected | only the active entity, which is the one the header names and, since §4, the front-most of the group |
-| Taking it back | **Ctrl+Z, decided in [§8](#8-what-ctrlz-takes-back) and not yet built.** Until issue #51 merges, typing the old number back is what there is |
+| Taking it back | **Ctrl+Z**, which [§8](#8-what-ctrlz-takes-back) decides |
 
 ### Rationale
 
@@ -757,10 +757,12 @@ already does. It comes back when somebody asks for it.
 
 ### Accepted risk
 
-**An edit cannot be taken back.** Undo is later in the same phase. What this
-costs is retyping a number that is on screen the whole time: row 4. What would
-make it row 6 is a write the user does not see happening, and the only write
-there is happens in a box they are looking at, on the entity the header names.
+~~**An edit cannot be taken back.**~~ **Retired by issue #51**, which made
+Ctrl+Z take a commit back ([§8](#8-what-ctrlz-takes-back)). What it cost while
+it stood was retyping a number that was on screen the whole time: row 4. What
+would have made it row 6 is a write the user does not see happening, and the
+only write there is happens in a box they are looking at, on the entity the
+header names; that part still holds.
 
 **A value something else recomputes can be typed into.** `Aabb`'s centre is a
 struct of `f32` like any other, so the panel lets it be edited; the edit lands,
@@ -806,8 +808,11 @@ is the value the undo restored.
 
 ## 8. What Ctrl+Z takes back
 
-**Decided on issue #51, and not yet built.** Until that issue merges, nothing
-in this section is what the code does.
+Decided on issue #51, and built by it: `take_back` in
+`crates/editor/src/history.rs` reads the key, and `take_back_typing` and
+`show_values_in_place` in `crates/editor/src/inspector.rs` are what it asks of
+the panel. Each row below is held by a test named in those functions' doc
+comments.
 
 ### Decision
 
@@ -853,8 +858,19 @@ skips it.** `number_input_on_update` in `bevy_feathers` does nothing to the box
 that has focus. Left alone, that box keeps the value from before the undo, and
 the commit it makes when it is let go writes that value back over the undo.
 The text is replaced the way `bevy_feathers` itself replaces it, with
-`TextEdit::SelectAll` and then `TextEdit::Insert`. The other boxes get
-`UpdateNumberInput`. Neither despawns anything, so
+`TextEdit::SelectAll` and then `TextEdit::Insert`, **and applied in the same
+frame** rather than left for the engine to apply in the next one: the next
+frame's keys reach the box before that, so Enter pressed right after Ctrl+Z
+would commit the text from before it. A review found that path putting a value
+the user had taken back into the history. The other boxes get
+`UpdateNumberInput`.
+
+**A value the box cannot hold leaves it empty.** `f32` prints without an
+exponent, so `1e20` is more characters than the box takes, and the engine
+refuses the insert whole. The panel already draws such a box empty; an undo
+does the same, because a box left holding the old text would write it back
+when it is let go, and an empty box writes nothing. The same rule decides what
+counts as typing, so that empty box is not taken for something the user typed. Neither despawns anything, so
 [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)
 still holds: the panel is not rebuilt while the user is in it.
 

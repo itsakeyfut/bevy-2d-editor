@@ -97,8 +97,8 @@ Quotations are left in the language of their source.
 | UI implementation reference | **Jackdaw**, for how to build it in Rust |
 | UI stack | **Bevy UI + `bevy_feathers`** ([ui.md §3](./ui.md)) |
 | Inspector | **every component on the entity**, sorted by name, each opened into one line per field with the value as its `Debug` text ([ui.md §6](./ui.md)) |
-| Editing in the inspector | **`f32` leaves only**, one box each, committed on Enter or focus loss, written straight to the component until undo arrives ([ui.md §7](./ui.md)) |
-| Undo | **Ctrl/Cmd+Z over one history of commands**, taking back what is typed in a focused box before the history ([ui.md §8](./ui.md)); decided, not yet built |
+| Editing in the inspector | **`f32` leaves only**, one box each, committed on Enter or focus loss, written to the component through a command in the history ([ui.md §7](./ui.md)) |
+| Undo | **Ctrl/Cmd+Z over one history of commands**, taking back what is typed in a focused box before the history ([ui.md §8](./ui.md)) |
 | Aseprite | an external authoring tool |
 | Blender | an external 3D authoring tool |
 | Tilemap | **Bevy's own `TilemapChunk`**, no third-party crate |
