@@ -72,6 +72,31 @@ pub(crate) fn click_at(app: &mut App, position: Vec2, button: PointerButton) {
     }
 }
 
+/// Press at one place and let go at another, a frame apart.
+pub(crate) fn press_then_release(app: &mut App, press: Vec2, release: Vec2) {
+    press_and_hold(app, press, release);
+    write_input(app, release, PointerAction::Release(PointerButton::Primary));
+    app.update();
+    app.update();
+}
+
+/// Press at one place, move to another, and keep the button down.
+///
+/// The half of a box drag or a move a test can look at while it is
+/// happening. Two moves and a press rather than one of each, because
+/// `bevy_picking` turns a press into a drag on the first move after it.
+pub(crate) fn press_and_hold(app: &mut App, press: Vec2, to: Vec2) {
+    for (position, action) in [
+        (press, PointerAction::Move { delta: Vec2::ONE }),
+        (press, PointerAction::Press(PointerButton::Primary)),
+        (to, PointerAction::Move { delta: Vec2::ONE }),
+    ] {
+        write_input(app, position, action);
+        app.update();
+        app.update();
+    }
+}
+
 /// The window an input is addressed to.
 ///
 /// The pointer's [`Location`] needs it. The keyboard's message carries it and

@@ -2992,6 +2992,62 @@ mod tests {
         type_and_commit(app, cell, text);
     }
 
+    /// A number the press commits is under the move in the history.
+    ///
+    /// The press that begins a drag takes the focus out of the box, and the
+    /// box commits in `PostUpdate`. When the press and the first move land in
+    /// one frame, the move has already begun by then, so where it began has
+    /// to be read after that commit: one Ctrl+Z after the drag puts the
+    /// entity back to the committed number, not to the one before it.
+    /// `docs/specs/ui.md` §11.
+    ///
+    /// The press and the first move are written in one batch, per RK-014: a
+    /// frame apart, the commit lands first whichever way `from` is read. That
+    /// batch reads the press where the move ended, because `remember` reads
+    /// the viewport's pointer after the whole batch, so the first move stays
+    /// on the placeholder and carries it nowhere; the second, a frame later,
+    /// is the one that moves it twenty.
+    ///
+    /// Mutation: fill `Held::from` in `moving::start`, which runs in
+    /// `PreUpdate`, rather than in `follow`, and this fails holding zero.
+    #[test]
+    fn a_number_the_press_commits_is_under_the_move_in_the_history() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[0];
+        type_into(&mut app, cell, "50");
+        focus(&mut app, cell);
+
+        let press = in_window(Vec2::ZERO);
+        let first = in_window(Vec2::new(20.0, 0.0));
+        let to = in_window(Vec2::new(40.0, 0.0));
+        write_input(&mut app, press, PointerAction::Move { delta: Vec2::ONE });
+        app.update();
+        write_input(
+            &mut app,
+            press,
+            PointerAction::Press(PointerButton::Primary),
+        );
+        write_input(&mut app, first, PointerAction::Move { delta: Vec2::ONE });
+        app.update();
+        app.update();
+        for action in [
+            PointerAction::Move { delta: Vec2::ONE },
+            PointerAction::Release(PointerButton::Primary),
+        ] {
+            write_input(&mut app, to, action);
+            app.update();
+            app.update();
+        }
+        let x = translation(&app, middle).x;
+        assert!((x - 70.0).abs() < 1e-3, "the drag left x at {x}");
+
+        undo(&mut app);
+
+        assert_eq!(translation(&app, middle).x.to_bits(), 50.0_f32.to_bits());
+    }
+
     /// Undoing a commit puts the component back to what it held, bit for bit.
     ///
     /// The value it starts from is `PI` rather than the placeholder's zero,

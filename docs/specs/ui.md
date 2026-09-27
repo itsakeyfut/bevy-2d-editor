@@ -191,7 +191,7 @@ than new.
 | Ctrl or Cmd with the left button, over empty space | Nothing; the selection stays as it was |
 | Left button, dragged from empty space | Draws a box; what it touches becomes the selection |
 | Ctrl or Cmd with the left button, dragged from empty space | Adds what the box touches to what is already selected |
-| Left button, dragged from an entity | Nothing yet, and kept for moving what is selected |
+| Left button, dragged from an entity | Moves what is selected, selecting the entity first when it is not: [§11](#11-dragging-what-is-selected) |
 | Right button | Nothing yet, and kept for a context menu |
 
 Zoom is clamped, from 1/32 to 32 world units per pixel.
@@ -199,6 +199,10 @@ Zoom is clamped, from 1/32 to 32 world units per pixel.
 **Selection happens when the button is released over the same thing it was
 pressed on.** A press that was a mistake is taken back by moving off the entity
 before letting go, which is the ordinary way out of a misclick everywhere else.
+**Withdrawn for a press on an entity, by issue #61**: carried further than
+[§11](#11-dragging-what-is-selected)'s threshold, that press is a move, and
+Ctrl+Z is the way out of it. It still holds for a press on empty space, and
+for a press on an entity that moves less than the threshold.
 Letting go somewhere else leaves the selection exactly as it was, rather than
 selecting what the pointer happened to end up over or clearing what was already
 chosen.
@@ -215,8 +219,8 @@ the editor ever sees it, so a Mac user reaches for Command in any case.
 
 One consequence, stated here rather than left to be discovered: **a plain click
 on one of several selected entities collapses the selection to that one.** Unity
-does the same. The gesture that will want to keep the group is dragging it,
-which belongs to the parent that moves what is selected.
+does the same. The gesture that keeps the group is dragging it,
+[§11](#11-dragging-what-is-selected).
 
 **A box takes what it touches, not what it encloses.** An entity the box
 overlaps by any area is selected, whether or not it fits inside. Unity's Scene
@@ -802,7 +806,11 @@ coming back. Row 6 in miniature, reachable only once a second writer exists,
 and the thing that would close it is a box that knows whether it was edited.
 For undo, [§8](#8-what-ctrlz-takes-back) closes it another way: an undo gives
 the focused box its leaf's new value, so what the box writes when it is let go
-is the value the undo restored.
+is the value the undo restored. **A drag in the viewport is not such a writer**:
+the press that begins it takes the focus, so the box commits before anything
+moves, and [§11](#11-dragging-what-is-selected) reads where the drag began after
+that commit. Something that moves a value without a press, such as a key that
+nudges what is selected, would be.
 
 ---
 
@@ -1139,3 +1147,114 @@ written, and the user can see Ctrl+Y do nothing.
 ordered before the undo key is read. Without that line the two are unordered
 rather than reversed, so the test that holds it catches the order the schedule
 happens to pick.
+
+---
+
+## 11. Dragging what is selected
+
+Decided on issue #61, and built by it: `grab` in
+`crates/editor/src/selection.rs` decides what a drag from an entity moves, and
+`crates/editor/src/moving.rs` moves it and records it. Each row below is held by
+a test named in those functions' doc comments.
+
+It extends [§4](#4-what-the-mouse-does-in-the-viewport), whose table reserved
+the gesture, and [§8](#8-what-ctrlz-takes-back) to
+[§10](#10-a-change-of-selection-is-an-entry), whose history it writes through.
+
+### Decision
+
+| | |
+| --- | --- |
+| What is grabbed | **the entity's body.** There are no handles in this change; the first handle is the rotate handle, issue #62, which also decides whether the handles are shown at once or chosen from a tool |
+| When a press becomes a move | **once the pointer has gone more than 4 logical pixels from the press.** Under that, it is a click |
+| The entity pressed is selected | everything selected moves, with or without the modifier, and the selection stays as it is |
+| The entity pressed is not selected | it becomes the selection and it moves. With the modifier held, it is added to the selection and everything selected moves |
+| How it moves | by the world distance under the pointer, at any zoom, in x and y. `z`, rotation and scale are left alone |
+| While it moves | the entities are written every frame, so the sprite, the outline and the inspector follow the pointer |
+| What the history gets | **one entry, when the button is let go**, recorded through `History::record`. A selection the drag made is its own entry, below the move |
+| A drag that ends where it began | not an entry |
+| Ctrl+Z or redo while dragging | nothing happens |
+| A drag whose release never arrives | recorded at the next press |
+| Where a drag begins, for the undo | **read after the frame's focus changes**, so a number the press committed is under the move |
+
+### Rationale
+
+**A threshold, because the engine has none.** `bevy_picking` 0.19.1 begins a
+drag on the first move after a press, however small, and on release sends
+`Click` to what was pressed whether or not it was dragged. Without one, a click
+with a pixel of jitter moves the sprite and records an entry, and a drag on one
+of several selected ends in a click that collapses the selection to that one.
+Measured on the screen rather than in the world, so it means the same thing at
+every zoom. Four is chosen, not measured.
+
+**The entities are written live and recorded once.** `History::record` executes
+the command it is given; the drag has already put every entity where the
+command says, so that first `execute` writes what is there and changes nothing.
+That keeps `record` the only way into the history, which
+[§10](#10-a-change-of-selection-is-an-entry) held for the selection.
+
+**Where the drag began is read late in the frame.** The press takes the focus
+out of a number box, which commits in `PostUpdate`. When the press and the first
+move land in one frame, the move has begun before that commit. Read then, the
+start would be the number from before the commit, and undoing the move would
+write it over the commit: a value the user typed, gone, with nothing on screen
+to say so.
+
+**Dragging an unselected entity selects it**, as Unity does, so moving one
+thing is one gesture. The selection it makes goes through the same path as a
+click's and is recorded first, so undo takes back the move and then the
+selection, in the reverse of the order they happened.
+
+**Undo waits for the drag.** An older position written in the middle of a drag
+is written over by the drag's next frame, so the key would do nothing visible
+and the entry it took back would then be dropped by the drag's own.
+
+### Rejected options
+
+**The body and axis handles, as Unity's Move tool.** Handle hit testing and a
+way to switch tools, in the same change as the history's first writer from the
+viewport. The first handle is #62's.
+
+**A handle only.** It leaves the gesture
+[§4](#4-what-the-mouse-does-in-the-viewport) reserved unused.
+
+**Only what is selected moves.** Moving one thing would take a click and then a
+drag.
+
+**A second way into `History`** that records a command as already done. Turned
+down for the selection in [§10](#10-a-change-of-selection-is-an-entry), and
+nothing is different here.
+
+**A preview that writes nothing until the release.** The sprite, the outline
+and the inspector would stand still while the user drags.
+
+**Putting the entities back where they began before recording**, so that
+`execute` does the moving. It cannot be told apart from not doing it, so no
+test could fail when it is removed.
+
+**No threshold.** A click's jitter would move the sprite and record an entry: a
+shift of a pixel or two that can be saved without anybody noticing, which is
+row 6 leaning.
+
+**A threshold in world units.** Too small zoomed out and too large zoomed in.
+
+### Accepted risk
+
+**A drag cannot carry an entity past the edge of the viewport.** The pointer is
+read clamped to what the viewport shows, for the reason
+[§4](#4-what-the-mouse-does-in-the-viewport) gives for the box. Row 4.
+
+**A press and a move that land in one frame lose that first move.** The press
+is read where the pointer is after the whole frame's input, so the entity does
+not follow that first step and trails the pointer by it for the rest of the
+drag. The box has the same property. Row 4, and only on a long frame.
+
+**The inspector rebuilds on every frame of a drag**, because the transform it
+shows changes. Bounded by one panel and not measured. Row 5 if it ever shows,
+and the run in the real window is where it is looked at.
+
+**A move writes a world distance as a local one.** That holds while nothing in
+the editor has a parent. A hierarchy is what breaks it.
+
+**Ctrl+Z pressed mid-drag does nothing.** Row 4: the key does nothing visible,
+and it works again the moment the button is let go.

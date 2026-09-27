@@ -12,7 +12,7 @@ use bevy::ecs::lifecycle::Remove;
 use bevy::gizmos::AppGizmoBuilder;
 use bevy::gizmos::config::{GizmoConfig, GizmoConfigGroup};
 use bevy::input_focus::{InputFocus, InputFocusSystems};
-use bevy::picking::events::{Click, DragEnd, DragStart, Pointer, Press};
+use bevy::picking::events::{Click, Drag, DragEnd, DragStart, Pointer, Press};
 use bevy::picking::hover::HoverMap;
 use bevy::picking::pointer::{PointerButton, PointerId, PointerLocation};
 use bevy::picking::{Pickable, PickingSystems};
@@ -21,6 +21,7 @@ use bevy::ui::widget::ViewportNode;
 
 use crate::Region;
 use crate::history::{EditorCommand, History, put_back, take_back};
+use crate::moving;
 use crate::outline::{OUTLINE, SELECTION_LAYER};
 use crate::viewport::ViewportCamera;
 
@@ -82,8 +83,13 @@ impl Selection {
 /// to the same result either way. Measured: starting every gesture from
 /// `Selection` instead leaves the suite green, and no test drives two clicks
 /// in one frame.
+///
+/// **`pub(crate)` only because [`record_choice`] is**: `moving.rs` orders
+/// itself after that system, which names this type in its parameters, and a
+/// private type there does not compile. Nothing outside this module writes
+/// it, and the field stays private so nothing can.
 #[derive(Resource, Default)]
-struct Next(Option<Vec<Entity>>);
+pub(crate) struct Next(Option<Vec<Entity>>);
 
 impl Next {
     /// What the gesture about to act should change: what this frame has
@@ -134,7 +140,19 @@ struct Pressed {
     at: Option<Vec2>,
     /// Where a box drag began, once the press turned into one.
     band: Option<Vec2>,
+    /// Whether the gesture has become a move, which a press on an entity does
+    /// once the pointer has gone further than [`MOVE_THRESHOLD`]. From then on
+    /// the release is not a click.
+    moving: bool,
 }
+
+/// How far the pointer goes from a press on an entity, in logical pixels,
+/// before the gesture is a move rather than a click.
+///
+/// `bevy_picking` has no threshold of its own: it begins a drag on the first
+/// move after a press, however small. Four is chosen rather than measured.
+/// [`docs/specs/ui.md` §11](../../../docs/specs/ui.md).
+const MOVE_THRESHOLD: f32 = 4.0;
 
 /// An entity the user can select by clicking it.
 ///
@@ -214,6 +232,7 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
         .observe(remember)
         .observe(select)
         .observe(begin)
+        .observe(grab)
         .observe(finish);
 }
 
@@ -261,6 +280,8 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
 ///   `a_modifier_click_on_empty_space_keeps_the_selection`
 /// * `swap_remove` in place of `remove`:
 ///   `the_selection_keeps_the_order_things_were_chosen_in`
+/// * drop the `pressed.moving` check:
+///   `dragging_one_of_several_selected_moves_them_all_and_keeps_the_selection`
 fn select(
     click: On<Pointer<Click>>,
     viewport: Query<&PointerId, With<ViewportNode>>,
@@ -270,7 +291,9 @@ fn select(
     selection: Res<Selection>,
     mut next: ResMut<Next>,
 ) {
-    if click.event().button != PointerButton::Primary {
+    // A move ends in a release over the entity that followed the pointer, so
+    // it would read as a click on it and collapse a group to that one.
+    if click.event().button != PointerButton::Primary || pressed.moving {
         return;
     }
     // The pointer is read from the entity that carries `ViewportNode`, not from
@@ -345,6 +368,7 @@ fn remember(
         additive: additive(&keys),
         at: pointer_world(location, &cameras),
         band: None,
+        moving: false,
     };
 }
 
@@ -367,6 +391,63 @@ fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
         return;
     }
     pressed.band = pressed.at;
+}
+
+/// Turn a press on an entity into a move once the pointer has gone further
+/// than [`MOVE_THRESHOLD`], and decide what moves.
+///
+/// | The entity pressed | The modifier | The selection becomes | What moves |
+/// | --- | --- | --- | --- |
+/// | selected | either | unchanged | everything selected |
+/// | not selected | not held | that entity alone | that entity |
+/// | not selected | held | what was selected, and that entity on the end | everything selected |
+///
+/// The change of selection goes through [`Next`] as any gesture's does, so
+/// `record_choice` makes it the entry below the move.
+/// [`docs/specs/ui.md` §11](../../../docs/specs/ui.md) has why.
+///
+/// `Drag::distance` is measured from the press, in the window pointer's
+/// logical pixels, which is what an observer on the region hears. So the
+/// threshold does not change with zoom, and RK-005 has nothing to bite.
+///
+/// Mutation: drop the button check, and `a_middle_button_drag_moves_nothing`
+/// fails. Mutation: a threshold of zero, and
+/// `a_press_that_moves_less_than_the_threshold_is_a_click` fails. Mutation:
+/// ignore [`Pressed::additive`], and
+/// `a_modifier_drag_on_an_unselected_entity_adds_it_and_moves_everything`
+/// fails. Mutation: move what was selected before, not the entity pressed,
+/// and `dragging_an_unselected_entity_selects_it_and_moves_it` fails.
+/// Mutation: drop the `pressed.moving` return, so that every move begins the
+/// move again, and
+/// `a_drag_of_many_moves_follows_the_pointer_and_undoes_to_where_it_began`
+/// fails.
+fn grab(
+    drag: On<Pointer<Drag>>,
+    mut pressed: ResMut<Pressed>,
+    selection: Res<Selection>,
+    mut next: ResMut<Next>,
+    mut commands: Commands,
+) {
+    if drag.event().button != PointerButton::Primary || pressed.moving {
+        return;
+    }
+    let (Some(entity), Some(anchor)) = (pressed.over, pressed.at) else {
+        return;
+    };
+    if drag.event().distance.length() <= MOVE_THRESHOLD {
+        return;
+    }
+    pressed.moving = true;
+
+    let chosen = next.chosen(&selection);
+    if !chosen.contains(&entity) {
+        if !pressed.additive {
+            chosen.clear();
+        }
+        chosen.push(entity);
+    }
+    let group = chosen.clone();
+    commands.queue(move |world: &mut World| moving::start(world, group, anchor));
 }
 
 /// Select what the box covers, when the button is let go.
@@ -466,7 +547,7 @@ fn finish(
 /// that is compared after [`selectable_of`], so that something the gesture
 /// named and that stopped being selectable in the same frame does not leave an
 /// entry whose undo changes nothing.
-fn record_choice(mut next: ResMut<Next>, mut commands: Commands) {
+pub(crate) fn record_choice(mut next: ResMut<Next>, mut commands: Commands) {
     let Some(to) = next.0.take() else {
         return;
     };
@@ -626,7 +707,7 @@ fn world_bounds(at: &GlobalTransform, aabb: &Aabb) -> Rect {
 ///
 /// Mutation: drop the clamp, and
 /// `a_band_stops_at_the_edge_of_what_the_viewport_shows` fails.
-fn pointer_world(
+pub(crate) fn pointer_world(
     location: &PointerLocation,
     cameras: &Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
 ) -> Option<Vec2> {
@@ -720,7 +801,8 @@ mod tests {
     use super::{BandGizmos, SELECTION_LAYER, Selectable, Selection};
     use crate::drawn::covered_by;
     use crate::pointer::{
-        click_at, hold_key, hold_letter, in_window, release_key, release_letter, write_input,
+        click_at, hold_key, hold_letter, in_window, press_and_hold, press_then_release,
+        release_key, release_letter, write_input,
     };
     use crate::viewport::PLACEHOLDERS;
     use crate::{Region, editor, headless};
@@ -769,31 +851,6 @@ mod tests {
             app.update();
         }
         app
-    }
-
-    /// Press at one place and let go at another, a frame apart.
-    fn press_then_release(app: &mut App, press: Vec2, release: Vec2) {
-        press_and_hold(app, press, release);
-        write_input(app, release, PointerAction::Release(PointerButton::Primary));
-        app.update();
-        app.update();
-    }
-
-    /// Press at one place, move to another, and keep the button down.
-    ///
-    /// The half of a box drag a test can look at while it is happening. Two
-    /// moves and a press rather than one of each, because `bevy_picking` turns
-    /// a press into a drag on the first move after it.
-    fn press_and_hold(app: &mut App, press: Vec2, to: Vec2) {
-        for (position, action) in [
-            (press, PointerAction::Move { delta: Vec2::ONE }),
-            (press, PointerAction::Press(PointerButton::Primary)),
-            (to, PointerAction::Move { delta: Vec2::ONE }),
-        ] {
-            write_input(app, position, action);
-            app.update();
-            app.update();
-        }
     }
 
     /// What is selected, in an order a test can compare.
@@ -980,7 +1037,13 @@ mod tests {
     ///
     /// This is what `docs/specs/ui.md` §4 asks of the left button: a press
     /// somebody did not mean costs nothing as long as they move off before
-    /// letting go. Three gestures, and none may reach the selection.
+    /// letting go. Two gestures, and neither may reach the selection.
+    ///
+    /// **A press on an entity has to stay under `MOVE_THRESHOLD` to be taken
+    /// back**, so the press is at the entity's edge and the release just off
+    /// it. Carried further, the press is a move, and Ctrl+Z is the way out of
+    /// that: `docs/specs/ui.md` §11. A third gesture, pressing one entity and
+    /// letting go over another, was here and is gone for that reason.
     ///
     /// Bevy's own same-target guarantee does not give this. `Pointer<Click>`
     /// fires when the press and the release shared a target, and the target
@@ -993,20 +1056,8 @@ mod tests {
     /// fails.
     #[test]
     fn letting_go_somewhere_else_takes_the_press_back() {
-        // One: press one entity, let go over another.
-        let mut app = selection_editor();
-        press_then_release(
-            &mut app,
-            in_window(Vec2::new(-200.0, 0.0)),
-            in_window(Vec2::ZERO),
-        );
-        assert!(
-            selected(&app).is_empty(),
-            "letting go over a different entity selected it"
-        );
-
-        // Two: with something already selected, press another and let go over
-        // empty space.
+        // One: with something already selected, press another at its edge and
+        // let go just off it, over empty space.
         let mut app = selection_editor();
         click_at(
             &mut app,
@@ -1017,8 +1068,8 @@ mod tests {
         assert_eq!(chosen.len(), 1, "nothing was selected to protect");
         press_then_release(
             &mut app,
-            in_window(Vec2::ZERO),
-            in_window(Vec2::new(0.0, -180.0)),
+            in_window(Vec2::new(30.0, 0.0)),
+            in_window(Vec2::new(33.0, 0.0)),
         );
         assert_eq!(
             selected(&app),
@@ -1026,7 +1077,7 @@ mod tests {
             "a press that was taken back cleared the selection anyway"
         );
 
-        // Three: press empty space, let go over an entity.
+        // Two: press empty space, let go over an entity.
         let mut app = selection_editor();
         press_then_release(
             &mut app,
@@ -1695,10 +1746,9 @@ mod tests {
 
     /// A drag that begins on an entity is not a box.
     ///
-    /// That gesture belongs to moving what is selected, which is a later chunk
-    /// of this milestone, and taking it here would mean taking it back. The
-    /// press is on the middle placeholder and the drag ends past the left one,
-    /// so a box would have caught it.
+    /// That gesture moves what is selected, `docs/specs/ui.md` §11, so the
+    /// middle placeholder is selected and carried along. The drag ends past
+    /// the left one, so a box would have caught that one too.
     ///
     /// Mutation: drop the `pressed.over.is_some()` check in `begin`, and this
     /// fails.
@@ -1712,7 +1762,10 @@ mod tests {
             in_window(Vec2::new(-300.0, -100.0)),
         );
 
-        assert!(selected(&app).is_empty(), "{:?}", selected(&app));
+        let chosen = selected(&app);
+        assert_eq!(chosen.len(), 1, "{chosen:?}");
+        let at = app.world().get::<Transform>(chosen[0]).unwrap().translation;
+        assert_eq!(at, Vec3::new(-300.0, -100.0, 0.0), "what was dragged");
     }
 
     /// A box drag stops at the edge of what the viewport shows.
