@@ -54,7 +54,7 @@ Quotations are left in the language of their source.
 | What a selection, and a box drag in progress, look like in the viewport | [ui.md §5](./ui.md) |
 | What the inspector shows: every component, named through reflection and opened into the values it carries | [ui.md §6](./ui.md) |
 | What the inspector can edit: an `f32` leaf, typed into a box and committed on Enter | [ui.md §7](./ui.md) |
-| What Ctrl+Z takes back: the last committed number, or what is typed in the focused box | [ui.md §8](./ui.md) |
+| What Ctrl+Z takes back: the last entry, or what is typed in the focused box | [ui.md §8](./ui.md) |
 | What redo puts back: the last entry undo took back, on Ctrl/Cmd+Y and Ctrl/Cmd+Shift+Z, dropped by a new entry | [ui.md §9](./ui.md) |
 | A change of selection is an entry, recorded once a frame after the focus changes | [ui.md §10](./ui.md) |
 | Tilemaps ride on Bevy's own `TilemapChunk` | [level-editor.md §2](./level-editor.md) |

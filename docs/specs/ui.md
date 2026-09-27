@@ -820,7 +820,7 @@ comments.
 | --- | --- |
 | The key | **Ctrl or Cmd with Z, and not Shift**, on every platform, for the reason [§4](#4-what-the-mouse-does-in-the-viewport) takes both modifiers. Shift is redo's, [§9](#9-what-redo-puts-back) |
 | Which Z | **the key that says Z**, read as a logical key through `ButtonInput<Key>`, not the key in Z's place on a US layout |
-| What is an entry | **a committed number that changed the bits of the leaf it was written to.** A commit that writes the value already there is not an entry |
+| Which commit is an entry | **a committed number that changed the bits of the leaf it was written to.** A commit that writes the value already there is not an entry |
 | No box has focus | the last entry is taken back, and the panel rebuilds from the world as it does after any change |
 | A number box has focus, and what is typed in it differs from the leaf | **the typing is taken back**: the box is put back to the leaf's value, and the history is left alone |
 | A number box has focus, and what is in it is the leaf's value | the last entry is taken back, **and every box on the panel is given its leaf's new value in place**, the focused one included, without the panel being rebuilt |
@@ -899,6 +899,8 @@ needs no state. Waiting for the engine is deferred with a trigger in
 **Dropping the focus on Ctrl+Z and undoing in the next frame.** The drop commits
 what was typed, so one key would write a value and take it back again, across a
 frame boundary whose order is the whole of its correctness.
+[§10](#10-a-change-of-selection-is-an-entry) does let go of the focus, after an
+undo that moves the selection, and says why that is not this.
 
 **Recording every commit and merging repeats.** It keeps entries that change
 nothing and has to decide what counts as a repeat. Not recording them is one
@@ -1026,7 +1028,7 @@ deferral in [open-questions.md §1](./open-questions.md) covers it.
 
 ## 10. A change of selection is an entry
 
-Decided on issue #54, and built by it: `choose`, `SetSelection` and `put` in
+Decided on issue #54, and built by it: `record_choice`, `SetSelection` and `replace_selection` in
 `crates/editor/src/selection.rs`. Each row below is held by a test named in
 those functions' doc comments or in the tests that name them.
 
@@ -1049,12 +1051,15 @@ it back the same way.
 
 ### Rationale
 
-**Unity records it, and without it Ctrl+Z moves something the panel is not
-showing.** Commit a number on one sprite, click another, press Ctrl+Z: the
-number went back while the inspector showed the second sprite. Unity's Undo
-History lists "Change Selection" among what it records, and
-[§2](#2-unity-is-the-design-target-jackdaw-the-implementation-reference)
-makes Unity the target.
+**Without it, Ctrl+Z moves something the panel is not showing.** Commit a
+number on one sprite, click another, press Ctrl+Z: the number went back while
+the inspector showed the second sprite. The project's owner asked for a
+selection change to be an entry, as it is in Unity, which
+[§2](#2-unity-is-the-design-target-jackdaw-the-implementation-reference) makes
+the target. **That Unity records it is not checked against a document**: the
+manual page for its Undo History window, in 6000.0 and in 6000.7, does not say
+which actions it records. The decision rests on what it fixes here, not on the
+comparison.
 
 **The gestures decide the selection, and one system records it later in the
 frame.** Two things go wrong if a gesture records where it runs. One release
@@ -1103,8 +1108,9 @@ until the user leaves the box.
 **Keeping the redo side across a selection entry.** Clicking around to look
 after an undo would not throw the redo away, at the cost given above.
 
-**Merging a run of clicks into one entry.** Unity does not, as far as its Undo
-History shows.
+**Merging a run of clicks into one entry.** It has to decide what counts as a
+run, and a Ctrl+Z that skips back over several selections at once is a step
+whose size the user cannot see. Nothing asked for it.
 
 ### Accepted risk
 
@@ -1113,10 +1119,16 @@ History shows.
 `Update`, builds its panel for a click one frame later than it did. Nobody can
 see one frame, and a test that reads the panel's layout waits one frame more.
 
+**An entry names what was selected by `Entity`**, as a commit names its target.
+Once a deletion can be undone, what comes back is a new `Entity`, and an older
+selection entry naming the old one restores a selection without it. Row 4, and
+issue #55, which designs how an entry reaches an entity after its deletion is
+undone, has `SetSelection` to cover as well as the commit.
+
 **Clicking around after an undo throws the redo away.** Row 4: nothing is
 written, and the user can see Ctrl+Y do nothing.
 
-**A click and Ctrl+Z in one frame depend on an ordering line.** `choose` is
+**A click and Ctrl+Z in one frame depend on an ordering line.** `record_choice` is
 ordered before the undo key is read. Without that line the two are unordered
 rather than reversed, so the test that holds it catches the order the schedule
 happens to pick.
