@@ -3,8 +3,9 @@
 //! The command and the one history are
 //! [`docs/specs/data-model.md` §1](../../../docs/specs/data-model.md); what
 //! Ctrl+Z takes back, wherever the focus is, is
-//! [`docs/specs/ui.md` §8](../../../docs/specs/ui.md), and what redo puts
-//! back is §9 of the same file.
+//! [`docs/specs/ui.md` §8](../../../docs/specs/ui.md), what redo puts
+//! back is §9 of the same file, and a change of selection being an entry is
+//! §10.
 
 use bevy::input::keyboard::Key;
 use bevy::input_focus::InputFocusSystems;
@@ -32,10 +33,9 @@ pub trait EditorCommand: Send + Sync + 'static {
 /// touching this type, and that compiles. So "one history" is still a rule a
 /// writer has to follow, and there is no single search that finds every
 /// writer that does not. A reflected write goes through
-/// `World::get_reflect_mut`; the selection (issue #54) is a resource written
-/// in `selection.rs`; a deletion (issue #55) is a despawn. The inspector's
-/// commit is the first writer through here, and the gizmos, the selection and
-/// the deletion are each the next.
+/// `World::get_reflect_mut`, and a deletion (issue #55) is a despawn. The
+/// inspector's commit and the selection are the writers through here, and the
+/// gizmos and the deletion are each the next.
 #[derive(Resource, Default)]
 pub struct History {
     /// What undo can take back, oldest first.
@@ -135,6 +135,10 @@ impl Plugin for HistoryPlugin {
 /// `letting_go_of_a_box_and_pressing_ctrl_z_in_one_frame_takes_back_what_letting_go_committed`
 /// fails.
 ///
+/// **`pub(crate)` for one reason**: `selection::record_choice` orders itself
+/// before this, so that a click and Ctrl+Z in one frame take back the click.
+/// Moving this to another schedule leaves that ordering pointing at nothing.
+///
 /// # Which keys
 ///
 /// Ctrl or Cmd, on every platform, for the reason `docs/specs/ui.md` §4 takes
@@ -155,7 +159,7 @@ impl Plugin for HistoryPlugin {
 /// caller and one callee, and a pair of observers would add a question about
 /// which runs first for nothing. The next panel with boxes in it is added
 /// here.
-fn take_back(
+pub(crate) fn take_back(
     letters: Res<ButtonInput<Key>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
@@ -186,6 +190,9 @@ fn take_back(
 /// `letting_go_of_a_box_and_pressing_ctrl_y_in_one_frame_does_not_redo_under_the_commit`
 /// fails.
 ///
+/// `pub(crate)` for the reason [`take_back`] is: `selection::record_choice`
+/// orders itself before this too.
+///
 /// # Which keys
 ///
 /// Ctrl or Cmd with Y, or with Shift and Z, on every platform, read by the
@@ -205,7 +212,7 @@ fn take_back(
 ///
 /// Mutation: drop the `typing_in_focus` check, and
 /// `redo_does_nothing_while_the_focused_box_holds_typing` fails.
-fn put_back(
+pub(crate) fn put_back(
     letters: Res<ButtonInput<Key>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,

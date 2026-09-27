@@ -158,3 +158,6 @@ in the panel or was last frame.
 * The decision this refines, and the cost it left open:
   [ADR-0002](./0002-rebuild-the-inspector-rather-than-diff-it.md).
 * Issue #44, where the options were put and chosen.
+* Where the focus is taken away from the panel on purpose: an undo or redo
+  that moves the selection lets go of it so the panel follows,
+  [`ui.md` §10](../specs/ui.md), in `selection.rs`'s `replace_selection`.
