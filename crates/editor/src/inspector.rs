@@ -4193,4 +4193,36 @@ mod tests {
             "the panel stayed on what was selected before the undo"
         );
     }
+
+    /// Ctrl+Z on a selection change that no longer changes anything leaves
+    /// the focus in the box.
+    ///
+    /// The entry takes the selection from the middle placeholder to the
+    /// middle and the left; the left then stops being selectable, so undoing
+    /// it restores what is already there. Letting go of the focus then would
+    /// throw the user out of the box for a key that did nothing visible.
+    ///
+    /// Mutation: drop the equality return in `put`, and this fails with the
+    /// focus gone.
+    #[test]
+    fn an_undo_that_leaves_the_selection_as_it_was_keeps_the_focus() {
+        let mut app = inspector_editor();
+        let [_, left] = select_the_middle_then_the_left(&mut app);
+        app.world_mut()
+            .entity_mut(left)
+            .remove::<crate::Selectable>();
+        app.update();
+        app.update();
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        focus(&mut app, cell);
+
+        undo(&mut app);
+
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(editable_under(app.world(), cell)),
+            "an undo that changed nothing let go of the focus"
+        );
+    }
 }

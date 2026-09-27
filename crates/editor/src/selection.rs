@@ -468,7 +468,6 @@ fn choose(mut next: ResMut<Next>, mut commands: Commands) {
         return;
     };
     commands.queue(move |world: &mut World| {
-        let to = selectable_of(world, to);
         let from = world.resource::<Selection>().0.clone();
         if from == to {
             return;
@@ -2160,5 +2159,68 @@ mod tests {
         app.update();
 
         assert_eq!(selected(&app), [middle]);
+    }
+
+    /// Undoing a selection change leaves out what has been despawned since,
+    /// and does not panic.
+    ///
+    /// Nothing in the editor despawns a selectable entity yet; this does it
+    /// by hand, as issue #55's deletion will.
+    ///
+    /// Mutation: read the entity with `world.entity` in `selectable_of` in
+    /// place of `get_entity`, and this panics.
+    #[test]
+    fn undoing_a_selection_change_leaves_out_what_was_despawned() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+        modifier_click_at(&mut app, in_window(MIDDLE));
+        click_at(&mut app, in_window(RIGHT), PointerButton::Primary);
+        app.world_mut().despawn(left);
+        app.update();
+
+        ctrl_z(&mut app);
+
+        assert_eq!(selected(&app), [middle]);
+    }
+
+    /// A click and Ctrl+Y in one frame leave nothing to redo, because the
+    /// click is an entry and comes first.
+    ///
+    /// What is asserted is the Ctrl+Z after, which tells the two orders
+    /// apart: either order ends on the left placeholder, but with the redo
+    /// run first the history holds it under the click.
+    ///
+    /// Mutation: drop `.before(put_back)` on `choose`, and this fails with
+    /// the middle placeholder selected. **Measured, and not promised**, for
+    /// the reason `a_click_and_ctrl_z_in_one_frame_take_back_the_click`
+    /// gives.
+    #[test]
+    fn a_click_and_ctrl_y_in_one_frame_leave_nothing_to_redo() {
+        let mut app = selection_editor();
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+        ctrl_z(&mut app);
+        let left = in_window(LEFT);
+        write_input(&mut app, left, PointerAction::Move { delta: Vec2::ONE });
+        app.update();
+        app.update();
+        write_input(&mut app, left, PointerAction::Press(PointerButton::Primary));
+        app.update();
+
+        hold_key(&mut app, KeyCode::ControlLeft);
+        hold_letter(&mut app, KeyCode::KeyY, "y");
+        write_input(
+            &mut app,
+            left,
+            PointerAction::Release(PointerButton::Primary),
+        );
+        app.update();
+        release_letter(&mut app, KeyCode::KeyY, "y");
+        release_key(&mut app, KeyCode::ControlLeft);
+        app.update();
+        ctrl_z(&mut app);
+
+        assert_eq!(selected(&app), []);
     }
 }
