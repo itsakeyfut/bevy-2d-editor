@@ -11,7 +11,7 @@ use bevy::input::keyboard::Key;
 use bevy::input_focus::InputFocusSystems;
 use bevy::prelude::*;
 
-use crate::inspector;
+use crate::{inspector, moving};
 
 /// One change to the world that can be taken back.
 ///
@@ -34,8 +34,9 @@ pub trait EditorCommand: Send + Sync + 'static {
 /// writer has to follow, and there is no single search that finds every
 /// writer that does not. A reflected write goes through
 /// `World::get_reflect_mut`, and a deletion (issue #55) is a despawn. The
-/// inspector's commit and the selection are the writers through here, and the
-/// gizmos and the deletion are each the next.
+/// inspector's commit, the selection and a drag in the viewport
+/// (`moving.rs`) are the writers through here, and the rotate and scale
+/// handles and the deletion are each the next.
 #[derive(Resource, Default)]
 pub struct History {
     /// What undo can take back, oldest first.
@@ -159,6 +160,14 @@ impl Plugin for HistoryPlugin {
 /// caller and one callee, and a pair of observers would add a question about
 /// which runs first for nothing. The next panel with boxes in it is added
 /// here.
+///
+/// # Not during a drag
+///
+/// While something is being dragged the key does nothing:
+/// [`docs/specs/ui.md` §11](../../../docs/specs/ui.md). Redo is the same.
+///
+/// Mutation: drop the `moving::in_progress` check, and
+/// `ctrl_z_during_a_drag_does_nothing` fails.
 pub(crate) fn take_back(
     letters: Res<ButtonInput<Key>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -169,7 +178,7 @@ pub(crate) fn take_back(
         return;
     }
     commands.queue(|world: &mut World| {
-        if inspector::take_back_typing(world) {
+        if moving::in_progress(world) || inspector::take_back_typing(world) {
             return;
         }
         if History::undo(world) {
@@ -223,7 +232,7 @@ pub(crate) fn put_back(
         return;
     }
     commands.queue(|world: &mut World| {
-        if inspector::typing_in_focus(world).is_some() {
+        if moving::in_progress(world) || inspector::typing_in_focus(world).is_some() {
             return;
         }
         if History::redo(world) {

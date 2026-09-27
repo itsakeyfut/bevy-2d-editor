@@ -24,6 +24,7 @@ use bevy::ui_widgets::ScrollArea;
 mod drawn;
 mod history;
 mod inspector;
+mod moving;
 mod outline;
 #[cfg(test)]
 mod pointer;
@@ -32,6 +33,7 @@ mod viewport;
 
 pub use history::{EditorCommand, History, HistoryPlugin};
 pub use inspector::InspectorPlugin;
+pub use moving::MovePlugin;
 pub use outline::SelectionOutlinePlugin;
 pub use selection::{Selectable, Selection, SelectionPlugin};
 pub use viewport::{ViewportCamera, ViewportPlugin};
@@ -307,11 +309,12 @@ fn spawn_regions(mut commands: Commands) {
 ///
 /// Mutation: remove the row, and
 /// `the_group_carries_the_members_the_table_names` fails.
-pub(crate) const MEMBERS: [Member; 6] = [
+pub(crate) const MEMBERS: [Member; 7] = [
     member!(PanelsPlugin),
     member!(ViewportPlugin),
     member!(SelectionPlugin),
     member!(SelectionOutlinePlugin),
+    member!(MovePlugin),
     member!(HistoryPlugin),
     member!(InspectorPlugin),
 ];
@@ -509,6 +512,7 @@ mod tests {
                 "ViewportPlugin",
                 "SelectionPlugin",
                 "SelectionOutlinePlugin",
+                "MovePlugin",
                 "HistoryPlugin",
                 "InspectorPlugin"
             ]
