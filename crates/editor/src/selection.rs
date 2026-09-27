@@ -83,6 +83,11 @@ impl Selection {
 /// to the same result either way. Measured: starting every gesture from
 /// `Selection` instead leaves the suite green, and no test drives two clicks
 /// in one frame.
+///
+/// **`pub(crate)` only because [`record_choice`] is**: `moving.rs` orders
+/// itself after that system, which names this type in its parameters, and a
+/// private type there does not compile. Nothing outside this module writes
+/// it, and the field stays private so nothing can.
 #[derive(Resource, Default)]
 pub(crate) struct Next(Option<Vec<Entity>>);
 
