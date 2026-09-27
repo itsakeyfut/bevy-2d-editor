@@ -3,8 +3,9 @@
 //! The command and the one history are
 //! [`docs/specs/data-model.md` §1](../../../docs/specs/data-model.md); what
 //! Ctrl+Z takes back, wherever the focus is, is
-//! [`docs/specs/ui.md` §8](../../../docs/specs/ui.md), and what redo puts
-//! back is §9 of the same file.
+//! [`docs/specs/ui.md` §8](../../../docs/specs/ui.md), what redo puts
+//! back is §9 of the same file, and a change of selection being an entry is
+//! §10.
 
 use bevy::input::keyboard::Key;
 use bevy::input_focus::InputFocusSystems;
@@ -134,6 +135,10 @@ impl Plugin for HistoryPlugin {
 /// `letting_go_of_a_box_and_pressing_ctrl_z_in_one_frame_takes_back_what_letting_go_committed`
 /// fails.
 ///
+/// **`pub(crate)` for one reason**: `selection::record_choice` orders itself
+/// before this, so that a click and Ctrl+Z in one frame take back the click.
+/// Moving this to another schedule leaves that ordering pointing at nothing.
+///
 /// # Which keys
 ///
 /// Ctrl or Cmd, on every platform, for the reason `docs/specs/ui.md` §4 takes
@@ -184,6 +189,9 @@ pub(crate) fn take_back(
 /// Mutation: add this to `Update` instead, and
 /// `letting_go_of_a_box_and_pressing_ctrl_y_in_one_frame_does_not_redo_under_the_commit`
 /// fails.
+///
+/// `pub(crate)` for the reason [`take_back`] is: `selection::record_choice`
+/// orders itself before this too.
 ///
 /// # Which keys
 ///

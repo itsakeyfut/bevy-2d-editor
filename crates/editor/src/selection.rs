@@ -47,7 +47,7 @@ use crate::viewport::ViewportCamera;
 ///
 /// Those are conditions on this type, not a description of who writes it
 /// today. `select` and `finish` below decide what it becomes, into `Next`;
-/// `put` is what writes it, through the history, and
+/// `replace_selection` is what writes it, through the history, and
 /// `forget_what_is_gone` is the one writer outside it. Anything that joins
 /// them either keeps the conditions or breaks the inspector that reads the
 /// last element.
@@ -69,12 +69,19 @@ impl Selection {
 /// What this frame's gestures have made the selection into, before the
 /// history records it.
 ///
-/// **The gestures write here rather than to [`Selection`]**, and [`choose`]
+/// **The gestures write here rather than to [`Selection`]**, and [`record_choice`]
 /// turns what is here into at most one entry, later in the frame.
 /// [`docs/specs/ui.md` §10](../../../docs/specs/ui.md) has why. `None` is "no
-/// gesture this frame". A gesture starts from what an earlier gesture in the
-/// same frame left here, so the click and the drag end that one release
-/// produces (RK-008) build one change between them, not two.
+/// gesture this frame". One slot, taken once a frame, is what makes the click
+/// and the drag end that one release produces (RK-008) one entry rather than
+/// two.
+///
+/// **What [`Next::chosen`] starts from is not guarded.** A gesture starts
+/// from what an earlier one in the same frame left here, which matters only
+/// when two gestures land in one frame: for a box, `finish` clears or adds
+/// to the same result either way. Measured: starting every gesture from
+/// `Selection` instead leaves the suite green, and no test drives two clicks
+/// in one frame.
 #[derive(Resource, Default)]
 struct Next(Option<Vec<Entity>>);
 
@@ -182,7 +189,7 @@ impl Plugin for SelectionPlugin {
         .add_systems(Update, draw_band)
         .add_systems(
             PostUpdate,
-            choose
+            record_choice
                 .after(InputFocusSystems::FocusChangeEvents)
                 .before(take_back)
                 .before(put_back),
@@ -450,24 +457,21 @@ fn finish(
 /// Record what this frame's gestures chose, as one entry, when it changes the
 /// selection.
 ///
-/// **After the frame's focus changes**, because a press on the viewport takes
-/// the focus out of a number box and the box commits when `FocusLost` reaches
-/// it, in `PostUpdate`. When the press and the release land in one frame, a
-/// record made where the gesture ran would come before that commit, and
-/// Ctrl+Z would take back a number the panel is not showing. **Before the
-/// undo and redo keys**, so that a click and Ctrl+Z in one frame take back the
-/// click, the order the user did them in.
-/// [`docs/specs/ui.md` §10](../../../docs/specs/ui.md) is the decision.
+/// After the frame's focus changes, so that the commit a press causes is
+/// recorded first, and before the undo and redo keys, so that a click and a
+/// key in one frame are taken in the order they were done:
+/// [`docs/specs/ui.md` §10](../../../docs/specs/ui.md).
 ///
-/// **A gesture that leaves the selection as it was is not an entry**: a
-/// Ctrl+Z that changes nothing visible looks like a Ctrl+Z that is broken,
-/// the reason [`docs/specs/ui.md` §8](../../../docs/specs/ui.md) gives for a
-/// commit.
-fn choose(mut next: ResMut<Next>, mut commands: Commands) {
+/// **A gesture that leaves the selection as it was is not an entry**, and
+/// that is compared after [`selectable_of`], so that something the gesture
+/// named and that stopped being selectable in the same frame does not leave an
+/// entry whose undo changes nothing.
+fn record_choice(mut next: ResMut<Next>, mut commands: Commands) {
     let Some(to) = next.0.take() else {
         return;
     };
     commands.queue(move |world: &mut World| {
+        let to = selectable_of(world, to);
         let from = world.resource::<Selection>().0.clone();
         if from == to {
             return;
@@ -486,11 +490,11 @@ struct SetSelection {
 
 impl EditorCommand for SetSelection {
     fn execute(&mut self, world: &mut World) {
-        put(world, self.to.clone());
+        replace_selection(world, self.to.clone());
     }
 
     fn undo(&mut self, world: &mut World) {
-        put(world, self.from.clone());
+        replace_selection(world, self.from.clone());
     }
 }
 
@@ -507,8 +511,12 @@ impl EditorCommand for SetSelection {
 /// so an undo that moved the selection would leave the panel on what was
 /// selected before. [`docs/specs/ui.md` §10](../../../docs/specs/ui.md) has why
 /// letting go commits nothing here. On the gesture path the press has already
-/// taken the focus, and this does nothing.
-fn put(world: &mut World, entities: Vec<Entity>) {
+/// taken the focus, and this does nothing: `bevy_input_focus`'s
+/// `click_to_focus` clears the focus when a press bubbles up to the window
+/// without meeting a `TabIndex`, and nothing in the viewport carries one. A
+/// panel that selects and holds the focus, such as a hierarchy driven by the
+/// arrow keys, would lose it here, and this is where to narrow the clear.
+fn replace_selection(world: &mut World, entities: Vec<Entity>) {
     let entities = selectable_of(world, entities);
     if world.resource::<Selection>().0 == entities {
         return;
@@ -2073,12 +2081,12 @@ mod tests {
     }
 
     /// Undoing a selection change leaves out what has stopped being
-    /// selectable since, and keeps the rest in order.
+    /// selectable since.
     ///
     /// Two entities in what is restored, per RK-007: with one, leaving it out
     /// and emptying the selection are the same program.
     ///
-    /// Mutation: drop the `selectable_of` call in `put`, and this fails with
+    /// Mutation: drop the `selectable_of` call in `replace_selection`, and this fails with
     /// the left placeholder restored.
     #[test]
     fn undoing_a_selection_change_leaves_out_what_stopped_being_selectable() {
@@ -2128,7 +2136,7 @@ mod tests {
     /// The press is a frame earlier, without the modifier, so that the click
     /// replaces rather than adds.
     ///
-    /// Mutation: drop `.before(take_back)` on `choose`, and this fails with
+    /// Mutation: drop `.before(take_back)` on `record_choice`, and this fails with
     /// the left placeholder selected: the undo takes back the click before
     /// it, and this click is then recorded on top. **Measured, and not
     /// promised**: without the line the two systems are unordered rather than
@@ -2188,11 +2196,14 @@ mod tests {
     /// A click and Ctrl+Y in one frame leave nothing to redo, because the
     /// click is an entry and comes first.
     ///
-    /// What is asserted is the Ctrl+Z after, which tells the two orders
-    /// apart: either order ends on the left placeholder, but with the redo
-    /// run first the history holds it under the click.
+    /// Two things are asserted. After the frame, the left placeholder alone
+    /// is selected, which is the click with nothing redone. The Ctrl+Z after
+    /// tells the two orders apart: either order ends on the left placeholder,
+    /// but with the redo run first the history holds it under the click.
     ///
-    /// Mutation: drop `.before(put_back)` on `choose`, and this fails with
+    /// Mutation: leave out the `clear` in `History::record`, and this fails
+    /// with the middle placeholder put back by the redo.
+    /// Mutation: drop `.before(put_back)` on `record_choice`, and this fails with
     /// the middle placeholder selected. **Measured, and not promised**, for
     /// the reason `a_click_and_ctrl_z_in_one_frame_take_back_the_click`
     /// gives.
@@ -2219,6 +2230,104 @@ mod tests {
         release_letter(&mut app, KeyCode::KeyY, "y");
         release_key(&mut app, KeyCode::ControlLeft);
         app.update();
+        let after_the_frame = selected(&app);
+        ctrl_z(&mut app);
+
+        assert_eq!(after_the_frame, [placeholder(&mut app, 0)]);
+        assert_eq!(selected(&app), []);
+    }
+
+    /// Ctrl+Y, pressed and let go.
+    fn ctrl_y(app: &mut App) {
+        hold_key(app, KeyCode::ControlLeft);
+        hold_letter(app, KeyCode::KeyY, "y");
+        app.update();
+        release_letter(app, KeyCode::KeyY, "y");
+        release_key(app, KeyCode::ControlLeft);
+        app.update();
+        app.update();
+    }
+
+    /// Redoing a selection change leaves out what has stopped being
+    /// selectable since, as undoing one does.
+    ///
+    /// Mutation: write `Selection` directly in `SetSelection::execute` rather
+    /// than through `replace_selection`, and this fails with the left
+    /// placeholder selected.
+    #[test]
+    fn redoing_a_selection_change_leaves_out_what_stopped_being_selectable() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        click_at(&mut app, in_window(RIGHT), PointerButton::Primary);
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+        modifier_click_at(&mut app, in_window(MIDDLE));
+        ctrl_z(&mut app);
+        ctrl_z(&mut app);
+        app.world_mut().entity_mut(left).remove::<Selectable>();
+        app.update();
+
+        ctrl_y(&mut app);
+        ctrl_y(&mut app);
+
+        assert_eq!(selected(&app), [middle]);
+    }
+
+    /// Something leaving the selection because it stopped being selectable is
+    /// not an entry, so the next Ctrl+Z takes back the gesture before it: the
+    /// modifier click, which leaves the left placeholder.
+    ///
+    /// The left placeholder loses `Selectable` and then has it back, so that
+    /// an entry for the loss would be visible: its undo would put the left
+    /// placeholder back into the selection.
+    ///
+    /// Mutation: record the removal in `forget_what_is_gone` through
+    /// `History::record` with a `SetSelection`, and this fails with both
+    /// placeholders selected.
+    #[test]
+    fn something_leaving_the_selection_is_not_an_entry() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+        modifier_click_at(&mut app, in_window(MIDDLE));
+        app.world_mut().entity_mut(left).remove::<Selectable>();
+        app.update();
+        app.world_mut().entity_mut(left).insert(Selectable);
+        app.update();
+
+        ctrl_z(&mut app);
+
+        assert_eq!(selected(&app), [left]);
+    }
+
+    /// A gesture whose entity stops being selectable in the frame it was
+    /// chosen in is not an entry, so the next Ctrl+Z takes back the gesture
+    /// before it.
+    ///
+    /// The removal is made by a system in `Update`, between the click in
+    /// `PreUpdate` and `record_choice` in `PostUpdate`, which is the only
+    /// window in which it can happen.
+    ///
+    /// Mutation: drop the `selectable_of` call in `record_choice`, and this
+    /// fails with the middle placeholder still selected: the Ctrl+Z took back
+    /// an entry that changed nothing.
+    #[test]
+    fn a_gesture_whose_entity_goes_in_the_same_frame_is_not_an_entry() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        app.add_systems(
+            Update,
+            move |next: Res<super::Next>, mut commands: Commands| {
+                if next.0.as_ref().is_some_and(|chosen| chosen.contains(&left)) {
+                    commands.entity(left).remove::<Selectable>();
+                }
+            },
+        );
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+        modifier_click_at(&mut app, in_window(LEFT));
+        assert_eq!(selected(&app), [middle], "the left placeholder stayed");
+
         ctrl_z(&mut app);
 
         assert_eq!(selected(&app), []);

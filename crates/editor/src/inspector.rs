@@ -3062,10 +3062,15 @@ mod tests {
     /// Undo with nothing in the history changes nothing, and does not panic.
     ///
     /// Mutation: `expect` the `pop` in `History::undo`, and this panics.
+    ///
+    /// **Nothing is clicked first.** A click that selects is an entry
+    /// (`docs/specs/ui.md` §10), and this test once selected the middle
+    /// placeholder before pressing Ctrl+Z: the undo then took back the click,
+    /// never reached an empty history, and the mutation above left the suite
+    /// green. Found by review.
     #[test]
     fn undo_with_nothing_in_the_history_changes_nothing() {
         let mut app = inspector_editor();
-        select_the_middle(&mut app);
         let before: Vec<Transform> = app
             .world_mut()
             .query::<&Transform>()
@@ -4087,7 +4092,7 @@ mod tests {
     /// A click that leaves the selection as it was is not an entry, so the
     /// next Ctrl+Z takes back the commit before it.
     ///
-    /// Mutation: drop the `from == to` check in `choose`, and this fails with
+    /// Mutation: drop the `from == to` check in `record_choice`, and this fails with
     /// ten still in place: the Ctrl+Z took back the click, which changed
     /// nothing anybody can see.
     #[test]
@@ -4115,7 +4120,7 @@ mod tests {
     /// focus and the box commits in the first, before the click exists, so
     /// the order would be right however the click were recorded.
     ///
-    /// Mutation: order `choose` before `FocusChangeEvents` rather than after
+    /// Mutation: order `record_choice` before `FocusChangeEvents` rather than after
     /// it, and this fails with the number taken back first. Mutation: record
     /// from inside `select` and `finish`, and it fails the same way.
     #[test]
@@ -4169,7 +4174,7 @@ mod tests {
     /// focus lets the panel follow, rather than holding it on what was
     /// selected before.
     ///
-    /// Mutation: drop the `InputFocus` clear in `put`, and this fails with
+    /// Mutation: drop the `InputFocus` clear in `replace_selection`, and this fails with
     /// the panel still on the left placeholder.
     #[test]
     fn ctrl_z_that_changes_the_selection_from_inside_a_box_lets_the_panel_follow() {
@@ -4202,7 +4207,7 @@ mod tests {
     /// it restores what is already there. Letting go of the focus then would
     /// throw the user out of the box for a key that did nothing visible.
     ///
-    /// Mutation: drop the equality return in `put`, and this fails with the
+    /// Mutation: drop the equality return in `replace_selection`, and this fails with the
     /// focus gone.
     #[test]
     fn an_undo_that_leaves_the_selection_as_it_was_keeps_the_focus() {
@@ -4223,6 +4228,36 @@ mod tests {
             app.world().resource::<InputFocus>().get(),
             Some(editable_under(app.world(), cell)),
             "an undo that changed nothing let go of the focus"
+        );
+    }
+
+    /// Redo of a selection change while a box on the panel has the focus lets
+    /// the panel follow, as undo does.
+    ///
+    /// Mutation: write `Selection` directly in `SetSelection::execute` rather
+    /// than through `replace_selection`, and this fails with the panel still on
+    /// the middle placeholder.
+    #[test]
+    fn redo_that_changes_the_selection_from_inside_a_box_lets_the_panel_follow() {
+        let mut app = inspector_editor();
+        select_the_middle(&mut app);
+        click_at(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+        undo(&mut app);
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        focus(&mut app, cell);
+
+        redo(&mut app);
+        app.update();
+
+        assert_eq!(
+            translation_row(&mut app),
+            ["-200", "0", "0"],
+            "the panel stayed on what was selected before the redo"
         );
     }
 }
