@@ -1125,6 +1125,13 @@ selection entry naming the old one restores a selection without it. Row 4, and
 issue #55, which designs how an entry reaches an entity after its deletion is
 undone, has `SetSelection` to cover as well as the commit.
 
+**An entry whose two sides differ only by something that has gone since does
+nothing visible when it is undone.** Select one entity, add a second, and let
+the second stop being selectable: both sides of that entry now filter to the
+same selection, and a Ctrl+Z spends itself on it. Row 4, the same as a commit
+whose entity has gone ([§8](#8-what-ctrlz-takes-back)), and unreachable until
+something deletes an entity.
+
 **Clicking around after an undo throws the redo away.** Row 4: nothing is
 written, and the user can see Ctrl+Y do nothing.
 
