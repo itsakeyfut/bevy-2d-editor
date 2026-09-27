@@ -56,6 +56,7 @@ Quotations are left in the language of their source.
 | What the inspector can edit: an `f32` leaf, typed into a box and committed on Enter | [ui.md §7](./ui.md) |
 | What Ctrl+Z takes back: the last committed number, or what is typed in the focused box | [ui.md §8](./ui.md) |
 | What redo puts back: the last entry undo took back, on Ctrl/Cmd+Y and Ctrl/Cmd+Shift+Z, dropped by a new entry | [ui.md §9](./ui.md) |
+| A change of selection is an entry, recorded once a frame after the focus changes | [ui.md §10](./ui.md) |
 | Tilemaps ride on Bevy's own `TilemapChunk` | [level-editor.md §2](./level-editor.md) |
 | Colliders: a physics-neutral shape, avian2d behind a default-on feature | [level-editor.md §3](./level-editor.md) |
 | Sprite animation | [level-editor.md §4](./level-editor.md) |

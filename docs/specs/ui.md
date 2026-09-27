@@ -826,7 +826,7 @@ comments.
 | A number box has focus, and what is in it is the leaf's value | the last entry is taken back, **and every box on the panel is given its leaf's new value in place**, the focused one included, without the panel being rebuilt |
 | Nothing to take back | nothing happens |
 | The entity an entry names is gone | nothing is written, and the entry goes to the redo side as any other does ([§9](#9-what-redo-puts-back)). Issue #55 is what makes a deletion undoable without this |
-| A change of selection | **not an entry yet.** Issue #54 makes it one, as Unity records it |
+| A change of selection | **an entry**, decided in [§10](#10-a-change-of-selection-is-an-entry) |
 
 ### Rationale
 
@@ -905,7 +905,7 @@ nothing and has to decide what counts as a repeat. Not recording them is one
 comparison.
 
 **A selection change as an entry, in the same change.** Wanted, and split out to
-issue #54 so that the change to `selection.rs`'s writers is read on its own.
+issue #54 so that the change to `selection.rs`'s writers is read on its own. [§10](#10-a-change-of-selection-is-an-entry) is where it landed.
 
 **Skipping an entry whose entity is gone and undoing the one below it.** Every
 Ctrl+Z would visibly do something, but once a deletion can be undone the entity
@@ -917,7 +917,8 @@ edit older than the deletion. Issue #55 is where that is designed.
 **After Ctrl+Z, the viewport can move while the inspector shows something
 else.** Commit a number on one sprite, click another, press Ctrl+Z: the first
 sprite moves back and the panel is about the second. Row 4, because the viewport
-shows it, and issue #54 closes it by making the click an entry.
+shows it. **Closed by issue #54**, which made the click an entry:
+[§10](#10-a-change-of-selection-is-an-entry).
 
 **Inside a box, Ctrl+Z takes back all of what was typed, not the last
 character.** Row 4, and bounded by what one box holds.
@@ -1020,3 +1021,102 @@ box holds, as [§8](#8-what-ctrlz-takes-back) accepts for its undo.
 **When `bevy_text` implements undo, its box may take the redo keys for
 itself**, as [§8](#8-what-ctrlz-takes-back) accepts for Ctrl+Z, and the same
 deferral in [open-questions.md §1](./open-questions.md) covers it.
+
+---
+
+## 10. A change of selection is an entry
+
+Decided on issue #54, and built by it: `choose`, `SetSelection` and `put` in
+`crates/editor/src/selection.rs`. Each row below is held by a test named in
+those functions' doc comments or in the tests that name them.
+
+It extends [§8](#8-what-ctrlz-takes-back) and [§9](#9-what-redo-puts-back):
+Ctrl+Z takes a selection change back as it takes a commit back, and redo puts
+it back the same way.
+
+### Decision
+
+| | |
+| --- | --- |
+| What is an entry | **a gesture that changes what is selected**: a click, a modifier click, a box drag |
+| A gesture that leaves the selection as it was | not an entry, for the reason §8 gives for a commit that changes nothing |
+| One release that clicks and ends a box drag | **one entry**, for whatever the two leave between them |
+| When it is recorded | **once a frame, in `PostUpdate`, after the frame's focus changes and before the undo and redo keys are read** |
+| Undoing or redoing it | puts back what was selected, **leaving out what has stopped being selectable since** |
+| Undoing or redoing it while a box on the inspector has the focus | **the focus is let go**, so the panel follows the selection |
+| The redo side | dropped by a selection entry, as by any entry ([§9](#9-what-redo-puts-back)) |
+| Something leaving the world | not an entry. It is a consequence, not something the user did, and `forget_what_is_gone` keeps writing the selection directly |
+
+### Rationale
+
+**Unity records it, and without it Ctrl+Z moves something the panel is not
+showing.** Commit a number on one sprite, click another, press Ctrl+Z: the
+number went back while the inspector showed the second sprite. Unity's Undo
+History lists "Change Selection" among what it records, and
+[§2](#2-unity-is-the-design-target-jackdaw-the-implementation-reference)
+makes Unity the target.
+
+**The gestures decide the selection, and one system records it later in the
+frame.** Two things go wrong if a gesture records where it runs. One release
+triggers `Pointer<Click>` and then `Pointer<DragEnd>`, and both write the
+selection, so a box drag would be two entries, the first of them a Ctrl+Z that
+empties the selection. And a press on the viewport takes the focus out of a
+number box, which commits when `FocusLost` reaches it in `PostUpdate`, while
+the click runs in `PreUpdate`: when the press and the release land in one
+frame, which a long frame produces, the click would be recorded before the
+commit it caused, and Ctrl+Z would take back a number the panel is not showing.
+Recording after `InputFocusSystems::FocusChangeEvents` puts the commit first.
+Recording before the keys are read makes a click and Ctrl+Z in one frame take
+back the click.
+
+**What is restored is filtered.** An entry is undone long after it was made, and
+something it names may have stopped being selectable since. `Selection` never
+names such a thing, and undo does not get to break that.
+
+**Letting go of the focus commits nothing here.** §8 rejects dropping the focus
+on Ctrl+Z because the drop commits what was typed. That cannot happen on this
+path: Ctrl+Z takes typing back before it reaches the history, and redo does
+nothing while there is typing, so the box being let go holds its leaf's value,
+and its commit changes nothing and is not an entry. Without it,
+[ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)
+keeps the panel as it is while the focus is inside, and the outline would move
+back while the panel stayed on what was selected before.
+
+**A selection entry drops the redo side** because keeping it would let redo put
+a number back while something else is selected, which is the defect this
+section closes, moved to redo.
+
+### Rejected options
+
+**Recording from inside the gestures.** The least code, and it produces both
+failures above: two entries for one box drag, and a commit recorded after the
+click that caused it.
+
+**Writing the selection in place and recording it as already done.** It gives
+`History` a second way in beside `record`, and it still has to record late to
+get the order right, which is this design with an extra entry point.
+
+**Leaving the panel alone after an undo moves the selection**, as ADR-0003 does
+for everything else. No code, and the inspector does not follow the selection
+until the user leaves the box.
+
+**Keeping the redo side across a selection entry.** Clicking around to look
+after an undo would not throw the redo away, at the cost given above.
+
+**Merging a run of clicks into one entry.** Unity does not, as far as its Undo
+History shows.
+
+### Accepted risk
+
+**The selection changes a frame later than the gesture.** It is written in
+`PostUpdate` rather than `PreUpdate`, so the inspector, which rebuilds in
+`Update`, builds its panel for a click one frame later than it did. Nobody can
+see one frame, and a test that reads the panel's layout waits one frame more.
+
+**Clicking around after an undo throws the redo away.** Row 4: nothing is
+written, and the user can see Ctrl+Y do nothing.
+
+**A click and Ctrl+Z in one frame depend on an ordering line.** `choose` is
+ordered before the undo key is read. Without that line the two are unordered
+rather than reversed, so the test that holds it catches the order the schedule
+happens to pick.
