@@ -2053,6 +2053,12 @@ mod tests {
     fn a_row_past_the_bottom_of_the_panel_is_clipped() {
         let mut app = inspector_editor();
         select_the_middle(&mut app);
+        // One frame more than the other tests, because this one reads the
+        // layout. A click reaches `Selection` in `PostUpdate`, after `show`
+        // (`docs/specs/ui.md` §10), so the panel it builds is spawned a frame
+        // later than the click and is not laid out until the frame after.
+        // Measured: without this, nothing is below the pane yet.
+        app.update();
 
         let panel = panel_of(&mut app);
         let world = app.world();
@@ -4032,5 +4038,159 @@ mod tests {
         press_with(&mut app, &[], KeyCode::KeyY, "y");
 
         assert_eq!(translation(&app, middle).y, 0.0, "Y alone redid");
+    }
+
+    /// What the middle placeholder's translation row shows, which is how
+    /// these tests tell the panel's subject apart: the placeholders differ in
+    /// x and in nothing the header draws.
+    fn translation_row(app: &mut App) -> Vec<String> {
+        let line = line_of(app, "Transform", 0);
+        numbers_on(app, line)
+    }
+
+    /// Ctrl+Z after a click puts the selection back, and the panel follows it.
+    ///
+    /// The outline draws whatever `Selection` names, which its own tests hold,
+    /// so the selection and the panel are what is asserted here.
+    ///
+    /// Mutation: write `Selection` directly from `select` again rather than
+    /// through `Next`, and this fails, because nothing is in the history.
+    #[test]
+    fn ctrl_z_after_a_click_puts_the_selection_back_and_the_panel_follows() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        click_at(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+        assert_eq!(
+            translation_row(&mut app),
+            ["-200", "0", "0"],
+            "the click did not move the panel to the left placeholder"
+        );
+
+        undo(&mut app);
+
+        assert_eq!(
+            app.world().resource::<Selection>().entities(),
+            [middle],
+            "Ctrl+Z did not put the selection back"
+        );
+        assert_eq!(
+            translation_row(&mut app),
+            ["0", "0", "0"],
+            "the panel did not follow the selection back"
+        );
+    }
+
+    /// A click that leaves the selection as it was is not an entry, so the
+    /// next Ctrl+Z takes back the commit before it.
+    ///
+    /// Mutation: drop the `from == to` check in `choose`, and this fails with
+    /// ten still in place: the Ctrl+Z took back the click, which changed
+    /// nothing anybody can see.
+    #[test]
+    fn a_click_that_leaves_the_selection_as_it_was_is_not_an_entry() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        commit_translation(&mut app, 1, "10");
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            0.0,
+            "Ctrl+Z took back a click that changed nothing"
+        );
+    }
+
+    /// Typing on one entity and then clicking another, with the press and
+    /// the release in one frame, puts the click in the history after the
+    /// commit it caused: the first Ctrl+Z puts the selection back, and the
+    /// second takes the number back with that entity on the panel.
+    ///
+    /// One frame by hand, per RK-014. Across two frames the press takes the
+    /// focus and the box commits in the first, before the click exists, so
+    /// the order would be right however the click were recorded.
+    ///
+    /// Mutation: order `choose` before `FocusChangeEvents` rather than after
+    /// it, and this fails with the number taken back first. Mutation: record
+    /// from inside `select` and `finish`, and it fails the same way.
+    #[test]
+    fn typing_on_one_entity_then_clicking_another_in_one_frame_takes_back_the_click_first() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        type_into(&mut app, cell, "10");
+        focus(&mut app, cell);
+
+        let left = in_window(Vec2::new(-200.0, 0.0));
+        write_input(&mut app, left, PointerAction::Move { delta: Vec2::ONE });
+        app.update();
+        app.update();
+        write_input(&mut app, left, PointerAction::Press(PointerButton::Primary));
+        write_input(
+            &mut app,
+            left,
+            PointerAction::Release(PointerButton::Primary),
+        );
+        app.update();
+        app.update();
+        app.update();
+        assert_eq!(translation(&app, middle).y, 10.0, "the commit did not land");
+        assert_ne!(
+            app.world().resource::<Selection>().entities(),
+            [middle],
+            "the click did not move the selection"
+        );
+
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            10.0,
+            "the first Ctrl+Z took back the number before the click"
+        );
+        assert_eq!(app.world().resource::<Selection>().entities(), [middle]);
+
+        undo(&mut app);
+
+        assert_eq!(
+            translation(&app, middle).y,
+            0.0,
+            "the second Ctrl+Z did not take the number back"
+        );
+    }
+
+    /// Ctrl+Z that changes the selection while a box on the panel has the
+    /// focus lets the panel follow, rather than holding it on what was
+    /// selected before.
+    ///
+    /// Mutation: drop the `InputFocus` clear in `put`, and this fails with
+    /// the panel still on the left placeholder.
+    #[test]
+    fn ctrl_z_that_changes_the_selection_from_inside_a_box_lets_the_panel_follow() {
+        let mut app = inspector_editor();
+        select_the_middle(&mut app);
+        click_at(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[1];
+        focus(&mut app, cell);
+
+        undo(&mut app);
+        app.update();
+
+        assert_eq!(
+            translation_row(&mut app),
+            ["0", "0", "0"],
+            "the panel stayed on what was selected before the undo"
+        );
     }
 }

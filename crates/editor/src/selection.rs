@@ -11,6 +11,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::ecs::lifecycle::Remove;
 use bevy::gizmos::AppGizmoBuilder;
 use bevy::gizmos::config::{GizmoConfig, GizmoConfigGroup};
+use bevy::input_focus::{InputFocus, InputFocusSystems};
 use bevy::picking::events::{Click, DragEnd, DragStart, Pointer, Press};
 use bevy::picking::hover::HoverMap;
 use bevy::picking::pointer::{PointerButton, PointerId, PointerLocation};
@@ -19,6 +20,7 @@ use bevy::prelude::*;
 use bevy::ui::widget::ViewportNode;
 
 use crate::Region;
+use crate::history::{EditorCommand, History, put_back, take_back};
 use crate::outline::{OUTLINE, SELECTION_LAYER};
 use crate::viewport::ViewportCamera;
 
@@ -44,9 +46,11 @@ use crate::viewport::ViewportCamera;
 ///   [`docs/specs/ui.md` §4](../../../docs/specs/ui.md).
 ///
 /// Those are conditions on this type, not a description of who writes it
-/// today. `select` and `finish` below are the writers as this stands, and
-/// anything that joins them either keeps the conditions or breaks the
-/// inspector that reads the last element.
+/// today. `select` and `finish` below decide what it becomes, into `Next`;
+/// `put` is what writes it, through the history, and
+/// `forget_what_is_gone` is the one writer outside it. Anything that joins
+/// them either keeps the conditions or breaks the inspector that reads the
+/// last element.
 ///
 /// **The field is private and there is no setter.** That is what makes "one
 /// place decides what is selected" a thing the compiler holds rather than a
@@ -59,6 +63,26 @@ impl Selection {
     /// What is selected, in the order it was chosen.
     pub fn entities(&self) -> &[Entity] {
         &self.0
+    }
+}
+
+/// What this frame's gestures have made the selection into, before the
+/// history records it.
+///
+/// **The gestures write here rather than to [`Selection`]**, and [`choose`]
+/// turns what is here into at most one entry, later in the frame.
+/// [`docs/specs/ui.md` §10](../../../docs/specs/ui.md) has why. `None` is "no
+/// gesture this frame". A gesture starts from what an earlier gesture in the
+/// same frame left here, so the click and the drag end that one release
+/// produces (RK-008) build one change between them, not two.
+#[derive(Resource, Default)]
+struct Next(Option<Vec<Entity>>);
+
+impl Next {
+    /// What the gesture about to act should change: what this frame has
+    /// chosen so far, or the selection when nothing has.
+    fn chosen(&mut self, selection: &Selection) -> &mut Vec<Entity> {
+        self.0.get_or_insert_with(|| selection.0.clone())
     }
 }
 
@@ -146,6 +170,7 @@ impl Plugin for SelectionPlugin {
             PickingSystems::Hover.after(bevy::input::InputSystems),
         )
         .init_resource::<Selection>()
+        .init_resource::<Next>()
         .init_resource::<Pressed>()
         .insert_gizmo_config(
             BandGizmos,
@@ -155,6 +180,13 @@ impl Plugin for SelectionPlugin {
             },
         )
         .add_systems(Update, draw_band)
+        .add_systems(
+            PostUpdate,
+            choose
+                .after(InputFocusSystems::FocusChangeEvents)
+                .before(take_back)
+                .before(put_back),
+        )
         .add_observer(attach)
         .add_observer(forget_what_is_gone);
     }
@@ -228,7 +260,8 @@ fn select(
     selectable: Query<(), With<Selectable>>,
     hover: Res<HoverMap>,
     pressed: Res<Pressed>,
-    mut selection: ResMut<Selection>,
+    selection: Res<Selection>,
+    mut next: ResMut<Next>,
 ) {
     if click.event().button != PointerButton::Primary {
         return;
@@ -252,26 +285,27 @@ fn select(
         return;
     }
 
+    let chosen = next.chosen(&selection);
     let Some(entity) = hit else {
         if !pressed.additive {
-            selection.0.clear();
+            chosen.clear();
         }
         return;
     };
 
     if !pressed.additive {
-        selection.0.clear();
-        selection.0.push(entity);
+        chosen.clear();
+        chosen.push(entity);
         return;
     }
 
     // `remove` rather than `swap_remove`: the order is a claim `Selection`
     // makes, and the cheaper call is the plausible tidying that breaks it.
-    match selection.0.iter().position(|selected| *selected == entity) {
+    match chosen.iter().position(|selected| *selected == entity) {
         Some(index) => {
-            selection.0.remove(index);
+            chosen.remove(index);
         }
-        None => selection.0.push(entity),
+        None => chosen.push(entity),
     }
 }
 
@@ -362,7 +396,7 @@ fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
 /// `a_band_replaces_the_selection_when_the_modifier_is_not_held` fails.
 /// Mutation: read [`Pressed::band`] instead of taking it, and
 /// `the_band_is_gone_once_the_button_is_let_go` fails. Mutation: drop the
-/// `!selection.0.contains(&entity)`, and
+/// `!chosen.contains(entity)`, and
 /// `a_modifier_box_over_something_already_selected_leaves_it_in_once` fails.
 /// Mutation: delete the sort, and `a_box_leaves_the_front_most_entity_active`
 /// fails. Mutation: sort descending and reverse, and
@@ -381,7 +415,8 @@ fn finish(
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
     bounds: Query<(Entity, &GlobalTransform, &Aabb), With<Selectable>>,
     mut pressed: ResMut<Pressed>,
-    mut selection: ResMut<Selection>,
+    selection: Res<Selection>,
+    mut next: ResMut<Next>,
 ) {
     if end.event().button != PointerButton::Primary {
         return;
@@ -397,20 +432,102 @@ fn finish(
     };
     let band = Rect::from_corners(anchor, now);
 
+    let chosen = next.chosen(&selection);
     if !pressed.additive {
-        selection.0.clear();
+        chosen.clear();
     }
     let mut covered: Vec<(Entity, f32)> = bounds
         .iter()
         .filter(|(entity, at, aabb)| {
-            !band.intersect(world_bounds(at, aabb)).is_empty() && !selection.0.contains(entity)
+            !band.intersect(world_bounds(at, aabb)).is_empty() && !chosen.contains(entity)
         })
         .map(|(entity, at, _)| (entity, at.translation().z))
         .collect();
     covered.sort_by(|a, b| a.1.total_cmp(&b.1));
-    selection
-        .0
-        .extend(covered.into_iter().map(|(entity, _)| entity));
+    chosen.extend(covered.into_iter().map(|(entity, _)| entity));
+}
+
+/// Record what this frame's gestures chose, as one entry, when it changes the
+/// selection.
+///
+/// **After the frame's focus changes**, because a press on the viewport takes
+/// the focus out of a number box and the box commits when `FocusLost` reaches
+/// it, in `PostUpdate`. When the press and the release land in one frame, a
+/// record made where the gesture ran would come before that commit, and
+/// Ctrl+Z would take back a number the panel is not showing. **Before the
+/// undo and redo keys**, so that a click and Ctrl+Z in one frame take back the
+/// click, the order the user did them in.
+/// [`docs/specs/ui.md` §10](../../../docs/specs/ui.md) is the decision.
+///
+/// **A gesture that leaves the selection as it was is not an entry**: a
+/// Ctrl+Z that changes nothing visible looks like a Ctrl+Z that is broken,
+/// the reason [`docs/specs/ui.md` §8](../../../docs/specs/ui.md) gives for a
+/// commit.
+fn choose(mut next: ResMut<Next>, mut commands: Commands) {
+    let Some(to) = next.0.take() else {
+        return;
+    };
+    commands.queue(move |world: &mut World| {
+        let to = selectable_of(world, to);
+        let from = world.resource::<Selection>().0.clone();
+        if from == to {
+            return;
+        }
+        History::record(world, SetSelection { from, to });
+    });
+}
+
+/// A change of what is selected, and what was selected before it.
+struct SetSelection {
+    /// What undo puts back.
+    from: Vec<Entity>,
+    /// What the gesture chose, which is what redo puts back.
+    to: Vec<Entity>,
+}
+
+impl EditorCommand for SetSelection {
+    fn execute(&mut self, world: &mut World) {
+        put(world, self.to.clone());
+    }
+
+    fn undo(&mut self, world: &mut World) {
+        put(world, self.from.clone());
+    }
+}
+
+/// Make `entities` the selection, leaving out what is no longer selectable,
+/// and let go of the focus when that changes what is selected.
+///
+/// **The filter** is what keeps `Selection` naming only what
+/// [`forget_what_is_gone`] would let it name: an entry is undone long after
+/// it was made, and something it names may have gone since.
+///
+/// **The focus** is let go because the inspector is not rebuilt while it is
+/// inside the panel
+/// ([ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)),
+/// so an undo that moved the selection would leave the panel on what was
+/// selected before. [`docs/specs/ui.md` §10](../../../docs/specs/ui.md) has why
+/// letting go commits nothing here. On the gesture path the press has already
+/// taken the focus, and this does nothing.
+fn put(world: &mut World, entities: Vec<Entity>) {
+    let entities = selectable_of(world, entities);
+    if world.resource::<Selection>().0 == entities {
+        return;
+    }
+    world.resource_mut::<Selection>().0 = entities;
+    world.resource_mut::<InputFocus>().clear();
+}
+
+/// `entities`, in order, without the ones that are not selectable now.
+fn selectable_of(world: &World, entities: Vec<Entity>) -> Vec<Entity> {
+    entities
+        .into_iter()
+        .filter(|entity| {
+            world
+                .get_entity(*entity)
+                .is_ok_and(|entity| entity.contains::<Selectable>())
+        })
+        .collect()
 }
 
 /// Whether the modifier that adds to and removes from the selection is held.
@@ -595,7 +712,9 @@ fn forget_what_is_gone(remove: On<Remove, Selectable>, mut selection: ResMut<Sel
 mod tests {
     use super::{BandGizmos, SELECTION_LAYER, Selectable, Selection};
     use crate::drawn::covered_by;
-    use crate::pointer::{click_at, hold_key, in_window, release_key, write_input};
+    use crate::pointer::{
+        click_at, hold_key, hold_letter, in_window, release_key, release_letter, write_input,
+    };
     use crate::viewport::PLACEHOLDERS;
     use crate::{Region, editor, headless};
     use bevy::camera::visibility::RenderLayers;
@@ -1941,5 +2060,105 @@ mod tests {
         app.update();
 
         assert_eq!(covered_by::<BandGizmos>(&app), None);
+    }
+
+    /// Ctrl+Z, pressed and let go.
+    fn ctrl_z(app: &mut App) {
+        hold_key(app, KeyCode::ControlLeft);
+        hold_letter(app, KeyCode::KeyZ, "z");
+        app.update();
+        release_letter(app, KeyCode::KeyZ, "z");
+        release_key(app, KeyCode::ControlLeft);
+        app.update();
+        app.update();
+    }
+
+    /// Undoing a selection change leaves out what has stopped being
+    /// selectable since, and keeps the rest in order.
+    ///
+    /// Two entities in what is restored, per RK-007: with one, leaving it out
+    /// and emptying the selection are the same program.
+    ///
+    /// Mutation: drop the `selectable_of` call in `put`, and this fails with
+    /// the left placeholder restored.
+    #[test]
+    fn undoing_a_selection_change_leaves_out_what_stopped_being_selectable() {
+        let mut app = selection_editor();
+        let left = placeholder(&mut app, 0);
+        let middle = placeholder(&mut app, 1);
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+        modifier_click_at(&mut app, in_window(MIDDLE));
+        click_at(&mut app, in_window(RIGHT), PointerButton::Primary);
+        app.world_mut().entity_mut(left).remove::<Selectable>();
+        app.update();
+
+        ctrl_z(&mut app);
+
+        assert_eq!(selected(&app), [middle]);
+    }
+
+    /// A box that replaces a selection is one entry, however many it adds.
+    ///
+    /// One release is a click and a drag end (RK-008), and the click clears
+    /// the selection before the drag end fills it. What was selected before is
+    /// not empty, so that an entry for the click alone would be visible as a
+    /// Ctrl+Z that leaves nothing selected.
+    ///
+    /// Mutation: record from inside `select` and `finish`, each with the
+    /// selection it started from, and this fails with nothing selected.
+    #[test]
+    fn a_box_that_replaces_a_selection_is_one_entry() {
+        let mut app = selection_editor();
+        let right = placeholder(&mut app, 2);
+        let near = sprite_at(&mut app, Vec3::new(0.0, -150.0, 0.0));
+        let far = sprite_at(&mut app, Vec3::new(20.0, -150.0, 0.0));
+        click_at(&mut app, in_window(RIGHT), PointerButton::Primary);
+        box_below_the_placeholders(&mut app);
+        let mut boxed = [near, far];
+        boxed.sort();
+        assert_eq!(sorted(&app), boxed, "the box did not select both");
+
+        ctrl_z(&mut app);
+
+        assert_eq!(selected(&app), [right]);
+    }
+
+    /// A click and Ctrl+Z in one frame take back the click, which is the
+    /// order they were done in.
+    ///
+    /// The press is a frame earlier, without the modifier, so that the click
+    /// replaces rather than adds.
+    ///
+    /// Mutation: drop `.before(take_back)` on `choose`, and this fails with
+    /// the left placeholder selected: the undo takes back the click before
+    /// it, and this click is then recorded on top. **Measured, and not
+    /// promised**: without the line the two systems are unordered rather than
+    /// reversed, so what this catches is the order the schedule happened to
+    /// pick in Bevy 0.19.1.
+    #[test]
+    fn a_click_and_ctrl_z_in_one_frame_take_back_the_click() {
+        let mut app = selection_editor();
+        let middle = placeholder(&mut app, 1);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+        let left = in_window(LEFT);
+        write_input(&mut app, left, PointerAction::Move { delta: Vec2::ONE });
+        app.update();
+        app.update();
+        write_input(&mut app, left, PointerAction::Press(PointerButton::Primary));
+        app.update();
+
+        hold_key(&mut app, KeyCode::ControlLeft);
+        hold_letter(&mut app, KeyCode::KeyZ, "z");
+        write_input(
+            &mut app,
+            left,
+            PointerAction::Release(PointerButton::Primary),
+        );
+        app.update();
+        release_letter(&mut app, KeyCode::KeyZ, "z");
+        release_key(&mut app, KeyCode::ControlLeft);
+        app.update();
+
+        assert_eq!(selected(&app), [middle]);
     }
 }

@@ -32,10 +32,9 @@ pub trait EditorCommand: Send + Sync + 'static {
 /// touching this type, and that compiles. So "one history" is still a rule a
 /// writer has to follow, and there is no single search that finds every
 /// writer that does not. A reflected write goes through
-/// `World::get_reflect_mut`; the selection (issue #54) is a resource written
-/// in `selection.rs`; a deletion (issue #55) is a despawn. The inspector's
-/// commit is the first writer through here, and the gizmos, the selection and
-/// the deletion are each the next.
+/// `World::get_reflect_mut`, and a deletion (issue #55) is a despawn. The
+/// inspector's commit and the selection are the writers through here, and the
+/// gizmos and the deletion are each the next.
 #[derive(Resource, Default)]
 pub struct History {
     /// What undo can take back, oldest first.
@@ -155,7 +154,7 @@ impl Plugin for HistoryPlugin {
 /// caller and one callee, and a pair of observers would add a question about
 /// which runs first for nothing. The next panel with boxes in it is added
 /// here.
-fn take_back(
+pub(crate) fn take_back(
     letters: Res<ButtonInput<Key>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
@@ -205,7 +204,7 @@ fn take_back(
 ///
 /// Mutation: drop the `typing_in_focus` check, and
 /// `redo_does_nothing_while_the_focused_box_holds_typing` fails.
-fn put_back(
+pub(crate) fn put_back(
     letters: Res<ButtonInput<Key>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
