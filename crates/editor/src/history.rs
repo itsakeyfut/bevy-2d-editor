@@ -221,6 +221,11 @@ pub(crate) fn take_back(
 ///
 /// Mutation: drop the `typing_in_focus` check, and
 /// `redo_does_nothing_while_the_focused_box_holds_typing` fails.
+///
+/// # Not during a drag
+///
+/// As [`take_back`]. Mutation: drop the `moving::in_progress` check, and
+/// `redo_during_a_drag_does_nothing` fails.
 pub(crate) fn put_back(
     letters: Res<ButtonInput<Key>>,
     keys: Res<ButtonInput<KeyCode>>,

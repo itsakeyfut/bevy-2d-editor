@@ -415,8 +415,8 @@ mod tests {
     /// The zoom is set on the projection rather than scrolled to, because it
     /// is not what is under test; the drag is the gesture.
     ///
-    /// Mutation: take the delta from `Drag::distance`, in pixels, in place of
-    /// `pointer_world`, and this fails.
+    /// Mutation: divide the delta in `follow` by the zoom, which is what a
+    /// delta in pixels is, and this fails.
     #[test]
     fn a_drag_moves_the_same_world_distance_when_zoomed() {
         let mut app = moving_editor();
@@ -681,6 +681,41 @@ mod tests {
         undo(&mut app);
 
         assert_eq!(translation(&app, middle), Vec3::ZERO);
+    }
+
+    /// Redo during a drag does nothing.
+    ///
+    /// The same shape as the undo: a redo in the middle of a drag writes a
+    /// position the next frame writes over, and the entry it put back sits
+    /// between the drag and what came before it, where the second Ctrl+Z
+    /// spends itself on it rather than reaching the click.
+    ///
+    /// Mutation: drop the `moving::in_progress` check in `history::put_back`,
+    /// and this fails.
+    #[test]
+    fn redo_during_a_drag_does_nothing() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+        press_then_release(&mut app, in_window(MIDDLE), in_window(Vec2::new(30.0, 0.0)));
+        undo(&mut app);
+        assert_eq!(translation(&app, middle), Vec3::ZERO);
+
+        let to = in_window(Vec2::new(60.0, 0.0));
+        press_and_hold(&mut app, in_window(MIDDLE), to);
+        redo(&mut app);
+        write_input(&mut app, to, PointerAction::Release(PointerButton::Primary));
+        app.update();
+        app.update();
+        assert_near(translation(&app, middle), Vec3::new(60.0, 0.0, 0.0));
+
+        undo(&mut app);
+        undo(&mut app);
+
+        assert!(
+            selected(&app).is_empty(),
+            "the second Ctrl+Z did not reach the click"
+        );
     }
 
     /// A drag whose release never arrives is recorded at the next press.
