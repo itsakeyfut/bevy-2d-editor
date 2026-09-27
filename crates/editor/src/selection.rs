@@ -412,6 +412,10 @@ fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
 /// `a_modifier_drag_on_an_unselected_entity_adds_it_and_moves_everything`
 /// fails. Mutation: move what was selected before, not the entity pressed,
 /// and `dragging_an_unselected_entity_selects_it_and_moves_it` fails.
+/// Mutation: drop the `pressed.moving` return, so that every move begins the
+/// move again, and
+/// `a_drag_of_many_moves_follows_the_pointer_and_undoes_to_where_it_began`
+/// fails.
 fn grab(
     drag: On<Pointer<Drag>>,
     mut pressed: ResMut<Pressed>,

@@ -99,6 +99,11 @@ fn record_held(press: On<Pointer<Press>>, mut commands: Commands) {
 ///
 /// Queued, so that it lands after the `start` of a drag that begins and ends
 /// in one frame.
+///
+/// **The button check is one line no test holds**, as the same check in
+/// `selection::finish` is not: reaching it takes a second button let go
+/// during a left drag. Without it, letting go of the middle button ends the
+/// move there, and the rest of the drag moves nothing.
 fn let_go(end: On<Pointer<DragEnd>>, mut commands: Commands) {
     if end.event().button == PointerButton::Primary {
         commands.queue(|world: &mut World| {
@@ -165,10 +170,26 @@ pub(crate) fn in_progress(world: &World) -> bool {
 ///
 /// Mutation: return before writing, and
 /// `dragging_a_selected_entity_moves_it_by_what_the_pointer_moved` fails.
-/// Mutation: read [`Held::from`] in `selection::grab` rather than here, and
+/// Mutation: fill [`Held::from`] in [`start`], which runs in `PreUpdate`,
+/// rather than here, and
 /// `a_number_the_press_commits_is_under_the_move_in_the_history` fails.
 /// Mutation: record on every frame rather than when [`Held::ended`], and
 /// `one_ctrl_z_after_a_drag_puts_every_entity_back_bit_for_bit` fails.
+/// Mutation: drop `.before(take_back)` in [`MovePlugin`], and
+/// `letting_go_and_ctrl_z_in_one_frame_take_back_the_move` fails. Mutation:
+/// drop `.after(record_choice)`, and
+/// `a_grab_and_a_release_in_one_frame_record_the_selection_below_the_move`
+/// fails.
+///
+/// **Two of its orderings no test holds**, measured by removing each with the
+/// whole suite green. Without `.after(FocusChangeEvents)` the system is
+/// unordered against the commit rather than before it, and the schedule
+/// happens to put it after, so the test of that path passes on the order the
+/// schedule picks; `docs/specs/ui.md` §10 accepts the same of
+/// `record_choice`. Without `.before(TransformSystems::Propagate)` the outline
+/// trails the entity by a frame, which nothing reads. The write only when a
+/// translation changes is unguarded too: what it saves is the inspector
+/// rebuilding on every frame the button is held still, which no test counts.
 fn follow(
     mut stroke: ResMut<Stroke>,
     viewport: Query<&PointerLocation, With<ViewportNode>>,
@@ -716,6 +737,133 @@ mod tests {
             selected(&app).is_empty(),
             "the second Ctrl+Z did not reach the click"
         );
+    }
+
+    /// A drag of many small moves follows the pointer, and undo puts it back
+    /// where it began.
+    ///
+    /// A real drag is dozens of moves, and every other test here makes one.
+    /// With one, a grab that begins the move again on each move cannot be
+    /// told apart from one that begins it once.
+    ///
+    /// Mutation: drop the `pressed.moving` return in `selection::grab`, and
+    /// this fails, the entity running ahead of the pointer and the undo
+    /// landing short of where it began.
+    #[test]
+    fn a_drag_of_many_moves_follows_the_pointer_and_undoes_to_where_it_began() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        write_input(
+            &mut app,
+            in_window(MIDDLE),
+            PointerAction::Move { delta: Vec2::ONE },
+        );
+        app.update();
+        write_input(
+            &mut app,
+            in_window(MIDDLE),
+            PointerAction::Press(PointerButton::Primary),
+        );
+        app.update();
+        for x in [10.0, 20.0, 30.0] {
+            write_input(
+                &mut app,
+                in_window(Vec2::new(x, 0.0)),
+                PointerAction::Move { delta: Vec2::ONE },
+            );
+            app.update();
+            app.update();
+        }
+        write_input(
+            &mut app,
+            in_window(Vec2::new(30.0, 0.0)),
+            PointerAction::Release(PointerButton::Primary),
+        );
+        app.update();
+        app.update();
+        assert_near(translation(&app, middle), Vec3::new(30.0, 0.0, 0.0));
+
+        undo(&mut app);
+
+        assert_eq!(translation(&app, middle), Vec3::ZERO);
+    }
+
+    /// Letting go and Ctrl+Z in one frame take back the move.
+    ///
+    /// The move is recorded when the button is let go, and the key is read
+    /// later in the same frame, which is the order the user did them in.
+    ///
+    /// Mutation: drop `.before(take_back)` in `MovePlugin`, and this fails,
+    /// the undo taking back the click and the move landing after it.
+    #[test]
+    fn letting_go_and_ctrl_z_in_one_frame_take_back_the_move() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+        let to = in_window(Vec2::new(30.0, 0.0));
+        press_and_hold(&mut app, in_window(MIDDLE), to);
+
+        write_input(&mut app, to, PointerAction::Release(PointerButton::Primary));
+        hold_key(&mut app, KeyCode::ControlLeft);
+        hold_letter(&mut app, KeyCode::KeyZ, "z");
+        app.update();
+        release_letter(&mut app, KeyCode::KeyZ, "z");
+        release_key(&mut app, KeyCode::ControlLeft);
+        app.update();
+        app.update();
+
+        assert_eq!(translation(&app, middle), Vec3::ZERO);
+        assert_eq!(selected(&app), [middle]);
+    }
+
+    /// A grab and a release in one frame record the selection below the
+    /// move, so undo takes back the move first.
+    ///
+    /// The press is a frame earlier, so the grab and the release are the
+    /// only two things in the batch: pressed in the same batch, the press is
+    /// read where the move ended and the move is nothing
+    /// (`docs/specs/ui.md` §11, "Accepted risk").
+    ///
+    /// Mutation: drop `.after(record_choice)` in `MovePlugin`, and this fails.
+    #[test]
+    fn a_grab_and_a_release_in_one_frame_record_the_selection_below_the_move() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        let left = entity_at(&mut app, LEFT);
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+
+        write_input(
+            &mut app,
+            in_window(MIDDLE),
+            PointerAction::Move { delta: Vec2::ONE },
+        );
+        app.update();
+        write_input(
+            &mut app,
+            in_window(MIDDLE),
+            PointerAction::Press(PointerButton::Primary),
+        );
+        app.update();
+        let to = in_window(Vec2::new(20.0, 0.0));
+        write_input(&mut app, to, PointerAction::Move { delta: Vec2::ONE });
+        write_input(&mut app, to, PointerAction::Release(PointerButton::Primary));
+        app.update();
+        app.update();
+        assert_eq!(selected(&app), [middle]);
+        assert_near(translation(&app, middle), Vec3::new(20.0, 0.0, 0.0));
+
+        undo(&mut app);
+
+        assert_eq!(translation(&app, middle), Vec3::ZERO);
+        assert_eq!(
+            selected(&app),
+            [middle],
+            "the first Ctrl+Z took back the selection"
+        );
+        undo(&mut app);
+        assert_eq!(selected(&app), [left]);
     }
 
     /// A drag whose release never arrives is recorded at the next press.
