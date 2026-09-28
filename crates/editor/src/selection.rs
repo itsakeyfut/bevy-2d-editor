@@ -20,8 +20,9 @@ use bevy::prelude::*;
 use bevy::ui::widget::ViewportNode;
 
 use crate::Region;
+use crate::handles::Knob;
 use crate::history::{EditorCommand, History, put_back, take_back};
-use crate::moving;
+use crate::moving::{self, Grip};
 use crate::outline::{OUTLINE, SELECTION_LAYER};
 use crate::viewport::ViewportCamera;
 
@@ -140,10 +141,15 @@ struct Pressed {
     at: Option<Vec2>,
     /// Where a box drag began, once the press turned into one.
     band: Option<Vec2>,
-    /// Whether the gesture has become a move, which a press on an entity does
-    /// once the pointer has gone further than [`MOVE_THRESHOLD`]. From then on
-    /// the release is not a click.
+    /// Whether the gesture has become a move or a turn, which a press on an
+    /// entity or on the knob does once the pointer has gone further than
+    /// [`MOVE_THRESHOLD`]. From then on the release is not a click.
     moving: bool,
+    /// Whether the press was on the rotate knob. It wins over whatever
+    /// [`Pressed::over`] says is under it, because the knob is drawn on top:
+    /// [`docs/specs/ui.md` §12](../../../docs/specs/ui.md). Every reader here
+    /// asks this before it asks `over`.
+    knob: bool,
 }
 
 /// How far the pointer goes from a press on an entity, in logical pixels,
@@ -162,9 +168,9 @@ const MOVE_THRESHOLD: f32 = 4.0;
 /// without one is a thing that cannot be selected, which would read as a defect
 /// in this file rather than as a missing component over there.
 ///
-/// It also names the set the box drag below hit-tests against, and
-/// leaves room for the thing that is pickable and not selectable, which is a
-/// gizmo handle.
+/// It also names the set the box drag below hit-tests against. The one
+/// handle there is, the rotate knob, is not an entity at all, and is tested by
+/// distance in `handles.rs`: [`docs/specs/ui.md` §12](../../../docs/specs/ui.md).
 #[derive(Component, Default)]
 #[require(Pickable)]
 pub struct Selectable;
@@ -282,6 +288,7 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
 ///   `the_selection_keeps_the_order_things_were_chosen_in`
 /// * drop the `pressed.moving` check:
 ///   `dragging_one_of_several_selected_moves_them_all_and_keeps_the_selection`
+/// * drop the `pressed.knob` check: `clicking_the_knob_keeps_the_selection`
 fn select(
     click: On<Pointer<Click>>,
     viewport: Query<&PointerId, With<ViewportNode>>,
@@ -292,8 +299,10 @@ fn select(
     mut next: ResMut<Next>,
 ) {
     // A move ends in a release over the entity that followed the pointer, so
-    // it would read as a click on it and collapse a group to that one.
-    if click.event().button != PointerButton::Primary || pressed.moving {
+    // it would read as a click on it and collapse a group to that one. A
+    // click on the knob is a release over empty space, and would clear what
+    // the knob is drawn on.
+    if click.event().button != PointerButton::Primary || pressed.moving || pressed.knob {
         return;
     }
     // The pointer is read from the entity that carries `ViewportNode`, not from
@@ -348,12 +357,15 @@ fn select(
 /// Mutation: record `None` for [`Pressed::at`], and
 /// `a_band_over_two_entities_selects_both` fails, because no press could then
 /// anchor a box.
+///
+/// The knob is read beside the hover map, in one parameter, because this
+/// observer is at the seven clippy allows.
 fn remember(
     press: On<Pointer<Press>>,
     viewport: Query<(&PointerId, &PointerLocation), With<ViewportNode>>,
     selectable: Query<(), With<Selectable>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
-    hover: Res<HoverMap>,
+    (hover, knob): (Res<HoverMap>, Res<Knob>),
     keys: Res<ButtonInput<KeyCode>>,
     mut pressed: ResMut<Pressed>,
 ) {
@@ -369,6 +381,7 @@ fn remember(
         at: pointer_world(location, &cameras),
         band: None,
         moving: false,
+        knob: knob.under(location),
     };
 }
 
@@ -380,14 +393,18 @@ fn remember(
 /// [`select`], so pressing an entity, wandering off and coming back still
 /// selects it, which is what `docs/specs/ui.md` §4 asks for.
 ///
+/// A drag from the knob is a turn, not a box, though nothing is under it.
+///
 /// Mutation: drop the `pressed.over.is_some()` check, and
 /// `a_drag_that_begins_on_an_entity_is_not_a_band` fails. Mutation: drop the
 /// button check, and `a_drag_with_any_other_button_does_not_band` fails.
+/// Mutation: drop the `pressed.knob` check, and
+/// `a_drag_from_the_knob_is_not_a_box` fails.
 fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
     if start.event().button != PointerButton::Primary {
         return;
     }
-    if pressed.over.is_some() {
+    if pressed.over.is_some() || pressed.knob {
         return;
     }
     pressed.band = pressed.at;
@@ -421,22 +438,42 @@ fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
 /// move again, and
 /// `a_drag_of_many_moves_follows_the_pointer_and_undoes_to_where_it_began`
 /// fails.
+///
+/// **A press on the knob turns what is selected and leaves the selection as
+/// it is**, past the same threshold, so that a click on the knob with a
+/// pixel of jitter is still a click:
+/// [`docs/specs/ui.md` §12](../../../docs/specs/ui.md).
+///
+/// Mutation: start a move rather than a turn from the knob, and
+/// `dragging_the_knob_turns_one_entity_about_its_origin` fails. Mutation: ask
+/// about the entity before the knob, and
+/// `the_knob_takes_the_press_over_an_entity_under_it` fails.
 fn grab(
     drag: On<Pointer<Drag>>,
     mut pressed: ResMut<Pressed>,
     selection: Res<Selection>,
+    knob: Res<Knob>,
     mut next: ResMut<Next>,
     mut commands: Commands,
 ) {
     if drag.event().button != PointerButton::Primary || pressed.moving {
         return;
     }
-    let (Some(entity), Some(anchor)) = (pressed.over, pressed.at) else {
-        return;
-    };
     if drag.event().distance.length() <= MOVE_THRESHOLD {
         return;
     }
+    if pressed.knob {
+        let (Some(anchor), Some(grip)) = (pressed.at, knob.grip()) else {
+            return;
+        };
+        pressed.moving = true;
+        let group = selection.entities().to_vec();
+        commands.queue(move |world: &mut World| moving::start(world, group, anchor, grip));
+        return;
+    }
+    let (Some(entity), Some(anchor)) = (pressed.over, pressed.at) else {
+        return;
+    };
     pressed.moving = true;
 
     let chosen = next.chosen(&selection);
@@ -447,7 +484,7 @@ fn grab(
         chosen.push(entity);
     }
     let group = chosen.clone();
-    commands.queue(move |world: &mut World| moving::start(world, group, anchor));
+    commands.queue(move |world: &mut World| moving::start(world, group, anchor, Grip::Body));
 }
 
 /// Select what the box covers, when the button is let go.
@@ -673,7 +710,7 @@ fn under(
 /// The outline draws those bounds turned rather than axis-aligned, so for a
 /// turned sprite the box here is very slightly generous. That is the direction
 /// `docs/specs/ui.md` §4 already leans.
-fn world_bounds(at: &GlobalTransform, aabb: &Aabb) -> Rect {
+pub(crate) fn world_bounds(at: &GlobalTransform, aabb: &Aabb) -> Rect {
     let centre = Vec3::from(aabb.center);
     let half = Vec3::from(aabb.half_extents);
     let corners = [

@@ -97,6 +97,47 @@ pub(crate) fn press_and_hold(app: &mut App, press: Vec2, to: Vec2) {
     }
 }
 
+/// Press at the first window position, move through the rest one frame
+/// apart, and let go at the last.
+///
+/// A real drag is dozens of moves, and RK-007 is what a gesture of one move
+/// cannot tell apart: a drag that begins again on every move looks the same
+/// as one that begins once.
+pub(crate) fn drag_through(app: &mut App, path: &[Vec2]) {
+    let (first, rest) = path.split_first().expect("a path has somewhere to start");
+    for action in [
+        PointerAction::Move { delta: Vec2::ONE },
+        PointerAction::Press(PointerButton::Primary),
+    ] {
+        write_input(app, *first, action);
+        app.update();
+        app.update();
+    }
+    for position in rest {
+        write_input(app, *position, PointerAction::Move { delta: Vec2::ONE });
+        app.update();
+        app.update();
+    }
+    let last = rest.last().unwrap_or(first);
+    write_input(app, *last, PointerAction::Release(PointerButton::Primary));
+    app.update();
+    app.update();
+}
+
+/// The window positions of a path from `from` round `pivot` by `degrees`,
+/// anticlockwise, in `steps` equal moves, all given in world units.
+///
+/// It starts at `from` itself, so it can be handed to [`drag_through`] as it
+/// is: the press lands where the path begins.
+pub(crate) fn round(pivot: Vec2, from: Vec2, degrees: f32, steps: u16) -> Vec<Vec2> {
+    (0..=steps)
+        .map(|step| {
+            let turned = Rot2::degrees(degrees * f32::from(step) / f32::from(steps));
+            in_window(pivot + turned * (from - pivot))
+        })
+        .collect()
+}
+
 /// The window an input is addressed to.
 ///
 /// The pointer's [`Location`] needs it. The keyboard's message carries it and
