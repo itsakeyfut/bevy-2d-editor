@@ -192,6 +192,7 @@ than new.
 | Left button, dragged from empty space | Draws a box; what it touches becomes the selection |
 | Ctrl or Cmd with the left button, dragged from empty space | Adds what the box touches to what is already selected |
 | Left button, dragged from an entity | Moves what is selected, selecting the entity first when it is not: [§11](#11-dragging-what-is-selected) |
+| Left button, on the rotate knob | Dragged, turns what is selected; clicked, nothing. The knob wins over an entity under it: [§12](#12-the-rotate-knob) |
 | Right button | Nothing yet, and kept for a context menu |
 
 Zoom is clamped, from 1/32 to 32 world units per pixel.
@@ -779,7 +780,8 @@ a sprite can be put into a state that is not a rotation. Unity shows Euler
 angles and converts. Doing that here means naming `Quat` in the editor's code,
 which §6 spent its whole component list avoiding, and it carries its own
 question about which three angles. It comes back when somebody turns a sprite
-from the inspector and finds out.
+from the inspector and finds out, or, since [§12](#12-the-rotate-knob), when
+somebody turns one with the knob and cannot read the result here.
 
 **While a box has focus, every other line on the panel is stale.** Committing a
 translation does not redraw `GlobalTransform` until focus leaves, because the
@@ -1165,7 +1167,7 @@ the gesture, and [§8](#8-what-ctrlz-takes-back) to
 
 | | |
 | --- | --- |
-| What is grabbed | **the entity's body.** There are no handles in this change; the first handle is the rotate handle, issue #62, which also decides whether the handles are shown at once or chosen from a tool |
+| What is grabbed | **the entity's body.** There were no handles in this change; the first is the rotate knob of [§12](#12-the-rotate-knob), which also decided that the handles are shown at once rather than chosen from a tool |
 | When a press becomes a move | **once the pointer has gone more than 4 logical pixels from the press.** Under that, it is a click |
 | The entity pressed is selected | everything selected moves, with or without the modifier, and the selection stays as it is |
 | The entity pressed is not selected | it becomes the selection and it moves. With the modifier held, it is added to the selection and everything selected moves |
@@ -1258,3 +1260,117 @@ the editor has a parent. A hierarchy is what breaks it.
 
 **Ctrl+Z pressed mid-drag does nothing.** Row 4: the key does nothing visible,
 and it works again the moment the button is let go.
+
+---
+
+## 12. The rotate knob
+
+Decided on issue #62, and built by it: `place_knob` in
+`crates/editor/src/handles.rs` draws the knob and remembers where,
+`remember` and `grab` in `crates/editor/src/selection.rs` take a press on it,
+and `follow` in `crates/editor/src/moving.rs` turns what is selected and
+records it. Each row below is held by a test named in those functions' doc
+comments.
+
+It extends [§11](#11-dragging-what-is-selected), whose drag it goes through,
+and fills in the handles [§5](#5-what-a-selection-looks-like-in-the-viewport)
+left room for.
+
+### Decision
+
+| | |
+| --- | --- |
+| What is drawn | **a knob above what is selected**: a stalk up from the middle of the top edge of the selection's frame, ending in a small circle, drawn whenever something is selected, beside the outline |
+| The frame | the axis-aligned rectangle covering the world bounds of everything selected, the same bounds the box drag of [§4](#4-what-the-mouse-does-in-the-viewport) tests against |
+| Its size | **a size on screen**, 24 logical pixels of stalk and a 6 pixel knob, the same at every zoom |
+| Choosing it | **no tool bar.** The body moves, the knob turns, and scale goes on the corners §5 kept empty |
+| A press on it | taken by the knob when it is within 9 logical pixels of the knob's centre, **before any entity under it** |
+| A click on it | nothing. The selection stays as it is |
+| A drag from it | past [§11](#11-dragging-what-is-selected)'s threshold, turns what is selected about the view axis, by the angle the pointer has gone round the pivot. The selection stays as it is |
+| The pivot | **the entity's own origin when one is selected**, and the centre of the frame when several are |
+| What is written | for one entity, its `rotation` alone. For several, each one's `rotation` and its `translation` in x and y, turned about the pivot as one body. `z` and `scale` are left alone |
+| The rotation | the turn about Z multiplied onto the rotation the entity had, then normalized |
+| While it turns | the knob stays under the pointer, at the pivot plus its starting offset turned by the angle so far |
+| What the history gets | what [§11](#11-dragging-what-is-selected) gives a move: one entry, when the button is let go |
+
+### Rationale
+
+**Something on screen says the knob is there.** `docs/concepts.md` asks for an
+editor a beginner can use without studying it first, and a handle that is
+drawn is one that is found. Showing it at all times, with no tool to choose,
+keeps the gesture table of [§4](#4-what-the-mouse-does-in-the-viewport) one
+table: the body moves, the knob turns, and nothing depends on a mode the user
+has to remember they are in.
+
+**The pivot follows what the picture says.** A knob on a frame round one
+sprite reads as turning that sprite, and turning it about its own origin writes
+only its rotation. A knob on a frame round a group reads as turning the group,
+so the group turns as one body about the frame's centre.
+
+**The rotation is composed rather than replaced.** A rotation the inspector
+tilted in x or y ([§7](#7-what-the-inspector-can-edit)) keeps its tilt, because
+writing a pure turn about Z over it would drop the tilt without a word. From an
+unturned entity the result is a unit rotation about Z, which is the state §7's
+raw numbers cannot be trusted to stay in.
+
+**Pixels go through the camera, both ways.** The knob's place is found in the
+viewport's coordinates and taken back into the world, and a press is compared
+with it in the same coordinates the pointer is read in. No scale factor
+appears, so the arithmetic holds on a display at 200% without a test that
+could say so.
+
+**Bevy's own transform gizmo was read and not used.** `TransformGizmoPlugin` in
+`bevy_gizmos` 0.19.1 acts on one entity, reads the window's cursor and mouse
+buttons rather than the viewport's picking pointer, so a press on it would also
+reach the observers of §4, and emits nothing when a drag ends, which leaves
+§11's one entry nowhere to hang. Its arithmetic for the angle is the one used
+here.
+
+### Rejected options
+
+**An invisible zone just outside the corners, as Unity's Rect Tool.** Nothing
+on screen says it is there, and a click just outside a corner meant as a click
+becomes a turn.
+
+**A ring, chosen from a tool bar, as Unity's Rotate tool.** A tool bar, a mode
+and its keys, in the same change as the first handle.
+
+**Each entity about its own origin, as Unity's Pivot mode.** The simplest, and
+it writes only rotations; a knob on a frame round a group that spins each
+member in place is a picture that says one thing and does another.
+
+**Always the frame's centre, as Unity's Center mode.** A sprite anchored
+anywhere but its centre moves when it is turned alone.
+
+**A pickable entity for each handle.** A second set of entities to spawn,
+despawn and reconcile against a selection that changes on every click, which
+[§5](#5-what-a-selection-looks-like-in-the-viewport) turned down for the
+outline for the same reason.
+
+**A knob that turns with a single entity**, as Unity's local handles do. A
+second placement rule for one entity against several, for a picture that only
+differs once something has been turned.
+
+**The inspector showing one angle in the same change.** It is §7's deferral,
+and bringing it forward names `Quat` in the inspector and needs an answer for a
+tilted rotation that an angle cannot hold.
+
+### Accepted risk
+
+**The knob takes a press meant for an entity under it.** An entity standing
+just above a selected one cannot be pressed through the knob. Row 4: what
+happens is a turn the user can see, and Ctrl+Z takes it back.
+
+**The pivot of a group is the centre of the frame drawn in the frame before the
+press.** Something that moved an entity in the same frame as the press would
+leave the group turning about a point slightly off. Nothing does that except a
+commit from a number box, and one Ctrl+Z takes the turn back exactly. Row 4.
+
+**After a turn, the knob goes back to the top of the frame**, which the turn
+has made larger, rather than staying where it was let go. Row 4.
+
+**The pointer exactly on the pivot shows the rotation the turn began with.**
+The angle of a point to itself is taken as zero, so for as long as the pointer
+sits there the entity is back where the turn began, and it follows again when
+the pointer leaves. Nothing is lost: what is recorded is where the release
+leaves it. Row 4.

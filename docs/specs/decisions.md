@@ -58,6 +58,7 @@ Quotations are left in the language of their source.
 | What redo puts back: the last entry undo took back, on Ctrl/Cmd+Y and Ctrl/Cmd+Shift+Z, dropped by a new entry | [ui.md §9](./ui.md) |
 | A change of selection is an entry, recorded once a frame after the focus changes | [ui.md §10](./ui.md) |
 | Dragging what is selected: the body is grabbed past a threshold, the entities follow the pointer, and the release is one entry | [ui.md §11](./ui.md) |
+| The rotate knob: always shown above the selection, turning one entity about its origin and several about their frame's centre | [ui.md §12](./ui.md) |
 | Tilemaps ride on Bevy's own `TilemapChunk` | [level-editor.md §2](./level-editor.md) |
 | Colliders: a physics-neutral shape, avian2d behind a default-on feature | [level-editor.md §3](./level-editor.md) |
 | Sprite animation | [level-editor.md §4](./level-editor.md) |
