@@ -1233,4 +1233,106 @@ mod tests {
             "the second Ctrl+Z did not reach the modifier click"
         );
     }
+
+    /// Turning several keeps each one's depth and composes the turn onto the
+    /// rotation each already had, a tilt included.
+    ///
+    /// RK-006: every placeholder sits at `z == 0` unturned, so this spawns two
+    /// at different depths, already turned, one of them tilted about X, which
+    /// the inspector's raw numbers can leave behind. The angle turned is read
+    /// back from the one with no tilt, since the pointer's path is not round
+    /// the real pivot; what is held is the composition, not the angle.
+    ///
+    /// Mutation: `xy.extend(0.0)` in `moving::turn`, and this fails, which is
+    /// row 6: a group turned is quietly put in a different draw order.
+    /// Mutation: `about_z` in place of `about_z * at.rotation`, and this
+    /// fails. Mutation: `at.rotation * about_z`, and this fails on the tilt.
+    #[test]
+    fn turning_several_keeps_each_depth_and_composes_onto_each_rotation() {
+        let mut app = moving_editor();
+        let tilted = Quat::from_rotation_z(0.3) * Quat::from_rotation_x(0.2);
+        let a_at = Transform::from_xyz(0.0, -150.0, 0.7).with_rotation(tilted);
+        let b_at =
+            Transform::from_xyz(120.0, -150.0, 0.3).with_rotation(Quat::from_rotation_z(-0.2));
+        let a = sprite(&mut app, a_at);
+        let b = sprite(&mut app, b_at);
+        click_at(
+            &mut app,
+            in_window(a_at.translation.truncate()),
+            PointerButton::Primary,
+        );
+        modifier_click_at(&mut app, in_window(b_at.translation.truncate()));
+        assert_eq!(selected(&app), [a, b]);
+        let from = knob(&app);
+
+        drag_through(&mut app, &round(from - Vec2::new(0.0, 80.0), from, 40.0, 4));
+
+        let turned = rotation(&app, b).to_euler(EulerRot::ZYX).0 - (-0.2);
+        assert!(turned.abs() > 0.1, "the drag turned nothing");
+        assert_turned(rotation(&app, a), Quat::from_rotation_z(turned) * tilted);
+        for (entity, at) in [(a, a_at), (b, b_at)] {
+            assert_eq!(
+                translation(&app, entity).z.to_bits(),
+                at.translation.z.to_bits(),
+                "a turn changed a depth"
+            );
+        }
+    }
+
+    /// One Ctrl+Z after turning one entity puts its rotation back, bit for bit.
+    ///
+    /// A lone entity's position does not change when it turns, so this is the
+    /// case where only the rotation says the drag did anything.
+    ///
+    /// Mutation: compare only the translation in `moving::bits`, and this
+    /// fails: the turn is not recorded, and the Ctrl+Z takes back the click
+    /// instead.
+    #[test]
+    fn one_ctrl_z_after_turning_one_entity_puts_its_rotation_back_bit_for_bit() {
+        let mut app = moving_editor();
+        let at = Transform::from_xyz(0.1, -150.3, 0.7).with_rotation(Quat::from_rotation_z(0.3));
+        let entity = sprite(&mut app, at);
+        click_at(
+            &mut app,
+            in_window(at.translation.truncate()),
+            PointerButton::Primary,
+        );
+        let path = round(at.translation.truncate(), knob(&app), 50.0, 4);
+
+        drag_through(&mut app, &path);
+        assert_ne!(
+            rotation_bits(rotation(&app, entity)),
+            rotation_bits(at.rotation),
+            "the drag turned nothing"
+        );
+
+        undo(&mut app);
+        assert_eq!(
+            rotation_bits(rotation(&app, entity)),
+            rotation_bits(at.rotation)
+        );
+        assert_eq!(selected(&app), [entity], "the Ctrl+Z took back the click");
+    }
+
+    /// Letting go with the pointer exactly on the pivot leaves a rotation, not
+    /// a `NaN`.
+    ///
+    /// The middle placeholder turns about its origin, the world's origin, and
+    /// the viewport's middle is where the pointer reads as exactly that.
+    ///
+    /// Mutation: `from.angle_to(to)` in `moving::angle_between`, and this
+    /// fails: the angle of a zero vector is `0 / 0`.
+    #[test]
+    fn letting_go_on_the_pivot_leaves_a_rotation() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+        let mut path = round(MIDDLE, knob(&app), 45.0, 3);
+        path.push(in_window(MIDDLE));
+
+        drag_through(&mut app, &path);
+
+        let turned = rotation(&app, middle);
+        assert!(turned.is_finite(), "{turned} is not a rotation");
+    }
 }
