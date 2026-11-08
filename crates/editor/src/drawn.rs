@@ -3,8 +3,9 @@
 //! One copy rather than one per test module, for the reason `pointer.rs` gives
 //! about the pointer: two modules ask the same thing of the same storage, and a
 //! parser that drifted between them would be two different claims wearing one
-//! name. The outline asks it of `outline::SelectionGizmos` and the box drag of
-//! `selection::BandGizmos`, so the group is the parameter.
+//! name. The outline asks it of `outline::SelectionGizmos`, the box drag of
+//! `selection::BandGizmos` and the rotate knob of `handles::HandleGizmos`, so
+//! the group is the parameter.
 
 use bevy::gizmos::config::GizmoConfigGroup;
 use bevy::gizmos::{GizmoAsset, GizmoHandles};
@@ -19,14 +20,7 @@ use core::any::TypeId;
 /// lets a test tell two rectangles from one: their extents taken together are a
 /// single rectangle covering both.
 pub(crate) fn rectangles_of<T: GizmoConfigGroup>(app: &App) -> Vec<Rect> {
-    let Some(handle) = app
-        .world()
-        .resource::<GizmoHandles>()
-        .handles()
-        .get(&TypeId::of::<T>())
-        .cloned()
-        .flatten()
-    else {
+    let Some(drawn) = asset_of::<T>(app) else {
         return Vec::new();
     };
     let mut rectangles = Vec::new();
@@ -40,13 +34,7 @@ pub(crate) fn rectangles_of<T: GizmoConfigGroup>(app: &App) -> Vec<Rect> {
         }
         strip.clear();
     };
-    for position in &app
-        .world()
-        .resource::<Assets<GizmoAsset>>()
-        .get(&handle)
-        .expect("the group's handle names an asset")
-        .strip_positions
-    {
+    for position in &drawn.strip_positions {
         if position.is_finite() {
             strip.push(position.truncate());
         } else {
@@ -55,6 +43,39 @@ pub(crate) fn rectangles_of<T: GizmoConfigGroup>(app: &App) -> Vec<Rect> {
     }
     close(&mut strip);
     rectangles
+}
+
+/// Every line a group drew, as its two ends.
+///
+/// `line_2d` writes a segment's two ends into the list buffer, beside the
+/// strips [`rectangles_of`] reads, so a line and a loop are told apart by
+/// which buffer they are in.
+pub(crate) fn lines_of<T: GizmoConfigGroup>(app: &App) -> Vec<(Vec2, Vec2)> {
+    let Some(drawn) = asset_of::<T>(app) else {
+        return Vec::new();
+    };
+    drawn
+        .list_positions
+        .chunks_exact(2)
+        .map(|ends| (ends[0].truncate(), ends[1].truncate()))
+        .collect()
+}
+
+/// What a group drew this frame, or `None` when it drew nothing.
+fn asset_of<T: GizmoConfigGroup>(app: &App) -> Option<&GizmoAsset> {
+    let handle = app
+        .world()
+        .resource::<GizmoHandles>()
+        .handles()
+        .get(&TypeId::of::<T>())
+        .cloned()
+        .flatten()?;
+    Some(
+        app.world()
+            .resource::<Assets<GizmoAsset>>()
+            .get(&handle)
+            .expect("the group's handle names an asset"),
+    )
 }
 
 /// What a group's drawing covers, or `None` when it drew nothing.

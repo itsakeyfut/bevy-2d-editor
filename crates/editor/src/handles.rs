@@ -56,7 +56,9 @@ impl Knob {
     /// Whether a press at `location` is on the knob.
     ///
     /// Mutation: compare against ten times `KNOB_REACH`, and
-    /// `a_press_beside_the_knob_is_not_on_it` fails.
+    /// `a_press_beside_the_knob_is_not_on_it` fails. Mutation: a `KNOB_REACH`
+    /// of one, and `a_press_off_the_knobs_centre_within_its_reach_takes_it`
+    /// fails.
     pub(crate) fn under(&self, location: &PointerLocation) -> bool {
         let (Some(placed), Some(location)) = (&self.0, &location.location) else {
             return false;
@@ -214,10 +216,13 @@ fn draw(
 /// Where the knob was drawn, in world units, read back from the drawing.
 ///
 /// The knob is the only strip the group draws, since the stalk is a line, so
-/// the one rectangle `drawn::rectangles_of` finds is the circle's, and its
-/// centre is the knob's. Read from what was drawn rather than worked out the
-/// way [`place`] works it out, so that a test agrees with the screen and not
-/// with the code.
+/// the one rectangle `drawn::rectangles_of` finds is the extent of the
+/// circle's strip. That is the circle's square, centred on the knob and a
+/// diameter across, because `circle_2d` in `bevy_gizmos` 0.19.1 places a
+/// vertex at every multiple of a full turn over its 32 segments, which puts
+/// four of them on the axes. Read from what was drawn rather than worked out
+/// the way [`place`] works it out, so that a test agrees with the screen and
+/// not with the code.
 #[cfg(test)]
 pub(crate) fn drawn_knob(app: &App) -> Option<Rect> {
     let drawn = crate::drawn::rectangles_of::<HandleGizmos>(app);
@@ -225,9 +230,17 @@ pub(crate) fn drawn_knob(app: &App) -> Option<Rect> {
     drawn.first().copied()
 }
 
+/// Where the stalk was drawn, from the frame to the knob, in world units.
+#[cfg(test)]
+fn drawn_stalk(app: &App) -> Option<(Vec2, Vec2)> {
+    let drawn = crate::drawn::lines_of::<HandleGizmos>(app);
+    assert!(drawn.len() <= 1, "more than one stalk drawn: {drawn:?}");
+    drawn.first().copied()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::drawn_knob;
+    use super::{drawn_knob, drawn_stalk};
     use crate::pointer::{
         click_at, drag_through, in_window, press_and_hold, press_then_release, round,
     };
@@ -372,19 +385,25 @@ mod tests {
     }
 
     /// While a turn is held, the knob is drawn under the pointer rather than
-    /// above the frame.
+    /// above the frame, and its stalk turns with it, from where it left the
+    /// frame turned by the same angle.
     ///
     /// Mutation: drop the branch in `place_knob` that draws a turn in
-    /// progress, and this fails.
+    /// progress, and this fails. Mutation: draw the stalk from where it left
+    /// the frame unturned, and this fails on the stalk.
     #[test]
-    fn the_knob_stays_under_the_pointer_while_it_turns() {
+    fn the_knob_and_its_stalk_turn_under_the_pointer() {
         let mut app = knob_editor();
         click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
-        let to = MIDDLE + Rot2::degrees(60.0) * MIDDLE_KNOB;
+        let round = Rot2::degrees(60.0);
+        let to = MIDDLE + round * MIDDLE_KNOB;
 
         press_and_hold(&mut app, in_window(MIDDLE_KNOB), in_window(to));
 
         assert_near(drawn_knob(&app).expect("a knob is drawn").center(), to);
+        let (base, tip) = drawn_stalk(&app).expect("a stalk is drawn");
+        assert_near(base, MIDDLE + round * Vec2::new(0.0, 32.0));
+        assert_near(tip, to);
     }
 
     /// Clicking the knob leaves the selection as it was and turns nothing.
@@ -459,6 +478,26 @@ mod tests {
         assert_eq!(selected(&app), [middle]);
         assert_ne!(transform(&app, middle).rotation, Quat::IDENTITY);
         assert_eq!(transform(&app, above).translation, above_at);
+    }
+
+    /// A press inside the knob's reach but off its centre takes it: the knob
+    /// can be hit without aiming at its middle.
+    ///
+    /// Eight pixels beside the knob's centre, where the knob's reach is nine
+    /// and its radius six, so the press is outside the circle as drawn.
+    ///
+    /// Mutation: a `KNOB_REACH` of one, and this fails.
+    #[test]
+    fn a_press_off_the_knobs_centre_within_its_reach_takes_it() {
+        let mut app = knob_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+        let beside = MIDDLE_KNOB + Vec2::new(8.0, 0.0);
+
+        drag_through(&mut app, &round(MIDDLE, beside, 45.0, 3));
+
+        assert_eq!(selected(&app), [middle]);
+        assert_ne!(transform(&app, middle).rotation, Quat::IDENTITY);
     }
 
     /// A press just outside the knob's reach is not on it: dragged, it is a
