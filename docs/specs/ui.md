@@ -98,7 +98,7 @@ Unity wins.
 **Bevy UI + `bevy_feathers`**, the same stack Jackdaw uses.
 
 ```toml
-bevy = { version = "0.19", default-features = false, features = [
+bevy = { version = "0.20.1", default-features = false, features = [
     "2d",
     "ui",
     "bevy_feathers",
@@ -163,17 +163,29 @@ than new.
   Unity, so Feathers' tokens are given Unity-shaped values. What Feathers
   supplies is widget structure and behaviour, not appearance.
 
-  **Colour is the only token kind there is.** `ThemeProps` in 0.19.1 carries a
-  map of tokens to colours and says "Other style property types to be added
-  later"; spacing is `const` values in `constants.rs` and typography is a font
-  asset with an `InheritableFont` component. An earlier draft of this section
-  said colour, spacing and typography were all tokens, which claimed two kinds
-  the engine does not have.
+  **What is coloured is Feathers' semantic tokens.** Since Bevy 0.20,
+  `ThemeProps` is two-staged: each design token, one per widget part, is
+  assigned to one of a few dozen semantic tokens (`surface.pane.header`,
+  `fill.solid.hover`, `text.dim`), and the semantic tokens carry the colours,
+  with overrides per surface level for controls on a lighter surface. On 0.19
+  this project coloured the 137 design tokens directly, by the role in their
+  names. Now it keeps Feathers' assignment as it ships and gives its 33
+  semantic tokens this project's colours, each the one most of the design
+  tokens behind it had on 0.19, so the editor looks as it did. The per-surface
+  overrides keep their keys and take the base colour, because this project's
+  surfaces do not step by level. Colour is still the only kind of token:
+  `ThemeProps` says "Other style property types to be added later".
 
-  **The keys stay Feathers'.** Its widgets read `feathers.*` constants
-  directly, and a token the theme lacks logs a warning and draws an error
-  colour, so renaming them would be wrong everywhere Feathers draws. What is
-  replaced is the values.
+  **The keys stay Feathers'.** Its widgets read the design tokens directly, and
+  a token the theme lacks logs a warning and draws an error colour, so renaming
+  them would be wrong everywhere Feathers draws. What is replaced is the
+  semantic colours. Rejected on the move to 0.20: **keeping the design-token
+  map through `ThemeProps::new_non_contextual`**, which switches off the
+  per-surface overrides and leans on `ThemeProps::color`, which Feathers keeps
+  "for backwards-compatibility". Accepted: an upgrade that moves a design token
+  to another semantic token changes its colour here without a test noticing,
+  row 4. 0.20 did exactly that to the pane header's border, which now takes
+  the pane body's colour.
 
 ---
 
@@ -758,7 +770,17 @@ write lands on the one the user can see named.
 
 **A drag on the label to scrub the value**, which Unity has. More input
 handling, on a gesture the viewport also claims, for something the keyboard
-already does. It comes back when somebody asks for it.
+already does. **Reversed on the move to Bevy 0.20**, issue #67:
+`bevy_feathers`' number box scrubs when it is dragged, with no flag to turn it
+off, and turning it off from here would be a mechanism against the engine.
+So a scrub is accepted and committed once, at the release, where the box
+emits its one final value; the steps before it change the box and nothing
+else. After the commit the box is given the committed value, because the
+widget leaves a scrubbed box showing the number it started from, and the box
+commits what it shows when it is let go. Accepted: while scrubbing, the box's
+number does not move and the sprite does not follow until the release, row
+4. Writing during the scrub, as Unity does, would be a second way into the
+history beside the viewport's drag, and is its own issue if it is wanted.
 
 ### Accepted risk
 
@@ -872,11 +894,14 @@ The text is replaced the way `bevy_feathers` itself replaces it, with
 frame** rather than left for the engine to apply in the next one: the next
 frame's keys reach the box before that, so Enter pressed right after Ctrl+Z
 would commit the text from before it. A review found that path putting a value
-the user had taken back into the history. The other boxes get
-`UpdateNumberInput`.
+the user had taken back into the history. The other boxes get a
+`NumberInputValue` inserted, which on `bevy_feathers` 0.20 writes into a
+focused box as into any other, through an edit queued for the next frame;
+that is why the focused box is not offered it.
 
 **A value the box cannot hold leaves it empty.** `f32` prints without an
-exponent, so `1e20` is more characters than the box takes, and the engine
+exponent, so `1e30` is more characters than the box takes (thirty, since
+`bevy_feathers` 0.20; it was twenty), and the engine
 refuses the insert whole. The panel already draws such a box empty; an undo
 does the same, because a box left holding the old text would write it back
 when it is let go, and an empty box writes nothing. The same rule decides what
@@ -1073,7 +1098,7 @@ comparison.
 
 **The gestures decide the selection, and one system records it later in the
 frame.** Two things go wrong if a gesture records where it runs. One release
-triggers `Pointer<Click>` and then `Pointer<DragEnd>`, and both write the
+triggers `PointerClick` and then `PointerDragEnd`, and both write the
 selection, so a box drag would be two entries, the first of them a Ctrl+Z that
 empties the selection. And a press on the viewport takes the focus out of a
 number box, which commits when `FocusLost` reaches it in `PostUpdate`, while

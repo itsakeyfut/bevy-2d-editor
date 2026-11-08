@@ -328,7 +328,10 @@ assets/levels/forest.tiles      ← the tile data, referenced by path from the B
   released, so details can change. Jackdaw carries the same risk and tracks it,
   so following Jackdaw absorbs most of it.
 * **When 0.20 lands, the runtime side has to move onto the official loader.**
-  That is work in the direction of less code here, not debt.
+  That is work in the direction of less code here, not debt. 0.20 has landed,
+  and the workspace moved to 0.20.1 in issue #67 without taking the loader up:
+  nothing in the runtime loads a scene yet, so there was nothing to move. It
+  is taken up by the `Scene Format` milestone's first runtime work.
 * The tile data format itself still needs defining. That is a phase 2 question.
 
 ---
