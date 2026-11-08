@@ -75,10 +75,8 @@ mod palette {
 /// semantic tokens, and its design-to-semantic assignment is kept as it
 /// ships: [`docs/specs/ui.md` §3](../../../docs/specs/ui.md).
 ///
-/// Each was chosen to keep what the editor looked like on 0.19, where this
-/// coloured the design tokens by the role in their names: for every semantic
-/// token, the colour most of the design tokens now pointing at it had. The
-/// exceptions are named beside their rows.
+/// How each was chosen is in [`docs/specs/ui.md` §3](../../../docs/specs/ui.md);
+/// the rows that depart from that rule say why beside them.
 ///
 /// A table rather than a `match`, because a `SemanticToken` holds a string and
 /// cannot be a pattern; the constants are Feathers', so dropping one upstream
@@ -120,8 +118,7 @@ const ROLES: [(SemanticToken, Color); 33] = [
     (semantic::AXIS_X, palette::AXIS_X),
     (semantic::AXIS_Y, palette::AXIS_Y),
     (semantic::AXIS_Z, palette::AXIS_Z),
-    // New in 0.20, with nothing on 0.19 to keep: a quaternion's fourth
-    // number, which is not an axis on screen.
+    // A quaternion's fourth number, which is not an axis on screen.
     (semantic::AXIS_W, palette::TEXT_DIM),
     (semantic::FOCUS_RING, palette::ACCENT_HOVER),
 ];
@@ -146,12 +143,13 @@ fn role(token: &SemanticToken) -> Option<Color> {
 /// wrong everywhere Feathers draws. What `docs/specs/ui.md` §3 asks to replace
 /// is the appearance, which is the semantic colours.
 ///
-/// **The per-surface overrides keep their keys and take the base colour.**
-/// Feathers lifts its fills on lighter surfaces, a group or a menu, because its
-/// surfaces step by level. This project's do not, every body is
-/// `palette::SURFACE`, so nothing needs lifting; and leaving Feathers' values
-/// in place would draw its greys inside a group. The keys are kept so that a
-/// surface Feathers adds arrives here with this project's colours.
+/// **The per-surface overrides keep their keys and take the base colour**, so
+/// in effect nothing is lifted on a lighter surface. Feathers lifts its fills
+/// there because its surfaces step by level; this project's do not, every body
+/// is `palette::SURFACE`, and leaving Feathers' values in place would draw its
+/// greys inside a group. The keys are kept so that a surface Feathers adds
+/// arrives with this project's colours. A surface that should differ by level
+/// gets a step in the `ROLES` table, not an override written here.
 ///
 /// Mutation: build the base from an empty map, and
 /// `every_semantic_token_feathers_reads_has_a_colour` fails. Mutation: leave

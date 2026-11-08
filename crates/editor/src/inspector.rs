@@ -694,30 +694,21 @@ fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
 /// Commit what a number box holds, when the user says so.
 ///
 /// **`is_final` is the whole shape of this.** It is Enter, the box losing
-/// focus, or the end of a drag across the box, which `bevy_feathers` 0.20
-/// turns into a scrub of the value. It also emits on every step of a scrub
-/// with it false, and acting on those would make one drag a dozen entries in
-/// the history; so a scrub is one commit, at the release. On 0.19 it emitted
-/// on every keystroke as well, which would have moved the sprite through `-`,
-/// `-1`, `-12` on the way to `-120`, and 0.20 emits nothing while typing,
-/// which `bevy_feathers`' `emit_value_change` callers show: Enter, focus
-/// loss, and the scrub.
+/// focus, or letting go of a scrub. The steps of a scrub come with it false,
+/// and acting on them would make one drag a dozen entries in the history.
 ///
-/// **The box is then given what was committed.** `bevy_feathers` 0.20 leaves
-/// a scrubbed box showing the number it started from and expects the app to
-/// put the new one back; left alone, the box held `0` over a leaf at `0.4`,
-/// and letting it go committed the `0` and took the scrub back without a word,
-/// measured. After Enter or a focus loss the box already shows what was
-/// committed and nothing changes. [`docs/specs/ui.md` §7](../../../docs/specs/ui.md).
+/// **The box is then given what was committed**, through [`show_in_box`],
+/// because the widget leaves a scrubbed box showing the number it started
+/// from, and a box commits what it shows when it is let go.
 /// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md) carries why.
 ///
 /// The write goes through [`History::record`], and only when [`SetLeaf::read`]
 /// finds the value different from what is there.
 ///
 /// Mutation: drop the `is_final` check, and
-/// `a_scrub_on_a_box_is_one_entry` fails. Mutation:
-/// drop the `show_in_box` after recording, and
-/// `a_scrub_on_a_box_is_one_entry` fails. Mutation:
+/// `a_scrub_on_a_box_is_one_entry` fails. Mutation: drop the `show_in_box`
+/// after recording, and `letting_go_of_a_box_after_a_scrub_keeps_the_scrub`
+/// fails, with `a_scrub_on_a_box_is_one_entry`. Mutation:
 /// call [`write_leaf`] here instead of recording, and
 /// `undoing_a_commit_puts_the_component_back_bit_for_bit` fails, because the
 /// history is empty when Ctrl+Z reaches it.
@@ -903,7 +894,7 @@ fn show_in_box(world: &mut World, focused: Option<Entity>, cell: Entity, target:
 /// Replace what a box's text holds with a value, **now**, and not in a later
 /// frame.
 ///
-/// The edits are the ones `bevy_feathers` queues in `number_input_on_insert_value`,
+/// The edits are the two `bevy_feathers` queues when a box is given a value,
 /// `SelectAll` and then `Insert`, but they are applied here through
 /// `EditableText::apply_pending_edits` rather than left for the engine's
 /// `apply_text_edits`. That system runs before `take_back` in `PostUpdate`, so
@@ -911,10 +902,6 @@ fn show_in_box(world: &mut World, focused: Option<Entity>, cell: Entity, target:
 /// keys reach the box first**, in `PreUpdate`: Enter pressed right after
 /// Ctrl+Z would commit the text from before it. That is how a value the user
 /// had just taken back went into the history, found by review.
-///
-/// The character filter is not applied. `EditableTextFilter` keeps its
-/// function private, and what is inserted is this function's own formatting of
-/// an `f32`, not something a user typed.
 ///
 /// **A value the box cannot hold leaves it empty**, which is what the panel
 /// draws for such a value anyway; [`shown_for`] says why and how.
@@ -1150,15 +1137,16 @@ mod tests {
     /// The same one frame `outline::tests` settles for, and for the same
     /// reason: before it there are no regions, so there is nothing to click and
     /// nowhere to draw. The fonts are in before it starts, for the reason
-    /// `crate::with_the_fonts_in` gives.
+    /// `crate::load_the_fonts_and_wait` gives.
     fn inspector_editor() -> App {
         let mut app = editor(headless());
         app.update();
-        crate::with_the_fonts_in(&mut app);
+        crate::load_the_fonts_and_wait(&mut app);
         app
     }
 
-    /// The rectangle an entity is clipped to, in the window's logical pixels.
+    /// The rectangle an entity is clipped to, in the window's physical pixels,
+    /// which are its logical ones at the scale factor of one a test runs at.
     ///
     /// `bevy_ui` 0.20 keeps one rectangle per clipping ancestor, each in that
     /// ancestor's own space with the transform into it beside it, so a rotated
@@ -2651,11 +2639,10 @@ mod tests {
 
     /// A value that is not a number is never written.
     ///
-    /// `bevy_feathers` refuses every character that is not a digit or one of
-    /// `.-+eE`, so what can get this far is something like `1.2.3`, and it
-    /// emits nothing at all for it. **Measured with a throwaway probe**: the
-    /// same run that heard `(12.5, false)` and `(12.5, true)` for `12.5` heard
-    /// nothing at either point for `1.2.3`.
+    /// `bevy_feathers` 0.20 takes any character into the box, and on Enter or
+    /// a focus loss parses what it holds; on a failure it logs
+    /// `number input parsing failed` and emits nothing (`emit_value_change`).
+    /// So for `1.2.3` `commit` is handed nothing at all.
     ///
     /// Saying so in the row is upstream's open question and is not guarded
     /// here, which `docs/specs/ui.md` §7 records.

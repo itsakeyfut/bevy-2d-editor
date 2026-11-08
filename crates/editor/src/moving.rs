@@ -198,16 +198,18 @@ pub(crate) fn in_progress(world: &World) -> bool {
 /// * before the undo and redo keys, so that letting go and Ctrl+Z in one frame
 ///   take back the move
 ///
-/// **It is not before transform propagation, and cannot be.** On Bevy 0.19 it
-/// was, so that the outline read this frame's position. In 0.20
-/// `bevy_feathers`' menu focus system runs after visibility propagation and
-/// before `InputFocusSystems::FocusChangeEvents`, which puts the focus changes
-/// after `TransformSystems::Propagate`, and the two orderings became a cycle
-/// the schedule refuses to build. The one kept is the one whose loss is worse:
+/// **It is not before transform propagation, and cannot be.** `bevy_ui_widgets`'
+/// `MenuFocusSystem` runs after visibility propagation and before
+/// `InputFocusSystems::FocusChangeEvents`, which puts the focus changes after
+/// `TransformSystems::Propagate`, so being after the one and before the other
+/// is a cycle the schedule refuses to build. The one kept is the one whose loss is worse:
 /// read before the commit a press caused, [`Held::from`] would hold the number
 /// from before it, and undoing the move would write it over the commit, which
 /// saves. The one dropped costs a frame: the outline and the knob trail a
 /// moving entity by one, and picking reads last frame's position.
+///
+/// **Anything that reads [`Stroke`] is ordered after this**, or it reads the
+/// last frame's drag; `handles::place_knob` is the one there is.
 ///
 /// **The delta is added to `translation` as it is**, a world delta written as
 /// a local one, and the pivot of a turn is read from `translation` in the

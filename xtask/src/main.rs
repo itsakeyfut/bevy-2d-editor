@@ -588,8 +588,7 @@ mod tests {
     ///
     /// **Read from `cargo tree`, which is what gets built**, rather than from
     /// the manifest that asks for it, so a feature arriving through something
-    /// else is caught as well. It read the lockfile until Bevy 0.20, and the
-    /// lockfile stopped being that set: `bevy_internal` names
+    /// else is caught as well. The lockfile is not that set: `bevy_internal` names
     /// `bevy_dev_tools` through weak features such as `bevy_dev_tools?/webgl`,
     /// the lockfile carries a dependency named that way whether or not it is
     /// built, and `bevy_dev_tools` takes `bevy_audio` unconditionally. So

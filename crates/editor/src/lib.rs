@@ -454,7 +454,7 @@ pub(crate) fn headless() -> PluginGroupBuilder {
 /// The wait is bounded by time rather than by frames, because how many frames
 /// a load takes is exactly what varies with load.
 #[cfg(test)]
-pub(crate) fn with_the_fonts_in(app: &mut App) {
+pub(crate) fn load_the_fonts_and_wait(app: &mut App) {
     use bevy::feathers::constants::fonts;
     use std::time::{Duration, Instant};
 
