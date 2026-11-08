@@ -81,7 +81,7 @@ truth, and by [data-model.md §1](./data-model.md) undo is command-based, so the
 truth about tile placement lives in the Editor Model. What an existing crate
 could supply is **only the rendering.**
 
-### What Bevy provides, as of 0.19.1
+### What Bevy provides, as of 0.20.1
 
 ```text
 TilemapChunk              one chunk is one mesh
@@ -94,9 +94,13 @@ TilemapChunkPlugin
 PackedTileData
 ```
 
-The documentation calls this **"a building block"**, designed as the foundation
-third-party tilemap crates sit on. What this project intends to do is exactly
-that: build a 2D authoring layer on top of it.
+The crate's own documentation says only that `TilemapChunk` is "a component
+representing a chunk of a tilemap" (`bevy_sprite_render/src/tilemap_chunk/mod.rs`,
+on the struct). This section used to quote it as calling itself "a building
+block" for third-party tilemap crates; that phrase is in none of the crate's
+sources and where it came from was not found, so it is no longer quoted. What
+the list above provides is rendering and nothing about editing, and building a
+2D authoring layer on top of it is exactly what this project intends.
 
 `TileOrientation` already carries mirroring and rotation, which covers most of
 what a 2D editor needs to express.

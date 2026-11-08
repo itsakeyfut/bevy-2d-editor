@@ -265,7 +265,7 @@ impl Plugin for InspectorPlugin {
 
 /// Put the active entity and its components in the inspector region.
 ///
-/// # What Bevy 0.19.1 provides here, and what it does not
+/// # What Bevy 0.20.1 provides here, and what it does not
 ///
 /// Measured against this workspace's feature line, which `docs/specs/ui.md` §3
 /// settles:
@@ -283,8 +283,9 @@ impl Plugin for InspectorPlugin {
 ///   disagree about which type they came from.
 /// * **A component nobody registered has no name at all.** There is no
 ///   fallback to drop to, which is why [`UNREGISTERED`] exists. Measured on a
-///   placeholder that has been clicked: **14 components, 13 readable and one
-///   not**, and the one is `Selectable`. Thirteen before the click, because
+///   placeholder that has been clicked: **16 components, 14 readable and two
+///   not**, and the two are `Selectable` and the render world's
+///   `SyncToSubWorld<RenderApp>`. Fifteen before the click, because
 ///   `PickingInteraction` arrives with it.
 /// * **The value is [`World::get_reflect`], which is the engine's own.** It
 ///   needs only `ReflectFromPtr`, which `#[derive(Reflect)]` inserts

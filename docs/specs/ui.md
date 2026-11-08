@@ -140,11 +140,18 @@ Turning it down explicitly is the point of writing this.
 
 ### Accepted risk
 
-`bevy_feathers` has landed in Bevy itself, but **Bevy marks it experimental**.
+`bevy_feathers` has landed in Bevy itself, but **Bevy marked it experimental**.
 From the 0.19.1 documentation:
 
 > this crate is still experimental and unfinished! It will change in
 > breaking ways, and there will be both bugs and limitations.
+
+**Amended on the move to 0.20.1 (#68): the warning is gone, the risk is not.**
+The 0.20.1 crate documentation (`bevy_feathers/src/lib.rs`) no longer says
+the crate is experimental. The risk is kept anyway, because that same upgrade
+still broke the theme and the number box, which this section and
+[§7](./ui.md) record; withdrawing it would leave the cost of the next upgrade
+written nowhere.
 
 Every Bevy upgrade will carry work to absorb breaking changes here. Since
 [decisions.md §1](./decisions.md) already commits to tracking Bevy's current
@@ -1036,7 +1043,7 @@ older value into the box would throw the typing away. Doing nothing loses
 nothing, and Ctrl+Z, which takes the typing back, makes redo reachable again.
 
 **Bevy's text input leaves both keys alone.** `on_focused_keyboard_input` in
-`bevy_ui_widgets` 0.19.1 inserts a character only with no modifier or with
+`bevy_ui_widgets` 0.20.1 inserts a character only with no modifier or with
 Shift alone, and has no arm for Ctrl+Y or Ctrl+Shift+Z, so both propagate as
 Ctrl+Z does.
 
@@ -1219,11 +1226,12 @@ the gesture, and [§8](#8-what-ctrlz-takes-back) to
 
 ### Rationale
 
-**A threshold, because the engine has none.** `bevy_picking` 0.19.1 begins a
+**A threshold, because the engine has none.** `bevy_picking` 0.20.1 begins a
 drag on the first move after a press, however small, and on release sends
-`Click` to what was pressed whether or not it was dragged. Without one, a click
-with a pixel of jitter moves the sprite and records an entry, and a drag on one
-of several selected ends in a click that collapses the selection to that one.
+`PointerClick` to what was pressed whether or not it was dragged. Without one,
+a click with a pixel of jitter moves the sprite and records an entry, and a drag
+on one of several selected ends in a click that collapses the selection to that
+one.
 Measured on the screen rather than in the world, so it means the same thing at
 every zoom. Four is chosen, not measured.
 
@@ -1359,7 +1367,7 @@ appears, so the arithmetic holds on a display at 200% without a test that
 could say so.
 
 **Bevy's own transform gizmo was read and not used.** `TransformGizmoPlugin` in
-`bevy_gizmos` 0.19.1 acts on one entity, reads the window's cursor and mouse
+`bevy_gizmos` 0.20.1 acts on one entity, reads the window's cursor and mouse
 buttons rather than the viewport's picking pointer, so a press on it would also
 reach the observers of §4, and emits nothing when a drag ends, which leaves
 §11's one entry nowhere to hang. Its arithmetic for the angle is the one used
