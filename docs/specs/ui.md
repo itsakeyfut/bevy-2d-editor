@@ -1289,7 +1289,7 @@ left room for.
 | A drag from it | past [§11](#11-dragging-what-is-selected)'s threshold, turns what is selected about the view axis, by the angle the pointer has gone round the pivot. The selection stays as it is |
 | The pivot | **the entity's own origin when one is selected**, and the centre of the frame when several are |
 | What is written | for one entity, its `rotation` alone. For several, each one's `rotation` and its `translation` in x and y, turned about the pivot as one body. `z` and `scale` are left alone |
-| The rotation | the turn about Z multiplied onto the rotation the entity had, then normalized |
+| The rotation | the turn about Z multiplied onto the rotation the entity had, then normalized. A rotation of all zeros, which §7's raw numbers can leave, turns as no rotation, and a turn by an angle of exactly zero writes nothing |
 | While it turns | the knob stays under the pointer, at the pivot plus its starting offset turned by the angle so far |
 | What the history gets | what [§11](#11-dragging-what-is-selected) gives a move: one entry, when the button is let go |
 

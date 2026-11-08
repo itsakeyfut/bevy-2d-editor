@@ -318,6 +318,16 @@ fn angle_between(from: Vec2, to: Vec2) -> f32 {
 /// exception: `pivot + 0.0` is `+0.0` where the position said `-0.0`. That is
 /// a write the user did not ask for, so its `translation` is not touched.
 ///
+/// **A turn by nothing writes nothing.** A pointer let go exactly where it was
+/// pressed gives an angle of exactly zero, and `pivot + (at - pivot)` does not
+/// always come back to `at` in floats, nor does normalizing a rotation that
+/// was not quite unit; either would be a change of a few bits the user cannot
+/// see, recorded as an entry and saved.
+///
+/// **A rotation of all zeros turns as no rotation**, which is how the engine
+/// draws it and what the inspector's raw numbers can leave behind. Normalizing
+/// it divides by a zero length, and the `NaN` that gives would be row 6.
+///
 /// Mutation: `Quat::from_rotation_x` in place of `from_rotation_z`, and
 /// `dragging_the_knob_turns_one_entity_about_its_origin` fails. Mutation: drop
 /// `normalize`, and `a_turn_writes_a_unit_rotation` fails. Mutation: turn the
@@ -325,12 +335,20 @@ fn angle_between(from: Vec2, to: Vec2) -> f32 {
 /// `dragging_the_knob_turns_one_entity_about_its_origin` fails on the sign of
 /// a zero. Mutation: leave the positions alone whatever `together` says, and
 /// `turning_several_turns_them_about_the_centre_of_their_frame` fails.
+/// Mutation: drop the return for an angle of zero, and
+/// `a_turn_by_nothing_changes_no_bit` fails. Mutation: write the normalized
+/// product whatever it is, and `turning_a_rotation_of_zeros_writes_the_turn`
+/// fails.
 fn turn(pivot: Vec2, angle: f32, together: bool) -> impl Fn(&Transform) -> Transform {
     let about_z = Quat::from_rotation_z(angle);
     let round = Rot2::radians(angle);
     move |at| {
         let mut to = *at;
-        to.rotation = (about_z * at.rotation).normalize();
+        if angle == 0.0 {
+            return to;
+        }
+        let turned = (about_z * at.rotation).normalize();
+        to.rotation = if turned.is_finite() { turned } else { about_z };
         if together {
             let xy = pivot + round * (at.translation.truncate() - pivot);
             to.translation = xy.extend(at.translation.z);
@@ -1334,5 +1352,65 @@ mod tests {
 
         let turned = rotation(&app, middle);
         assert!(turned.is_finite(), "{turned} is not a rotation");
+    }
+
+    /// Turning an entity whose rotation is all zeros writes a rotation, the
+    /// turn itself, rather than a `NaN`.
+    ///
+    /// The inspector's four raw numbers can be typed to `0, 0, 0, 0`, and the
+    /// engine draws that as no rotation at all, so the turn starts from what
+    /// was on the screen.
+    ///
+    /// Mutation: write the normalized product whatever it is in
+    /// `moving::turn`, and this fails: normalizing a zero length is `0 / 0`.
+    #[test]
+    fn turning_a_rotation_of_zeros_writes_the_turn() {
+        let mut app = moving_editor();
+        let at = Transform::from_xyz(0.0, -150.0, 0.0)
+            .with_rotation(Quat::from_xyzw(0.0, 0.0, 0.0, 0.0));
+        let entity = sprite(&mut app, at);
+        click_at(
+            &mut app,
+            in_window(at.translation.truncate()),
+            PointerButton::Primary,
+        );
+        let path = round(at.translation.truncate(), knob(&app), 45.0, 3);
+
+        drag_through(&mut app, &path);
+
+        assert_turned(rotation(&app, entity), Quat::from_rotation_z(FRAC_PI_4));
+    }
+
+    /// A turn by nothing writes nothing: a pointer let go exactly where it was
+    /// pressed leaves every bit where it was, a group's positions and a
+    /// rotation that was not quite unit included.
+    ///
+    /// Read off `turn` itself rather than through a drag, because whether
+    /// a group's `pivot + (at - pivot)` comes back to `at` depends on the
+    /// pivot, and a drag cannot choose one that is known not to: measured, a
+    /// drag round the frame of two entities and back came back exact, while
+    /// these three pivots do not. `record` comparing bits is what keeps such a
+    /// drag out of the history, and it needs this to have written nothing.
+    ///
+    /// Mutation: drop the early return for an angle of zero in
+    /// `moving::turn`, and this fails.
+    #[test]
+    fn a_turn_by_nothing_changes_no_bit() {
+        let at = Transform::from_xyz(0.1, -150.3, 0.7)
+            .with_rotation(Quat::from_xyzw(0.0, 0.0, 0.151, 0.999));
+        for pivot in [
+            Vec2::new(60.5, -150.0),
+            Vec2::new(60.512_344, -150.01),
+            Vec2::new(33.3, 7.7),
+        ] {
+            for together in [true, false] {
+                let to = super::turn(pivot, 0.0, together)(&at);
+                assert_eq!(
+                    super::bits(&to),
+                    super::bits(&at),
+                    "about {pivot}, together: {together}"
+                );
+            }
+        }
     }
 }
