@@ -140,11 +140,18 @@ Turning it down explicitly is the point of writing this.
 
 ### Accepted risk
 
-`bevy_feathers` has landed in Bevy itself, but **Bevy marks it experimental**.
+`bevy_feathers` has landed in Bevy itself, but **Bevy marked it experimental**.
 From the 0.19.1 documentation:
 
 > this crate is still experimental and unfinished! It will change in
 > breaking ways, and there will be both bugs and limitations.
+
+**Amended on the move to 0.20.1 (#68): the warning is gone, the risk is not.**
+The 0.20.1 crate documentation (`bevy_feathers/src/lib.rs`) no longer says
+the crate is experimental. The risk is kept anyway, because that same upgrade
+still broke the theme and the number box, which this section and
+[§7](./ui.md) record; withdrawing it would leave the cost of the next upgrade
+written nowhere.
 
 Every Bevy upgrade will carry work to absorb breaking changes here. Since
 [decisions.md §1](./decisions.md) already commits to tracking Bevy's current

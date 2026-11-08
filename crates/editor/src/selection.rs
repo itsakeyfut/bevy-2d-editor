@@ -2232,12 +2232,15 @@ mod tests {
     /// The press is a frame earlier, without the modifier, so that the click
     /// replaces rather than adds.
     ///
-    /// Mutation: drop `.before(take_back)` on `record_choice`, and this fails with
-    /// the left placeholder selected: the undo takes back the click before
-    /// it, and this click is then recorded on top. **Measured, and not
-    /// promised**: without the line the two systems are unordered rather than
-    /// reversed, so what this catches is the order the schedule happened to
-    /// pick in Bevy 0.19.1.
+    /// **This guards nothing about the order on Bevy 0.20.1.** Drop
+    /// `.before(take_back)` on `record_choice` and every test in the crate
+    /// still passes, measured twice: without the line the two systems are
+    /// unordered rather than reversed, and the order 0.20.1's schedule happens
+    /// to pick is the right one. On the engine this was written against, the
+    /// same mutation failed it with the left placeholder selected, because the
+    /// undo took back the click before it and this click was then recorded on
+    /// top. Issue #74 restores a guard. What the test asserts is still true,
+    /// so it stays.
     #[test]
     fn a_click_and_ctrl_z_in_one_frame_take_back_the_click() {
         let mut app = selection_editor();
