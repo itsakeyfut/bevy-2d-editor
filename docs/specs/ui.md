@@ -713,8 +713,9 @@ the panel is editable.
 ### Rationale
 
 **Committing on Enter, and not on every keystroke, is the whole shape of this.**
-`FeathersNumberInput` emits a value on each keystroke as well, marked
-`is_final: false`, and taking those would move the sprite through `-`, `-1`,
+`FeathersNumberInput` on Bevy 0.19 emitted a value on each keystroke as well,
+marked `is_final: false` (0.20 emits only on Enter, focus loss and a scrub,
+§7's reversed option below), and taking those would move the sprite through `-`, `-1`,
 `-12` on the way to `-120`. With no undo yet, each of those is a change to the
 user's work that nothing can take back, and it is also a `GlobalTransform`
 recomputed per character. Enter and focus loss are what Unity commits on.

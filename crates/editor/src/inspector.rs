@@ -695,13 +695,13 @@ fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
 ///
 /// **`is_final` is the whole shape of this.** It is Enter, the box losing
 /// focus, or the end of a drag across the box, which `bevy_feathers` 0.20
-/// turns into a scrub of the value. It also emits on every keystroke and on
-/// every step of a scrub with it false, and on 0.19, measured with a
-/// throwaway probe, filling a freshly spawned box produced a `ValueChange`
-/// carrying the value straight back out. Acting on those would move the
-/// sprite through `-`, `-1`, `-12` on the way to `-120`, each of them an entry
-/// in the history, and would make the panel's own initial draw write to the
-/// world. So a scrub is one commit, at the release.
+/// turns into a scrub of the value. It also emits on every step of a scrub
+/// with it false, and acting on those would make one drag a dozen entries in
+/// the history; so a scrub is one commit, at the release. On 0.19 it emitted
+/// on every keystroke as well, which would have moved the sprite through `-`,
+/// `-1`, `-12` on the way to `-120`, and 0.20 emits nothing while typing,
+/// which `bevy_feathers`' `emit_value_change` callers show: Enter, focus
+/// loss, and the scrub.
 ///
 /// **The box is then given what was committed.** `bevy_feathers` 0.20 leaves
 /// a scrubbed box showing the number it started from and expects the app to
@@ -715,7 +715,7 @@ fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
 /// finds the value different from what is there.
 ///
 /// Mutation: drop the `is_final` check, and
-/// `a_value_that_is_not_committed_leaves_the_component_alone` fails. Mutation:
+/// `a_scrub_on_a_box_is_one_entry` fails. Mutation:
 /// drop the `show_in_box` after recording, and
 /// `a_scrub_on_a_box_is_one_entry` fails. Mutation:
 /// call [`write_leaf`] here instead of recording, and
@@ -854,7 +854,11 @@ pub(crate) fn take_back_typing(world: &mut World) -> bool {
 /// to commit the old text first.
 ///
 /// Mutation: insert into the focused box like the rest, and
-/// `ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit` fails.
+/// `an_undo_to_a_value_the_box_cannot_hold_is_not_written_over` fails. The
+/// queued edit a frame late is the window RK-014 names, and no test reaches
+/// into it: `ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit`
+/// and `enter_right_after_ctrl_z_commits_what_the_box_shows` both stay green
+/// under that mutation, measured, because the edit lands before they read.
 /// Mutation: do nothing for the others, and
 /// `an_undo_reaches_the_boxes_that_are_not_focused` fails.
 pub(crate) fn show_values_in_place(world: &mut World) {
@@ -2611,11 +2615,13 @@ mod tests {
 
     /// A value that is not committed leaves the component alone.
     ///
-    /// `bevy_feathers` emits a value on every keystroke and on every step of
-    /// a scrub, carrying `is_final: false`. None of them is a commit.
-    ///
-    /// Mutation: drop the `is_final` check in `commit`, and this fails with
-    /// the placeholder already moved.
+    /// Typing alone writes nothing. On Bevy 0.19 `bevy_feathers` emitted a
+    /// value on every keystroke with `is_final: false`, and this was the test
+    /// that held `commit` to ignoring them. 0.20 emits nothing while typing,
+    /// so dropping that check no longer fails this, measured;
+    /// `a_scrub_on_a_box_is_one_entry` holds the check now. This stays as the
+    /// test that reports the engine going back to emitting per keystroke
+    /// alongside a `commit` that acts on it.
     #[test]
     fn a_value_that_is_not_committed_leaves_the_component_alone() {
         let mut app = inspector_editor();
@@ -3469,8 +3475,10 @@ mod tests {
     /// history here and this fails. `docs/specs/ui.md` §8's last accepted risk
     /// is that.
     ///
-    /// Mutation: insert a `NumberInputValue` into the focused box like the
-    /// others in `show_in_box`, and this fails.
+    /// Inserting a `NumberInputValue` into the focused box like the others in
+    /// `show_in_box` does not fail this on 0.20, measured: the edit it queues
+    /// lands before the test reads. What does fail under that mutation is
+    /// `an_undo_to_a_value_the_box_cannot_hold_is_not_written_over`.
     #[test]
     fn ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit() {
         let mut app = inspector_editor();

@@ -113,7 +113,9 @@ impl Plugin for HandlesPlugin {
 /// which writes the angle a turn in progress has reached: on Bevy 0.19 that
 /// order came through transform propagation, and since 0.20 put `follow`
 /// after it the two were unordered, so the knob could be drawn a frame behind
-/// the pointer depending on which ran first.
+/// the pointer depending on which ran first. **No test holds this order**:
+/// removing it leaves every handle test green, measured, because each reads
+/// the knob after a frame in which nothing moves.
 ///
 /// **The stalk is measured on the viewport, not in the world.** The top of the
 /// frame goes to the viewport through the camera, the stalk is added there,

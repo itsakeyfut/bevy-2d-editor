@@ -211,7 +211,9 @@ fn spawn_regions(mut commands: Commands) {
                 // pixels in the default 720 pixel window, with the inspector's
                 // rows pushing the middle row to 1145 and the viewport out
                 // from under the pointer. The middle row's own `min_height`
-                // below is the same fix one level down, from 0.19.
+                // below is the same fix one level down, from 0.19. Mutation:
+                // drop it, and `ctrl_z_after_a_click_puts_the_selection_back_and_the_panel_follows`
+                // fails with dozens of others, every second click missing.
                 min_height: px(0),
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
