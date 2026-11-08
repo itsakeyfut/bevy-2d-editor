@@ -387,25 +387,44 @@ mod tests {
         })
     }
 
-    /// Every manifest asks for the features the specification settled.
+    /// A manifest's lines with its comment lines taken out, so that a comment
+    /// quoting a dependency line is not read as one.
+    fn without_comments(text: &str) -> String {
+        text.lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Every crate that takes the engine gets the features the specification
+    /// settled, and not the engine's defaults, as cargo resolves it.
     ///
     /// `docs/specs/ui.md` §3 writes the list and says what dropping the rest
-    /// costs, measured. A manifest writes it again because that is where cargo
-    /// reads it. Neither is derived from the other, so they are a real
-    /// cross-check rather than a file agreeing with itself.
+    /// costs, measured. The root's `[workspace.dependencies]` writes it again
+    /// because that is where cargo reads it. Neither is derived from the
+    /// other, so they are a real cross-check rather than a file agreeing with
+    /// itself.
     ///
-    /// It walks `crates/` rather than naming the crates that take the engine.
-    /// Two do now and a third will, and a guard that has to be widened by hand
-    /// is one that holds whichever manifest somebody remembered.
+    /// **Read from `cargo metadata`, after inheritance, not from the
+    /// manifests.** A member can add features on top of what it inherits, and
+    /// TOML can say the same dependency indented, renamed through `package`,
+    /// or as a `[dependencies.bevy]` table. A line scrape of the manifests,
+    /// which is what this test first was, let an indented line through and
+    /// held nothing about the defaults, both measured. What cargo resolves is
+    /// the same value however it was written.
     ///
     /// The lockfile cannot stand in for this. `bevy_feathers` is still
     /// resolved with the feature removed, measured, so an assertion about the
     /// lock would be one that cannot fail.
     ///
-    /// Mutation: drop a feature from any of those files, and this fails.
+    /// Mutation: drop a feature from the root's `bevy` entry, or drop its
+    /// `default-features = false`, and this fails. Mutation: give
+    /// `crates/editor_ui/Cargo.toml` an indented
+    /// `  bevy = { workspace = true, features = ["3d"] }`, and this fails
+    /// naming `b2d_editor_ui`.
     #[test]
-    fn every_manifest_asks_for_the_features_the_specification_settled() {
-        let spec = features_in(
+    fn every_crate_that_takes_the_engine_gets_the_features_the_specification_settled() {
+        let mut spec = features_in(
             &std::fs::read_to_string(workspace_root().join("docs/specs/ui.md"))
                 .expect("the file is in the repository"),
         );
@@ -413,8 +432,78 @@ mod tests {
             !spec.is_empty(),
             "no feature list was read from the specification, so this asserts nothing"
         );
+        spec.sort();
 
-        let mut checked = Vec::new();
+        let out = std::process::Command::new(env!("CARGO"))
+            .args(["metadata", "--format-version", "1", "--no-deps"])
+            .current_dir(workspace_root())
+            .output()
+            .expect("cargo metadata runs");
+        assert!(
+            out.status.success(),
+            "cargo metadata failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("cargo metadata prints JSON");
+
+        let mut taking = std::collections::BTreeSet::new();
+        for package in metadata["packages"].as_array().expect("a package list") {
+            let name = package["name"].as_str().expect("a package name");
+            for dependency in package["dependencies"]
+                .as_array()
+                .expect("a dependency list")
+            {
+                if dependency["name"] != "bevy" {
+                    continue;
+                }
+                let mut features: Vec<String> = dependency["features"]
+                    .as_array()
+                    .expect("a feature list")
+                    .iter()
+                    .map(|feature| feature.as_str().expect("a feature name").to_owned())
+                    .collect();
+                features.sort();
+                assert_eq!(
+                    features, spec,
+                    "{name} and docs/specs/ui.md §3 ask for different engine features"
+                );
+                assert_eq!(
+                    dependency["uses_default_features"], false,
+                    "{name} takes the engine's default features, which ui.md §3 does not"
+                );
+                taking.insert(name.to_owned());
+            }
+        }
+        assert!(
+            taking.len() >= 2,
+            "only {taking:?} take the engine, so this holds less than it reads as"
+        );
+    }
+
+    /// A crate takes the engine only by inheriting the root's entry, so the
+    /// version and the features are written in one place.
+    ///
+    /// Whether a member inherited is not in `cargo metadata`: a written-out
+    /// line with the same version and features resolves to the same thing.
+    /// So this one reads the manifests, and keeps to what text can say
+    /// reliably: comment lines are taken out, the leading space TOML allows is
+    /// trimmed, and a line names the engine when its key is `bevy` itself, its
+    /// table is `[...bevy]`, or it says `package = "bevy"`. A neighbour such
+    /// as `bevy_egui` is not the engine and is not read.
+    ///
+    /// Mutation: replace `bevy.workspace = true` in
+    /// `crates/editor_ui/Cargo.toml` with a written-out
+    /// `bevy = { version = .. }` line, indented or not, or with
+    /// `engine = { package = "bevy", .. }`, and this fails naming that
+    /// manifest.
+    #[test]
+    fn a_crate_takes_the_engine_only_by_inheriting_the_roots_entry() {
+        let key = Regex::new(r#"^"?bevy"?\s*[.=]"#).expect("a literal pattern");
+        let table = Regex::new(r#"^\[[^\]]*\."?bevy"?\]$"#).expect("a literal pattern");
+        let renamed = Regex::new(r#"package\s*=\s*"bevy""#).expect("a literal pattern");
+
+        let mut inheriting = std::collections::BTreeSet::new();
         for crate_dir in std::fs::read_dir(workspace_root().join("crates"))
             .expect("the directory is in the repository")
         {
@@ -422,22 +511,27 @@ mod tests {
                 .expect("the entry is readable")
                 .path()
                 .join("Cargo.toml");
-            let text = std::fs::read_to_string(&manifest).expect("every crate has a manifest");
-            if !text.contains("\nbevy = ") {
-                continue;
-            }
-            assert_eq!(
-                features_in(&text),
-                spec,
-                "{} and docs/specs/ui.md §3 ask for different features",
-                manifest.display()
+            let text = without_comments(
+                &std::fs::read_to_string(&manifest).expect("every crate has a manifest"),
             );
-            checked.push(manifest);
+            for line in text
+                .lines()
+                .map(str::trim)
+                .filter(|line| key.is_match(line) || table.is_match(line) || renamed.is_match(line))
+            {
+                assert_eq!(
+                    line,
+                    "bevy.workspace = true",
+                    "{} names the engine other than by inheriting the root's entry",
+                    manifest.display()
+                );
+                inheriting.insert(manifest.clone());
+            }
         }
         assert!(
-            checked.len() >= 2,
-            "only {} manifest(s) were examined, so this holds less than it reads as",
-            checked.len()
+            inheriting.len() >= 2,
+            "only {} manifest(s) inherit the engine, so this holds less than it reads as",
+            inheriting.len()
         );
     }
 

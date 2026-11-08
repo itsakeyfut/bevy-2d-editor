@@ -604,8 +604,8 @@ in [open-questions.md §1](./open-questions.md).
 **Turning on Bevy's `debug` feature**, which makes `ComponentInfo::name()` work
 and gives every component a name, registered or not. It costs an amendment to
 §3's feature line, which `xtask`'s
-`every_manifest_asks_for_the_features_the_specification_settled` holds, for a
-fallback that only ever names types this repository owns. It comes back if the
+`every_crate_that_takes_the_engine_gets_the_features_the_specification_settled`
+holds, for a fallback that only ever names types this repository owns. It comes back if the
 missing names start costing time: the engine's own conflict diagnostics are
 unreadable without it, which is already visible in
 `crates/editor/src/inspector.rs`.

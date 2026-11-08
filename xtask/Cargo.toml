@@ -8,7 +8,12 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-regex = "1.13.1"
+regex.workspace = true
+
+# Only the test that reads how the engine resolves uses this: `cargo metadata`
+# prints JSON.
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true
