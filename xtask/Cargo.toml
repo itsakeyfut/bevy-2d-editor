@@ -10,5 +10,10 @@ publish = false
 [dependencies]
 regex.workspace = true
 
+# Only the test that reads how the engine resolves uses this: `cargo metadata`
+# prints JSON.
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true
