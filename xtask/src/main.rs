@@ -586,24 +586,54 @@ mod tests {
     /// that costs, measured. Nothing else notices a dropped feature coming
     /// back: the build stays green and only the minutes change.
     ///
-    /// Read from the lockfile, which is the resolved set rather than the
-    /// manifest that asks for it, so a feature arriving through something
-    /// else is caught as well. The first assertion is the vacuity guard: a
-    /// lockfile this could not read would otherwise pass every line below it.
+    /// **Read from `cargo tree`, which is what gets built**, rather than from
+    /// the manifest that asks for it, so a feature arriving through something
+    /// else is caught as well. It read the lockfile until Bevy 0.20, and the
+    /// lockfile stopped being that set: `bevy_internal` names
+    /// `bevy_dev_tools` through weak features such as `bevy_dev_tools?/webgl`,
+    /// the lockfile carries a dependency named that way whether or not it is
+    /// built, and `bevy_dev_tools` takes `bevy_audio` unconditionally. So
+    /// `bevy_audio` sits in `Cargo.lock` while `cargo tree -i bevy_audio`
+    /// prints nothing, measured on 0.20.1. The first assertion is the vacuity
+    /// guard: a tree this could not read would otherwise pass every line
+    /// below it.
     ///
-    /// Mutation: add `audio` to the editor's feature list, and this fails.
+    /// Mutation: add `audio` to the root's `bevy` feature list, and this
+    /// fails.
     #[test]
     fn the_engine_arrives_without_the_features_it_was_taken_without() {
-        let lock = std::fs::read_to_string(workspace_root().join("Cargo.lock"))
-            .expect("the lockfile is in the repository");
+        let out = std::process::Command::new(env!("CARGO"))
+            .args([
+                "tree",
+                "--workspace",
+                "--edges",
+                "normal",
+                "--prefix",
+                "none",
+                "--format",
+                "{p}",
+            ])
+            .current_dir(workspace_root())
+            .output()
+            .expect("cargo tree runs");
         assert!(
-            lock.contains("name = \"bevy\""),
-            "the engine is not in the lockfile, so this asserts nothing"
+            out.status.success(),
+            "cargo tree failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let built = String::from_utf8(out.stdout).expect("cargo tree prints UTF-8");
+        let names: Vec<&str> = built
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .collect();
+        assert!(
+            names.contains(&"bevy_internal"),
+            "the engine is not in what is built, so this asserts nothing"
         );
         for absent in ["bevy_audio", "bevy_gltf"] {
             assert!(
-                !lock.contains(&format!("name = \"{absent}\"")),
-                "{absent} is resolved, and docs/specs/ui.md §3 says it is not taken"
+                !names.contains(&absent),
+                "{absent} is built, and docs/specs/ui.md §3 says it is not taken"
             );
         }
     }
