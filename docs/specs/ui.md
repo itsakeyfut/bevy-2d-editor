@@ -1228,9 +1228,10 @@ the gesture, and [§8](#8-what-ctrlz-takes-back) to
 
 **A threshold, because the engine has none.** `bevy_picking` 0.20.1 begins a
 drag on the first move after a press, however small, and on release sends
-`PointerClick` to what was pressed whether or not it was dragged. Without one, a click
-with a pixel of jitter moves the sprite and records an entry, and a drag on one
-of several selected ends in a click that collapses the selection to that one.
+`PointerClick` to what was pressed whether or not it was dragged. Without one,
+a click with a pixel of jitter moves the sprite and records an entry, and a drag
+on one of several selected ends in a click that collapses the selection to that
+one.
 Measured on the screen rather than in the world, so it means the same thing at
 every zoom. Four is chosen, not measured.
 
