@@ -219,7 +219,7 @@ fn draw(
 /// The knob is the only strip the group draws, since the stalk is a line, so
 /// the one rectangle `drawn::rectangles_of` finds is the extent of the
 /// circle's strip. That is the circle's square, centred on the knob and a
-/// diameter across, because `circle_2d` in `bevy_gizmos` 0.19.1 places a
+/// diameter across, because `circle_2d` in `bevy_gizmos` 0.20.1 places a
 /// vertex at every multiple of a full turn over its 32 segments, which puts
 /// four of them on the axes. Read from what was drawn rather than worked out
 /// the way [`place`] works it out, so that a test agrees with the screen and

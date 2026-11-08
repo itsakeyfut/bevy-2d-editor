@@ -188,7 +188,7 @@ pub struct Selectable;
 /// `remember` below reads `ButtonInput<KeyCode>` from inside an observer that
 /// `bevy_picking` triggers, and the engine orders the two against nothing:
 /// `bevy_picking`'s sets are chained among themselves and say nothing about
-/// `InputSystems`, checked in 0.19.1. The order that holds today is the one
+/// `InputSystems`, checked in 0.20.1. The order that holds today is the one
 /// this wants, so the line changes no behaviour; what it buys is that a
 /// schedule saying otherwise fails to build and names the cycle, rather than
 /// reading the modifier as up and turning somebody's add into a replace. That
@@ -1938,9 +1938,9 @@ mod tests {
     /// later engine swaps them, this fails by name rather than the box quietly
     /// leaving the selection it just made empty.
     ///
-    /// Measured in `bevy_picking` 0.19.1, whose `pointer_events` triggers
-    /// `Click` and `Release` for the previously hovered entities and then the
-    /// drops and `DragEnd`.
+    /// Measured in `bevy_picking` 0.20.1, whose `pointer_events` triggers
+    /// `PointerClick` and `PointerRelease` for the previously hovered entities
+    /// and then `PointerDragDrop` and `PointerDragEnd`.
     #[test]
     fn a_release_that_ended_a_band_clicks_before_it_ends_the_drag() {
         #[derive(Resource, Default)]

@@ -81,7 +81,7 @@ truth, and by [data-model.md §1](./data-model.md) undo is command-based, so the
 truth about tile placement lives in the Editor Model. What an existing crate
 could supply is **only the rendering.**
 
-### What Bevy provides, as of 0.19.1
+### What Bevy provides, as of 0.20.1
 
 ```text
 TilemapChunk              one chunk is one mesh

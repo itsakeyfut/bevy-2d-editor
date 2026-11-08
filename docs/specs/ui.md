@@ -1036,7 +1036,7 @@ older value into the box would throw the typing away. Doing nothing loses
 nothing, and Ctrl+Z, which takes the typing back, makes redo reachable again.
 
 **Bevy's text input leaves both keys alone.** `on_focused_keyboard_input` in
-`bevy_ui_widgets` 0.19.1 inserts a character only with no modifier or with
+`bevy_ui_widgets` 0.20.1 inserts a character only with no modifier or with
 Shift alone, and has no arm for Ctrl+Y or Ctrl+Shift+Z, so both propagate as
 Ctrl+Z does.
 
@@ -1219,9 +1219,9 @@ the gesture, and [§8](#8-what-ctrlz-takes-back) to
 
 ### Rationale
 
-**A threshold, because the engine has none.** `bevy_picking` 0.19.1 begins a
+**A threshold, because the engine has none.** `bevy_picking` 0.20.1 begins a
 drag on the first move after a press, however small, and on release sends
-`Click` to what was pressed whether or not it was dragged. Without one, a click
+`PointerClick` to what was pressed whether or not it was dragged. Without one, a click
 with a pixel of jitter moves the sprite and records an entry, and a drag on one
 of several selected ends in a click that collapses the selection to that one.
 Measured on the screen rather than in the world, so it means the same thing at
@@ -1359,7 +1359,7 @@ appears, so the arithmetic holds on a display at 200% without a test that
 could say so.
 
 **Bevy's own transform gizmo was read and not used.** `TransformGizmoPlugin` in
-`bevy_gizmos` 0.19.1 acts on one entity, reads the window's cursor and mouse
+`bevy_gizmos` 0.20.1 acts on one entity, reads the window's cursor and mouse
 buttons rather than the viewport's picking pointer, so a press on it would also
 reach the observers of §4, and emits nothing when a drag ends, which leaves
 §11's one entry nowhere to hang. Its arithmetic for the angle is the one used

@@ -14,7 +14,7 @@ use bevy::ui::{AlignItems, Display, FlexDirection, Node, Overflow, Val};
 /// draws some of its lines another way gets no alignment between the two, and
 /// the inspector is one, drawing a component that is not a named struct as a
 /// bare value with no name beside it. It is a `const` and not a design
-/// token because colour is the only token kind `ThemeProps` carries in 0.19.1,
+/// token because colour is the only token kind `ThemeProps` carries in 0.20.1,
 /// which [`docs/specs/ui.md` §3](../../../docs/specs/ui.md) records; Feathers
 /// keeps its own spacing in `constants.rs` the same way.
 const NAME_WIDTH: Val = Val::Px(140.0);

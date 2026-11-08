@@ -29,10 +29,10 @@ chosen here is the shape they inherit.
   times is not a number this record should assert: the entry's own headline and
   the incidents it narrates do not agree, and reconciling that belongs to the
   entry.
-* Bevy 0.19.1's `PluginGroupBuilder` cannot be enumerated. `order` and `plugins`
+* Bevy 0.20.1's `PluginGroupBuilder` cannot be enumerated. `order` and `plugins`
   are private, there is no iterator, and `contains::<T>()` answers about one
-  named type at a time. `App` is the same: `plugin_registry` is `pub(crate)` and
-  the public readers all need the type spelled out.
+  named type at a time. `App` is the same: its `SubApp`'s `plugin_registry` is
+  `pub(crate)` and the public readers all need the type spelled out.
 * Failure lands on row 1 or row 2 of `CLAUDE.md`'s list either way: the editor
   is composed at compile time, so a mistake here does not compile or fails a
   test. Nothing about this choice can reach a saved document.
@@ -116,5 +116,5 @@ member makes it assertable, and this section is to be updated in that change.
   to prefer the engine's mechanisms and rule out dynamic loading.
 * `crates/editor/src/lib.rs`: `Member`, `member!`, `MEMBERS`, `compose` and
   `EditorPlugins`.
-* Bevy 0.19.1, `bevy_app/src/plugin_group.rs`: the macro, and the private
+* Bevy 0.20.1, `bevy_app/src/plugin_group.rs`: the macro, and the private
   `order` and `plugins` fields that this record turns on.

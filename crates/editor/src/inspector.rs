@@ -265,7 +265,7 @@ impl Plugin for InspectorPlugin {
 
 /// Put the active entity and its components in the inspector region.
 ///
-/// # What Bevy 0.19.1 provides here, and what it does not
+/// # What Bevy 0.20.1 provides here, and what it does not
 ///
 /// Measured against this workspace's feature line, which `docs/specs/ui.md` §3
 /// settles:
