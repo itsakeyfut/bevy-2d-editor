@@ -56,8 +56,10 @@ pub(crate) fn lines_of<T: GizmoConfigGroup>(app: &App) -> Vec<(Vec2, Vec2)> {
     };
     drawn
         .list_positions
-        .chunks_exact(2)
-        .map(|ends| (ends[0].truncate(), ends[1].truncate()))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[start, end]| (start.truncate(), end.truncate()))
         .collect()
 }
 
