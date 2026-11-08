@@ -26,6 +26,10 @@ pub(crate) struct Stroke(Option<Held>);
 impl Stroke {
     /// The pivot and the angle turned so far, while the rotate knob is held
     /// and [`follow`] has run at least once.
+    ///
+    /// For the rotate knob alone, which is what it is named for: a handle
+    /// that does something else, as scale will, carries its own read-back
+    /// rather than stretching this one.
     pub(crate) fn turned(&self) -> Option<(Grip, Vec2, f32)> {
         let held = self.0.as_ref()?;
         let (pivot, angle) = held.turned?;
@@ -372,11 +376,11 @@ fn turn(pivot: Vec2, angle: f32, together: bool) -> impl Fn(&Transform) -> Trans
 /// Mutation: drop the bits comparison, and
 /// `a_drag_that_comes_back_to_where_it_started_records_nothing` fails.
 fn record(world: &mut World, from: Vec<(Entity, Transform)>) {
-    let moved: Vec<Moved> = from
+    let moved: Vec<Transformed> = from
         .into_iter()
         .filter_map(|(entity, from)| {
             let to = *world.get::<Transform>(entity)?;
-            Some(Moved { entity, from, to })
+            Some(Transformed { entity, from, to })
         })
         .collect();
     if moved
@@ -401,7 +405,7 @@ fn bits(at: &Transform) -> Vec<u32> {
 }
 
 /// One entity's part of a drag.
-struct Moved {
+struct Transformed {
     entity: Entity,
     /// What undo writes back.
     from: Transform,
@@ -424,7 +428,7 @@ struct Moved {
 /// the rotation in `undo`, and
 /// `one_ctrl_z_after_a_turn_puts_every_rotation_and_position_back_bit_for_bit`
 /// fails.
-struct TransformEntities(Vec<Moved>);
+struct TransformEntities(Vec<Transformed>);
 
 impl EditorCommand for TransformEntities {
     fn execute(&mut self, world: &mut World) {

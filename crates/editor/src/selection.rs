@@ -145,11 +145,16 @@ struct Pressed {
     /// entity or on the knob does once the pointer has gone further than
     /// [`MOVE_THRESHOLD`]. From then on the release is not a click.
     moving: bool,
-    /// Whether the press was on the rotate knob. It wins over whatever
-    /// [`Pressed::over`] says is under it, because the knob is drawn on top:
+    /// What the press took hold of when it was on a handle, which today is
+    /// only the rotate knob. It wins over whatever [`Pressed::over`] says is
+    /// under it, because a handle is drawn on top:
     /// [`docs/specs/ui.md` §12](../../../docs/specs/ui.md). Every reader here
     /// asks this before it asks `over`.
-    knob: bool,
+    ///
+    /// The grip itself rather than a flag, taken when the button goes down,
+    /// so that a handle added later is a variant of [`Grip`] and not a second
+    /// flag every reader has to learn to ask first.
+    handle: Option<Grip>,
 }
 
 /// How far the pointer goes from a press on an entity, in logical pixels,
@@ -288,7 +293,7 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
 ///   `the_selection_keeps_the_order_things_were_chosen_in`
 /// * drop the `pressed.moving` check:
 ///   `dragging_one_of_several_selected_moves_them_all_and_keeps_the_selection`
-/// * drop the `pressed.knob` check: `clicking_the_knob_keeps_the_selection`
+/// * drop the `pressed.handle` check: `clicking_the_knob_keeps_the_selection`
 fn select(
     click: On<Pointer<Click>>,
     viewport: Query<&PointerId, With<ViewportNode>>,
@@ -302,7 +307,8 @@ fn select(
     // it would read as a click on it and collapse a group to that one. A
     // click on the knob is a release over empty space, and would clear what
     // the knob is drawn on.
-    if click.event().button != PointerButton::Primary || pressed.moving || pressed.knob {
+    if click.event().button != PointerButton::Primary || pressed.moving || pressed.handle.is_some()
+    {
         return;
     }
     // The pointer is read from the entity that carries `ViewportNode`, not from
@@ -381,7 +387,7 @@ fn remember(
         at: pointer_world(location, &cameras),
         band: None,
         moving: false,
-        knob: knob.under(location),
+        handle: knob.under(location),
     };
 }
 
@@ -398,13 +404,13 @@ fn remember(
 /// Mutation: drop the `pressed.over.is_some()` check, and
 /// `a_drag_that_begins_on_an_entity_is_not_a_band` fails. Mutation: drop the
 /// button check, and `a_drag_with_any_other_button_does_not_band` fails.
-/// Mutation: drop the `pressed.knob` check, and
+/// Mutation: drop the `pressed.handle` check, and
 /// `a_drag_from_the_knob_is_not_a_box` fails.
 fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
     if start.event().button != PointerButton::Primary {
         return;
     }
-    if pressed.over.is_some() || pressed.knob {
+    if pressed.over.is_some() || pressed.handle.is_some() {
         return;
     }
     pressed.band = pressed.at;
@@ -452,7 +458,6 @@ fn grab(
     drag: On<Pointer<Drag>>,
     mut pressed: ResMut<Pressed>,
     selection: Res<Selection>,
-    knob: Res<Knob>,
     mut next: ResMut<Next>,
     mut commands: Commands,
 ) {
@@ -462,8 +467,8 @@ fn grab(
     if drag.event().distance.length() <= MOVE_THRESHOLD {
         return;
     }
-    if pressed.knob {
-        let (Some(anchor), Some(grip)) = (pressed.at, knob.grip()) else {
+    if let Some(grip) = pressed.handle {
+        let Some(anchor) = pressed.at else {
             return;
         };
         pressed.moving = true;

@@ -53,23 +53,17 @@ struct Placed {
 }
 
 impl Knob {
-    /// Whether a press at `location` is on the knob.
+    /// What a press at `location` takes hold of, when it is on the knob.
     ///
     /// Mutation: compare against ten times `KNOB_REACH`, and
     /// `a_press_beside_the_knob_is_not_on_it` fails. Mutation: a `KNOB_REACH`
     /// of one, and `a_press_off_the_knobs_centre_within_its_reach_takes_it`
     /// fails.
-    pub(crate) fn under(&self, location: &PointerLocation) -> bool {
+    pub(crate) fn under(&self, location: &PointerLocation) -> Option<Grip> {
         let (Some(placed), Some(location)) = (&self.0, &location.location) else {
-            return false;
+            return None;
         };
-        placed.at.distance(location.position) <= KNOB_REACH
-    }
-
-    /// What a drag from the knob holds, while there is one to drag.
-    pub(crate) fn grip(&self) -> Option<Grip> {
-        let placed = self.0.as_ref()?;
-        Some(Grip::Knob {
+        (placed.at.distance(location.position) <= KNOB_REACH).then_some(Grip::Knob {
             centre: placed.centre,
             base: placed.base,
             tip: placed.tip,
@@ -411,7 +405,7 @@ mod tests {
     /// RK-008: the release lands on empty space, where the click that
     /// accompanies it would clear the selection.
     ///
-    /// Mutation: drop the `pressed.knob` check in `selection::select`, and
+    /// Mutation: drop the `pressed.handle` check in `selection::select`, and
     /// this fails.
     #[test]
     fn clicking_the_knob_keeps_the_selection() {
@@ -433,7 +427,7 @@ mod tests {
     /// selection; the click that comes with the release is held back by the
     /// turn either way.
     ///
-    /// Mutation: drop the `pressed.knob` check in `selection::begin`, and this
+    /// Mutation: drop the `pressed.handle` check in `selection::begin`, and this
     /// fails.
     #[test]
     fn a_drag_from_the_knob_is_not_a_box() {
