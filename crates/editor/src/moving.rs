@@ -1,11 +1,13 @@
-//! Moving what is selected by dragging it, and recording the move.
+//! Moving and turning what is selected by dragging it, and recording it.
 //!
-//! What turns a press into a move, and what moves, is decided in
-//! `selection.rs`, because the click, the box and the move are one gesture
+//! What turns a press into a drag, and what it takes hold of, is decided in
+//! `selection.rs`, because the click, the box and the drag are one gesture
 //! table: [`docs/specs/ui.md` §4](../../../docs/specs/ui.md). What dragging
-//! does, and what was turned down for it, is §11 of the same file.
+//! the body does, and what was turned down for it, is §11 of the same file;
+//! what dragging the rotate knob does is §12.
 
 use bevy::input_focus::InputFocusSystems;
+use bevy::math::ops;
 use bevy::picking::events::{DragEnd, Pointer, Press};
 use bevy::picking::pointer::{PointerButton, PointerLocation};
 use bevy::prelude::*;
@@ -17,17 +19,54 @@ use crate::history::{EditorCommand, History, put_back, take_back};
 use crate::selection::{pointer_world, record_choice};
 use crate::viewport::ViewportCamera;
 
-/// The move in progress, if there is one.
+/// The drag in progress, if there is one.
 #[derive(Resource, Default)]
 pub(crate) struct Stroke(Option<Held>);
 
-/// A move that has begun and has not been recorded yet.
+impl Stroke {
+    /// The pivot and the angle turned so far, while the rotate knob is held
+    /// and [`follow`] has run at least once.
+    ///
+    /// For the rotate knob alone, which is what it is named for: a handle
+    /// that does something else, as scale will, carries its own read-back
+    /// rather than stretching this one.
+    pub(crate) fn turned(&self) -> Option<(Grip, Vec2, f32)> {
+        let held = self.0.as_ref()?;
+        let (pivot, angle) = held.turned?;
+        Some((held.grip, pivot, angle))
+    }
+}
+
+/// What the press took hold of.
+#[derive(Clone, Copy)]
+pub(crate) enum Grip {
+    /// The entity's body: the group moves with the pointer.
+    Body,
+    /// The rotate knob: the group turns about the view axis.
+    Knob {
+        /// The centre of the selection's frame at the press, which is the
+        /// pivot when more than one entity turns.
+        centre: Vec2,
+        /// Where the stalk left the frame at the press, in world units.
+        base: Vec2,
+        /// Where the knob was at the press, in world units.
+        tip: Vec2,
+    },
+}
+
+/// A drag that has begun and has not been recorded yet.
 struct Held {
-    /// What moves.
+    /// What moves or turns.
     group: Vec<Entity>,
+    /// What the press took hold of.
+    grip: Grip,
     /// Where the press was, in world units.
     anchor: Vec2,
-    /// Where each entity was when the move began.
+    /// The pivot and the angle turned so far, written by [`follow`] while
+    /// the knob is held, so that `handles::place_knob` can keep the knob
+    /// under the pointer.
+    turned: Option<(Vec2, f32)>,
+    /// Each entity's transform when the drag began.
     ///
     /// `None` until [`follow`] has run once, **which is after the frame's
     /// focus changes**. The press that begins a move takes the focus out of a
@@ -35,7 +74,7 @@ struct Held {
     /// read any earlier, in the frame where the press and the first move land
     /// together, this would hold the number from before that commit, and
     /// undoing the move would write it over the commit.
-    from: Option<Vec<(Entity, Vec3)>>,
+    from: Option<Vec<(Entity, Transform)>>,
     /// Whether the button has been let go.
     ended: bool,
 }
@@ -114,14 +153,16 @@ fn let_go(end: On<Pointer<DragEnd>>, mut commands: Commands) {
     }
 }
 
-/// Begin a move of `group`, from a press at `anchor`.
+/// Begin a drag of `group`, holding `grip`, from a press at `anchor`.
 ///
-/// Nothing is held when this runs: the press that begins this move has
+/// Nothing is held when this runs: the press that begins this drag has
 /// already recorded any earlier one, through [`record_held`].
-pub(crate) fn start(world: &mut World, group: Vec<Entity>, anchor: Vec2) {
+pub(crate) fn start(world: &mut World, group: Vec<Entity>, anchor: Vec2, grip: Grip) {
     world.resource_mut::<Stroke>().0 = Some(Held {
         group,
+        grip,
         anchor,
+        turned: None,
         from: None,
         ended: false,
     });
@@ -146,8 +187,8 @@ pub(crate) fn in_progress(world: &World) -> bool {
     world.resource::<Stroke>().0.is_some()
 }
 
-/// Move the group with the pointer, and record the move when the button has
-/// been let go.
+/// Move or turn the group with the pointer, and record it when the button
+/// has been let go.
 ///
 /// Where it sits in `PostUpdate` is the whole of its correctness, and
 /// [`MovePlugin`] says it once:
@@ -162,10 +203,11 @@ pub(crate) fn in_progress(world: &World) -> bool {
 ///   position
 ///
 /// **The delta is added to `translation` as it is**, a world delta written as
-/// a local one. That holds while nothing in the editor has a parent, and a
+/// a local one, and the pivot of a turn is read from `translation` in the
+/// same way. That holds while nothing in the editor has a parent, and a
 /// hierarchy is what breaks it.
 ///
-/// **A translation is only written when it changes**, so that holding the
+/// **A transform is only written when it changes**, so that holding the
 /// button still does not mark every entity changed every frame.
 ///
 /// Mutation: return before writing, and
@@ -188,7 +230,7 @@ pub(crate) fn in_progress(world: &World) -> bool {
 /// schedule picks; `docs/specs/ui.md` §10 accepts the same of
 /// `record_choice`. Without `.before(TransformSystems::Propagate)` the outline
 /// trails the entity by a frame, which nothing reads. The write only when a
-/// translation changes is unguarded too: what it saves is the inspector
+/// transform changes is unguarded too: what it saves is the inspector
 /// rebuilding on every frame the button is held still, which no test counts.
 fn follow(
     mut stroke: ResMut<Stroke>,
@@ -203,7 +245,7 @@ fn follow(
     let from = held.from.get_or_insert_with(|| {
         held.group
             .iter()
-            .filter_map(|entity| Some((*entity, transforms.get(*entity).ok()?.translation)))
+            .filter_map(|entity| Some((*entity, *transforms.get(*entity).ok()?)))
             .collect()
     });
 
@@ -212,14 +254,25 @@ fn follow(
         .ok()
         .and_then(|location| pointer_world(location, &cameras));
     if let Some(now) = now {
-        let delta = (now - held.anchor).extend(0.0);
+        let place: Box<dyn Fn(&Transform) -> Transform> = match held.grip {
+            Grip::Body => {
+                let delta = (now - held.anchor).extend(0.0);
+                Box::new(move |at| at.with_translation(at.translation + delta))
+            }
+            Grip::Knob { centre, .. } => {
+                let pivot = pivot(from, centre);
+                let angle = angle_between(held.anchor - pivot, now - pivot);
+                held.turned = Some((pivot, angle));
+                Box::new(turn(pivot, angle, from.len() > 1))
+            }
+        };
         for (entity, at) in from.iter() {
             let Ok(mut transform) = transforms.get_mut(*entity) else {
                 continue;
             };
-            let to = *at + delta;
-            if transform.translation != to {
-                transform.translation = to;
+            let to = place(at);
+            if *transform != to {
+                *transform = to;
             }
         }
     }
@@ -231,7 +284,84 @@ fn follow(
     }
 }
 
-/// Put a finished move in the history, if it moved anything.
+/// What a turn is about: the entity's own origin when it turns alone, and the
+/// centre of the selection's frame when several turn together.
+/// [`docs/specs/ui.md` §12](../../../docs/specs/ui.md).
+///
+/// Mutation: always the centre, and
+/// `dragging_the_knob_turns_one_entity_about_its_origin` fails, because that
+/// test's sprite is anchored away from its middle. Mutation: always the first
+/// entity's origin, and
+/// `turning_several_turns_them_about_the_centre_of_their_frame` fails.
+fn pivot(from: &[(Entity, Transform)], centre: Vec2) -> Vec2 {
+    match from {
+        [(_, alone)] => alone.translation.truncate(),
+        _ => centre,
+    }
+}
+
+/// The signed angle from `from` to `to`, anticlockwise positive.
+///
+/// `atan2` of the cross and the dot rather than `Vec2::angle_to`, so that a
+/// pointer exactly on the pivot, which is a zero vector, gives `0` rather
+/// than anything a division by a zero length could give. A `NaN` written into
+/// a rotation would be row 6: it saves, and nothing draws.
+fn angle_between(from: Vec2, to: Vec2) -> f32 {
+    ops::atan2(from.perp_dot(to), from.dot(to))
+}
+
+/// A turn by `angle` about `pivot`, as a function from where an entity was to
+/// where it goes.
+///
+/// **The rotation is composed rather than replaced**, and normalized, which
+/// [`docs/specs/ui.md` §12](../../../docs/specs/ui.md) decided: a tilt the
+/// inspector gave in x or y is kept, and what is written is a unit rotation.
+///
+/// **Only a group's positions turn.** One entity turns about its own origin,
+/// so turning its position would put it back where it was, with one
+/// exception: `pivot + 0.0` is `+0.0` where the position said `-0.0`. That is
+/// a write the user did not ask for, so its `translation` is not touched.
+///
+/// **A turn by nothing writes nothing.** A pointer let go exactly where it was
+/// pressed gives an angle of exactly zero, and `pivot + (at - pivot)` does not
+/// always come back to `at` in floats, nor does normalizing a rotation that
+/// was not quite unit; either would be a change of a few bits the user cannot
+/// see, recorded as an entry and saved.
+///
+/// **A rotation of all zeros turns as no rotation**, which is how the engine
+/// draws it and what the inspector's raw numbers can leave behind. Normalizing
+/// it divides by a zero length, and the `NaN` that gives would be row 6.
+///
+/// Mutation: `Quat::from_rotation_x` in place of `from_rotation_z`, and
+/// `dragging_the_knob_turns_one_entity_about_its_origin` fails. Mutation: drop
+/// `normalize`, and `a_turn_writes_a_unit_rotation` fails. Mutation: turn the
+/// positions whatever `together` says, and
+/// `dragging_the_knob_turns_one_entity_about_its_origin` fails on the sign of
+/// a zero. Mutation: leave the positions alone whatever `together` says, and
+/// `turning_several_turns_them_about_the_centre_of_their_frame` fails.
+/// Mutation: drop the return for an angle of zero, and
+/// `a_turn_by_nothing_changes_no_bit` fails. Mutation: write the normalized
+/// product whatever it is, and `turning_a_rotation_of_zeros_writes_the_turn`
+/// fails.
+fn turn(pivot: Vec2, angle: f32, together: bool) -> impl Fn(&Transform) -> Transform {
+    let about_z = Quat::from_rotation_z(angle);
+    let round = Rot2::radians(angle);
+    move |at| {
+        let mut to = *at;
+        if angle == 0.0 {
+            return to;
+        }
+        let turned = (about_z * at.rotation).normalize();
+        to.rotation = if turned.is_finite() { turned } else { about_z };
+        if together {
+            let xy = pivot + round * (at.translation.truncate() - pivot);
+            to.translation = xy.extend(at.translation.z);
+        }
+        to
+    }
+}
+
+/// Put a finished drag in the history, if it changed anything.
 ///
 /// **Through [`History::record`], whose `execute` writes where the entities
 /// already are**: the drag wrote them there frame by frame, so the first
@@ -239,51 +369,68 @@ fn follow(
 /// [`docs/specs/ui.md` §11](../../../docs/specs/ui.md) has what was turned down
 /// for it.
 ///
-/// **A move that leaves every entity's bits where they were is not an entry**,
+/// **A drag that leaves every entity's bits where they were is not an entry**,
 /// for the reason §8 gives for a commit that changes nothing. An entity gone
-/// since the move began is left out.
+/// since the drag began is left out.
 ///
 /// Mutation: drop the bits comparison, and
 /// `a_drag_that_comes_back_to_where_it_started_records_nothing` fails.
-fn record(world: &mut World, from: Vec<(Entity, Vec3)>) {
-    let moved: Vec<Moved> = from
+fn record(world: &mut World, from: Vec<(Entity, Transform)>) {
+    let moved: Vec<Transformed> = from
         .into_iter()
         .filter_map(|(entity, from)| {
-            let to = world.get::<Transform>(entity)?.translation;
-            Some(Moved { entity, from, to })
+            let to = *world.get::<Transform>(entity)?;
+            Some(Transformed { entity, from, to })
         })
         .collect();
-    if moved.iter().all(|moved| bits(moved.from) == bits(moved.to)) {
+    if moved
+        .iter()
+        .all(|moved| bits(&moved.from) == bits(&moved.to))
+    {
         return;
     }
-    History::record(world, MoveEntities(moved));
+    History::record(world, TransformEntities(moved));
 }
 
-/// A vector's bits, so that two positions compare as the same number rather
-/// than as two floats that are merely equal.
-fn bits(at: Vec3) -> [u32; 3] {
-    at.to_array().map(f32::to_bits)
+/// A transform's bits, so that two compare as the same numbers rather than
+/// as floats that are merely equal.
+fn bits(at: &Transform) -> Vec<u32> {
+    at.translation
+        .to_array()
+        .into_iter()
+        .chain(at.rotation.to_array())
+        .chain(at.scale.to_array())
+        .map(f32::to_bits)
+        .collect()
 }
 
-/// One entity's part of a move.
-struct Moved {
+/// One entity's part of a drag.
+struct Transformed {
     entity: Entity,
     /// What undo writes back.
-    from: Vec3,
+    from: Transform,
     /// What redo writes.
-    to: Vec3,
+    to: Transform,
 }
 
-/// A move of everything that was dragged together.
+/// Everything that was dragged together, and where each one was before.
 ///
 /// The command of [`docs/specs/data-model.md` §1](../../../docs/specs/data-model.md),
 /// writing the component directly because there is no Editor Model yet.
 ///
+/// **It writes the whole `Transform`**, so that a move and a turn are one
+/// command, and a scale can be. That is safe because the history is one line:
+/// anything that changed another field of the transform since this was
+/// recorded is a later entry, and is taken back before this one is.
+///
 /// Mutation: write `from` in `execute`, and
-/// `redo_after_undoing_a_drag_moves_them_again` fails.
-struct MoveEntities(Vec<Moved>);
+/// `redo_after_undoing_a_drag_moves_them_again` fails. Mutation: write only
+/// the rotation in `undo`, and
+/// `one_ctrl_z_after_a_turn_puts_every_rotation_and_position_back_bit_for_bit`
+/// fails.
+struct TransformEntities(Vec<Transformed>);
 
-impl EditorCommand for MoveEntities {
+impl EditorCommand for TransformEntities {
     fn execute(&mut self, world: &mut World) {
         for moved in &self.0 {
             put(world, moved.entity, moved.to);
@@ -297,26 +444,27 @@ impl EditorCommand for MoveEntities {
     }
 }
 
-/// Write a translation, and nothing when the entity is gone, as `write_leaf`
+/// Write a transform, and nothing when the entity is gone, as `write_leaf`
 /// in `inspector.rs` does and for the reason it gives.
-fn put(world: &mut World, entity: Entity, at: Vec3) {
+fn put(world: &mut World, entity: Entity, at: Transform) {
     if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-        transform.translation = at;
+        *transform = at;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::pointer::{
-        click_at, hold_key, hold_letter, in_window, press_and_hold, press_then_release,
-        release_key, release_letter, write_input,
+        click_at, drag_through, hold_key, hold_letter, in_window, press_and_hold,
+        press_then_release, release_key, release_letter, round, write_input,
     };
     use crate::selection::{Selectable, Selection};
     use crate::viewport::ViewportCamera;
     use crate::{editor, headless};
     use bevy::picking::pointer::{PointerAction, PointerButton};
     use bevy::prelude::*;
-    use core::f32::consts::FRAC_PI_4;
+    use bevy::sprite::Anchor;
+    use core::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
     /// Where the left placeholder is, in world units. Repeated rather than
     /// read from `PLACEHOLDERS`, for the reason `in_window` gives.
@@ -563,7 +711,7 @@ mod tests {
 
     /// Redo after undoing a drag moves the entities again.
     ///
-    /// Mutation: write `from` in `MoveEntities::execute`, and this fails.
+    /// Mutation: write `from` in `TransformEntities::execute`, and this fails.
     #[test]
     fn redo_after_undoing_a_drag_moves_them_again() {
         let mut app = moving_editor();
@@ -927,5 +1075,346 @@ mod tests {
         }
 
         assert_eq!(translation(&app, middle), Vec3::ZERO);
+    }
+
+    /// A rotation's bits, so that "bit for bit" is what is compared.
+    fn rotation_bits(rotation: Quat) -> [u32; 4] {
+        rotation.to_array().map(f32::to_bits)
+    }
+
+    /// An entity's rotation.
+    fn rotation(app: &App, entity: Entity) -> Quat {
+        app.world()
+            .get::<Transform>(entity)
+            .expect("it has a transform")
+            .rotation
+    }
+
+    /// Where the knob is drawn now, in world units.
+    fn knob(app: &App) -> Vec2 {
+        crate::handles::drawn_knob(app)
+            .expect("a knob is drawn")
+            .center()
+    }
+
+    /// Whether a rotation is the one wanted, to within what the pointer's
+    /// rounding leaves in an angle.
+    fn assert_turned(rotation: Quat, wanted: Quat) {
+        assert!(
+            rotation.abs_diff_eq(wanted, 1e-4),
+            "{rotation} is not {wanted}"
+        );
+    }
+
+    /// Dragging the knob round turns a lone entity about its own origin: the
+    /// rotation follows the pointer's angle, is about Z, and the position is
+    /// left exactly as it was.
+    ///
+    /// The sprite is anchored at its bottom-left corner, so its origin is not
+    /// the middle of its frame and a pivot at the frame's centre gives a
+    /// different angle. Its `x` is `-0.0`, which turning the position about
+    /// the origin would make `+0.0`. The drag is several moves (RK-007).
+    ///
+    /// Mutation: `Quat::from_rotation_x` in `moving::turn`, and this fails.
+    /// Mutation: always the frame's centre in `moving::pivot`, and this fails.
+    /// Mutation: turn the positions whatever `together` says in
+    /// `moving::turn`, and this fails. Mutation: start a move rather than a
+    /// turn from the knob in `selection::grab`, and this fails.
+    #[test]
+    fn dragging_the_knob_turns_one_entity_about_its_origin() {
+        let mut app = moving_editor();
+        let at = Vec3::new(-0.0, -150.0, 0.0);
+        let anchored = app
+            .world_mut()
+            .spawn((
+                Sprite::from_color(Color::WHITE, Vec2::splat(64.0)),
+                Anchor::BOTTOM_LEFT,
+                Transform::from_translation(at),
+                Selectable,
+            ))
+            .id();
+        app.update();
+        click_at(
+            &mut app,
+            in_window(Vec2::new(32.0, -118.0)),
+            PointerButton::Primary,
+        );
+        assert_eq!(selected(&app), [anchored]);
+
+        let path = round(at.truncate(), knob(&app), 45.0, 4);
+        drag_through(&mut app, &path);
+
+        let turned = rotation(&app, anchored);
+        assert_turned(turned, Quat::from_rotation_z(FRAC_PI_4));
+        assert_eq!((turned.x, turned.y), (0.0, 0.0), "not a turn about Z");
+        assert_eq!(bits(translation(&app, anchored)), bits(at));
+    }
+
+    /// What a turn writes is a unit rotation, even from one that was not
+    /// quite unit before.
+    ///
+    /// The starting rotation is a turn about Z whose length is 1.01, which
+    /// the inspector's four raw numbers can leave behind.
+    ///
+    /// Mutation: drop `normalize` in `moving::turn`, and this fails.
+    #[test]
+    fn a_turn_writes_a_unit_rotation() {
+        let mut app = moving_editor();
+        let at = Vec3::new(0.0, -150.0, 0.0);
+        let entity = sprite(
+            &mut app,
+            Transform::from_translation(at).with_rotation(Quat::from_xyzw(0.0, 0.0, 0.0, 1.01)),
+        );
+        click_at(&mut app, in_window(at.truncate()), PointerButton::Primary);
+        assert_eq!(selected(&app), [entity]);
+
+        let path = round(at.truncate(), knob(&app), 30.0, 3);
+        drag_through(&mut app, &path);
+
+        let turned = rotation(&app, entity);
+        assert_ne!(turned.w, 1.01, "the drag turned nothing");
+        assert!(turned.is_normalized(), "{turned} is not a unit rotation");
+    }
+
+    /// Several selected turn as one body about the centre of their frame:
+    /// each one's rotation, and its position about that centre.
+    ///
+    /// The middle and left placeholders span `-232` to `32` across, so the
+    /// frame's centre is at `-100`; a quarter turn carries the middle one a
+    /// hundred above it and the left one a hundred below. RK-007: two
+    /// entities, and a drag of several moves.
+    ///
+    /// Mutation: always the first entity's origin in `moving::pivot`, and this
+    /// fails. Mutation: leave the positions alone whatever `together` says in
+    /// `moving::turn`, and this fails.
+    #[test]
+    fn turning_several_turns_them_about_the_centre_of_their_frame() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        let left = entity_at(&mut app, LEFT);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+        modifier_click_at(&mut app, in_window(LEFT));
+        let centre = Vec2::new(-100.0, 0.0);
+
+        let path = round(centre, knob(&app), 90.0, 6);
+        drag_through(&mut app, &path);
+
+        assert_near(translation(&app, middle), Vec3::new(-100.0, 100.0, 0.0));
+        assert_near(translation(&app, left), Vec3::new(-100.0, -100.0, 0.0));
+        assert_turned(rotation(&app, middle), Quat::from_rotation_z(FRAC_PI_2));
+        assert_turned(rotation(&app, left), Quat::from_rotation_z(FRAC_PI_2));
+    }
+
+    /// One Ctrl+Z after a turn puts every entity's rotation and position back,
+    /// bit for bit, and the next one reaches what came before the turn.
+    ///
+    /// Two entities, already turned and at positions that are not round, so a
+    /// restore that went through a rounding, or that put back only the
+    /// rotations of a group whose positions also turned, would show.
+    ///
+    /// Mutation: record on every frame in `moving::follow`, and this fails.
+    /// Mutation: write only the rotation in `TransformEntities::undo`, and
+    /// this fails.
+    #[test]
+    fn one_ctrl_z_after_a_turn_puts_every_rotation_and_position_back_bit_for_bit() {
+        let mut app = moving_editor();
+        let a_at = Transform::from_xyz(0.1, -150.3, 0.7).with_rotation(Quat::from_rotation_z(0.3));
+        let b_at =
+            Transform::from_xyz(120.9, -149.7, 0.3).with_rotation(Quat::from_rotation_z(-0.2));
+        let a = sprite(&mut app, a_at);
+        let b = sprite(&mut app, b_at);
+        click_at(
+            &mut app,
+            in_window(a_at.translation.truncate()),
+            PointerButton::Primary,
+        );
+        modifier_click_at(&mut app, in_window(b_at.translation.truncate()));
+        assert_eq!(selected(&app), [a, b]);
+        let from = knob(&app);
+
+        drag_through(&mut app, &round(from - Vec2::new(0.0, 80.0), from, 60.0, 5));
+        assert_ne!(
+            rotation_bits(rotation(&app, a)),
+            rotation_bits(a_at.rotation),
+            "the drag turned nothing"
+        );
+
+        undo(&mut app);
+        for (entity, at) in [(a, a_at), (b, b_at)] {
+            assert_eq!(bits(translation(&app, entity)), bits(at.translation));
+            assert_eq!(
+                rotation_bits(rotation(&app, entity)),
+                rotation_bits(at.rotation)
+            );
+        }
+
+        undo(&mut app);
+        assert_eq!(
+            selected(&app),
+            [a],
+            "the second Ctrl+Z did not reach the modifier click"
+        );
+    }
+
+    /// Turning several keeps each one's depth and composes the turn onto the
+    /// rotation each already had, a tilt included.
+    ///
+    /// RK-006: every placeholder sits at `z == 0` unturned, so this spawns two
+    /// at different depths, already turned, one of them tilted about X, which
+    /// the inspector's raw numbers can leave behind. The angle turned is read
+    /// back from the one with no tilt, since the pointer's path is not round
+    /// the real pivot; what is held is the composition, not the angle.
+    ///
+    /// Mutation: `xy.extend(0.0)` in `moving::turn`, and this fails, which is
+    /// row 6: a group turned is quietly put in a different draw order.
+    /// Mutation: `about_z` in place of `about_z * at.rotation`, and this
+    /// fails. Mutation: `at.rotation * about_z`, and this fails on the tilt.
+    #[test]
+    fn turning_several_keeps_each_depth_and_composes_onto_each_rotation() {
+        let mut app = moving_editor();
+        let tilted = Quat::from_rotation_z(0.3) * Quat::from_rotation_x(0.2);
+        let a_at = Transform::from_xyz(0.0, -150.0, 0.7).with_rotation(tilted);
+        let b_at =
+            Transform::from_xyz(120.0, -150.0, 0.3).with_rotation(Quat::from_rotation_z(-0.2));
+        let a = sprite(&mut app, a_at);
+        let b = sprite(&mut app, b_at);
+        click_at(
+            &mut app,
+            in_window(a_at.translation.truncate()),
+            PointerButton::Primary,
+        );
+        modifier_click_at(&mut app, in_window(b_at.translation.truncate()));
+        assert_eq!(selected(&app), [a, b]);
+        let from = knob(&app);
+
+        drag_through(&mut app, &round(from - Vec2::new(0.0, 80.0), from, 40.0, 4));
+
+        let turned = rotation(&app, b).to_euler(EulerRot::ZYX).0 - (-0.2);
+        assert!(turned.abs() > 0.1, "the drag turned nothing");
+        assert_turned(rotation(&app, a), Quat::from_rotation_z(turned) * tilted);
+        for (entity, at) in [(a, a_at), (b, b_at)] {
+            assert_eq!(
+                translation(&app, entity).z.to_bits(),
+                at.translation.z.to_bits(),
+                "a turn changed a depth"
+            );
+        }
+    }
+
+    /// One Ctrl+Z after turning one entity puts its rotation back, bit for bit.
+    ///
+    /// A lone entity's position does not change when it turns, so this is the
+    /// case where only the rotation says the drag did anything.
+    ///
+    /// Mutation: compare only the translation in `moving::bits`, and this
+    /// fails: the turn is not recorded, and the Ctrl+Z takes back the click
+    /// instead.
+    #[test]
+    fn one_ctrl_z_after_turning_one_entity_puts_its_rotation_back_bit_for_bit() {
+        let mut app = moving_editor();
+        let at = Transform::from_xyz(0.1, -150.3, 0.7).with_rotation(Quat::from_rotation_z(0.3));
+        let entity = sprite(&mut app, at);
+        click_at(
+            &mut app,
+            in_window(at.translation.truncate()),
+            PointerButton::Primary,
+        );
+        let path = round(at.translation.truncate(), knob(&app), 50.0, 4);
+
+        drag_through(&mut app, &path);
+        assert_ne!(
+            rotation_bits(rotation(&app, entity)),
+            rotation_bits(at.rotation),
+            "the drag turned nothing"
+        );
+
+        undo(&mut app);
+        assert_eq!(
+            rotation_bits(rotation(&app, entity)),
+            rotation_bits(at.rotation)
+        );
+        assert_eq!(selected(&app), [entity], "the Ctrl+Z took back the click");
+    }
+
+    /// Letting go with the pointer exactly on the pivot leaves a rotation, not
+    /// a `NaN`.
+    ///
+    /// The middle placeholder turns about its origin, the world's origin, and
+    /// the viewport's middle is where the pointer reads as exactly that.
+    ///
+    /// Mutation: `from.angle_to(to)` in `moving::angle_between`, and this
+    /// fails: the angle of a zero vector is `0 / 0`.
+    #[test]
+    fn letting_go_on_the_pivot_leaves_a_rotation() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+        let mut path = round(MIDDLE, knob(&app), 45.0, 3);
+        path.push(in_window(MIDDLE));
+
+        drag_through(&mut app, &path);
+
+        let turned = rotation(&app, middle);
+        assert!(turned.is_finite(), "{turned} is not a rotation");
+    }
+
+    /// Turning an entity whose rotation is all zeros writes a rotation, the
+    /// turn itself, rather than a `NaN`.
+    ///
+    /// The inspector's four raw numbers can be typed to `0, 0, 0, 0`, and the
+    /// engine draws that as no rotation at all, so the turn starts from what
+    /// was on the screen.
+    ///
+    /// Mutation: write the normalized product whatever it is in
+    /// `moving::turn`, and this fails: normalizing a zero length is `0 / 0`.
+    #[test]
+    fn turning_a_rotation_of_zeros_writes_the_turn() {
+        let mut app = moving_editor();
+        let at = Transform::from_xyz(0.0, -150.0, 0.0)
+            .with_rotation(Quat::from_xyzw(0.0, 0.0, 0.0, 0.0));
+        let entity = sprite(&mut app, at);
+        click_at(
+            &mut app,
+            in_window(at.translation.truncate()),
+            PointerButton::Primary,
+        );
+        let path = round(at.translation.truncate(), knob(&app), 45.0, 3);
+
+        drag_through(&mut app, &path);
+
+        assert_turned(rotation(&app, entity), Quat::from_rotation_z(FRAC_PI_4));
+    }
+
+    /// A turn by nothing writes nothing: a pointer let go exactly where it was
+    /// pressed leaves every bit where it was, a group's positions and a
+    /// rotation that was not quite unit included.
+    ///
+    /// Read off `turn` itself rather than through a drag, because whether
+    /// a group's `pivot + (at - pivot)` comes back to `at` depends on the
+    /// pivot, and a drag cannot choose one that is known not to: measured, a
+    /// drag round the frame of two entities and back came back exact, while
+    /// these three pivots do not. `record` comparing bits is what keeps such a
+    /// drag out of the history, and it needs this to have written nothing.
+    ///
+    /// Mutation: drop the early return for an angle of zero in
+    /// `moving::turn`, and this fails.
+    #[test]
+    fn a_turn_by_nothing_changes_no_bit() {
+        let at = Transform::from_xyz(0.1, -150.3, 0.7)
+            .with_rotation(Quat::from_xyzw(0.0, 0.0, 0.151, 0.999));
+        for pivot in [
+            Vec2::new(60.5, -150.0),
+            Vec2::new(60.512_344, -150.01),
+            Vec2::new(33.3, 7.7),
+        ] {
+            for together in [true, false] {
+                let to = super::turn(pivot, 0.0, together)(&at);
+                assert_eq!(
+                    super::bits(&to),
+                    super::bits(&at),
+                    "about {pivot}, together: {together}"
+                );
+            }
+        }
     }
 }
