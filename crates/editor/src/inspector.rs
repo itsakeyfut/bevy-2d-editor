@@ -847,18 +847,19 @@ pub(crate) fn take_back_typing(world: &mut World) -> bool {
 /// ([ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)),
 /// and **the focused box is the one that matters**: left holding the value
 /// from before the undo, it writes that value back when it is let go. So its
-/// text is replaced by hand, now, and the others get a `NumberInputValue`
-/// inserted. The insert is not offered to the focused box: in `bevy_feathers`
-/// 0.20 its observer writes into a focused box as into any other, through an
-/// edit queued for the next frame, which is RK-014's window for the next key
-/// to commit the old text first.
+/// text is replaced by hand, now, before the box is given the value like the
+/// others; [`show_in_box`] says why both, and in that order.
 ///
-/// Mutation: insert into the focused box like the rest, and
-/// `an_undo_to_a_value_the_box_cannot_hold_is_not_written_over` fails. The
-/// queued edit a frame late is the window RK-014 names, and no test reaches
-/// into it: `ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit`
-/// and `enter_right_after_ctrl_z_commits_what_the_box_shows` both stay green
-/// under that mutation, measured, because the edit lands before they read.
+/// Mutation: give the focused box the value without replacing its text first,
+/// and `an_undo_to_a_value_the_box_cannot_hold_is_not_written_over` fails. The
+/// edit the widget would then queue a frame late is the window RK-014 names,
+/// and no other test reaches into it:
+/// `ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit` and
+/// `enter_right_after_ctrl_z_commits_what_the_box_shows` both stay green under
+/// that mutation, measured, because the edit lands before they read.
+/// Mutation: replace the focused box's text and not give it the value, and
+/// `clicking_into_a_box_after_an_undo_and_letting_go_keeps_the_undo` fails,
+/// with the two scrub tests that go through [`commit`].
 /// Mutation: do nothing for the others, and
 /// `an_undo_reaches_the_boxes_that_are_not_focused` fails.
 pub(crate) fn show_values_in_place(world: &mut World) {
@@ -885,12 +886,18 @@ fn show_in_box(world: &mut World, focused: Option<Entity>, cell: Entity, target:
             .get::<ChildOf>(*inner)
             .is_some_and(|parent| parent.parent() == cell)
     });
-    match typing_in_it {
-        Some(inner) => put_in_box(world, inner, value),
-        None => {
-            world.entity_mut(cell).insert(NumberInputValue::F32(value));
-        }
+    // The focused box's text is replaced by hand first, and only then is it
+    // given the value: the widget's own `NumberInputValue` is not a display
+    // but what `bevy_feathers` 0.20 reads back, into the text on a click into
+    // the box and as the base a scrub is measured from. Left at the value the
+    // box was spawned with, a click into it and a focus loss wrote that old
+    // value back over a commit, a scrub or an undo, found by review. With the
+    // text already equal, the edit the widget would queue is not queued, so
+    // RK-014's frame-late window stays shut.
+    if let Some(inner) = typing_in_it {
+        put_in_box(world, inner, value);
     }
+    world.entity_mut(cell).insert(NumberInputValue::F32(value));
 }
 
 /// Replace what a box's text holds with a value, **now**, and not in a later
@@ -4362,20 +4369,23 @@ mod tests {
         );
     }
 
-    /// Drag across a box four steps to the right and let go, the way
-    /// `bevy_feathers` 0.20 turns a drag into a scrub of the value.
+    /// A box's scrubber, the pointer the window would send it, and the hit.
     ///
-    /// The events are the ones the engine sends the box's scrubber, sent to it
-    /// directly, for the reason `focus` sets the focus rather than pressing: a
-    /// headless layout has not settled the box's size. Several steps rather
-    /// than one (RK-007): one step is one value either way. The press gives
-    /// the box the focus, as it does in the window.
-    fn scrub(app: &mut App, cell: Entity) {
+    /// The events a scrub or a click into a box makes are the ones the engine
+    /// sends this invisible child over the box's text, sent to it directly,
+    /// for the reason `focus` sets the focus rather than pressing: a headless
+    /// layout has not settled the box's size.
+    fn scrubber_of(
+        app: &mut App,
+        cell: Entity,
+    ) -> (
+        Entity,
+        bevy::picking::events::Pointer,
+        bevy::picking::backend::HitData,
+    ) {
         use bevy::camera::NormalizedRenderTarget;
         use bevy::picking::backend::HitData;
-        use bevy::picking::events::{
-            Pointer, PointerDrag, PointerDragEnd, PointerDragStart, PointerPress, PointerRelease,
-        };
+        use bevy::picking::events::Pointer;
         use bevy::picking::pointer::{Location, PointerId};
         use bevy::window::{PrimaryWindow, WindowRef};
 
@@ -4402,7 +4412,47 @@ mod tests {
                 ),
             },
         );
-        let hit = HitData::new(scrubber, 0.0, None, None);
+        (scrubber, pointer, HitData::new(scrubber, 0.0, None, None))
+    }
+
+    /// Press on a box and let go without moving, which `bevy_feathers` 0.20
+    /// takes for a click into the box: it puts the box into editing and
+    /// writes its `NumberInputValue` into the text.
+    fn click_into(app: &mut App, cell: Entity) {
+        use bevy::picking::events::{PointerPress, PointerRelease};
+
+        let (scrubber, pointer, hit) = scrubber_of(app, cell);
+        let button = PointerButton::Primary;
+        app.world_mut().trigger(PointerPress {
+            entity: scrubber,
+            pointer: pointer.clone(),
+            button,
+            hit: hit.clone(),
+            count: 1,
+        });
+        app.update();
+        app.world_mut().trigger(PointerRelease {
+            entity: scrubber,
+            pointer,
+            button,
+            hit,
+        });
+        app.update();
+        app.update();
+    }
+
+    /// Drag across a box four steps to the right and let go, the way
+    /// `bevy_feathers` 0.20 turns a drag into a scrub of the value.
+    ///
+    /// Sent to the box's scrubber, for the reason [`scrubber_of`] gives.
+    /// Several steps rather than one (RK-007): one step is one value either
+    /// way. The press gives the box the focus, as it does in the window.
+    fn scrub(app: &mut App, cell: Entity) {
+        use bevy::picking::events::{
+            PointerDrag, PointerDragEnd, PointerDragStart, PointerPress, PointerRelease,
+        };
+
+        let (scrubber, pointer, hit) = scrubber_of(app, cell);
         let button = PointerButton::Primary;
 
         app.world_mut().trigger(PointerPress {
@@ -4525,6 +4575,96 @@ mod tests {
             translation_of(&app, middle).x.to_bits(),
             scrubbed.x.to_bits(),
             "letting go of the box took the scrub back"
+        );
+    }
+
+    /// Clicking into a box after a scrub and letting it go keeps the scrub.
+    ///
+    /// A click into a box puts the widget's own `NumberInputValue` into the
+    /// text, so a box whose text had been given the commit and whose
+    /// `NumberInputValue` had not showed the number from before the scrub
+    /// again, and letting it go committed that: row 6, found by review.
+    ///
+    /// Mutation: in `show_in_box`, replace only the text of the focused box,
+    /// and this fails with the placeholder back where the scrub began.
+    #[test]
+    fn clicking_into_a_box_after_a_scrub_and_letting_go_keeps_the_scrub() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[0];
+        scrub(&mut app, cell);
+        let scrubbed = translation_of(&app, middle);
+
+        click_into(&mut app, cell);
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+
+        assert_eq!(
+            translation_of(&app, middle).x.to_bits(),
+            scrubbed.x.to_bits(),
+            "clicking into the box and letting it go took the scrub back"
+        );
+    }
+
+    /// A second scrub starts from where the first one ended.
+    ///
+    /// `bevy_feathers` measures a scrub from the box's `NumberInputValue`
+    /// when the drag starts, so with that left at the spawn value the second
+    /// scrub began where the first had, and the first was lost.
+    ///
+    /// Mutation: in `show_in_box`, replace only the text of the focused box,
+    /// and this fails with both scrubs landing on the same number.
+    #[test]
+    fn a_second_scrub_starts_from_where_the_first_ended() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[0];
+        scrub(&mut app, cell);
+        let once = translation_of(&app, middle).x;
+
+        scrub(&mut app, cell);
+
+        assert!(
+            translation_of(&app, middle).x > once,
+            "the second scrub did not go on from {once}"
+        );
+    }
+
+    /// Clicking into a box after an undo and letting it go keeps the undo.
+    ///
+    /// The undo reaches the focused box through `show_values_in_place`, the
+    /// other caller of `show_in_box`: the same stale `NumberInputValue`
+    /// wrote the number from before the session over the undo, and the
+    /// entry that made cleared the redo.
+    ///
+    /// Mutation: in `show_in_box`, replace only the text of the focused box,
+    /// and this fails with the undone value written over.
+    #[test]
+    fn clicking_into_a_box_after_an_undo_and_letting_go_keeps_the_undo() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[0];
+        type_into(&mut app, cell, "5");
+        focus(&mut app, cell);
+        enter(&mut app);
+        type_into(&mut app, cell, "7");
+        enter(&mut app);
+        undo(&mut app);
+        assert_eq!(translation_of(&app, middle).x, 5.0, "the undo did not land");
+
+        click_into(&mut app, cell);
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+
+        assert_eq!(
+            translation_of(&app, middle).x,
+            5.0,
+            "clicking into the box and letting it go wrote over the undo"
         );
     }
 }

@@ -895,10 +895,13 @@ The text is replaced the way `bevy_feathers` itself replaces it, with
 frame** rather than left for the engine to apply in the next one: the next
 frame's keys reach the box before that, so Enter pressed right after Ctrl+Z
 would commit the text from before it. A review found that path putting a value
-the user had taken back into the history. The other boxes get a
-`NumberInputValue` inserted, which on `bevy_feathers` 0.20 writes into a
-focused box as into any other, through an edit queued for the next frame;
-that is why the focused box is not offered it.
+the user had taken back into the history. Every box, the focused one after
+its text, is then given the value as a `NumberInputValue`. On `bevy_feathers`
+0.20 that component is not only what the box shows: a click into the box
+writes it into the text, and a scrub is measured from it. A focused box whose
+text had been replaced and whose `NumberInputValue` had not wrote the number
+from before the undo back when it was clicked into and let go, found by
+review.
 
 **A value the box cannot hold leaves it empty.** `f32` prints without an
 exponent, so `1e30` is more characters than the box takes (thirty, since
