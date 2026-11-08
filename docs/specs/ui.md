@@ -1269,8 +1269,9 @@ Decided on issue #62, and built by it: `place_knob` in
 `crates/editor/src/handles.rs` draws the knob and remembers where,
 `remember` and `grab` in `crates/editor/src/selection.rs` take a press on it,
 and `follow` in `crates/editor/src/moving.rs` turns what is selected and
-records it. Each row below is held by a test named in those functions' doc
-comments.
+records it. Each row below but *Choosing it* is held by a test named in those
+functions' doc comments. That row says what was not built, which no test can
+hold.
 
 It extends [§11](#11-dragging-what-is-selected), whose drag it goes through,
 and fills in the handles [§5](#5-what-a-selection-looks-like-in-the-viewport)

@@ -1160,8 +1160,8 @@ mod tests {
     ///
     /// `Pickable` is what the engine needs to consider a sprite at all, and
     /// `Selectable` is what this editor means by something the user picks out.
-    /// Without the difference, a gizmo handle would become selectable the day
-    /// it is drawn.
+    /// Without the difference, anything given `Pickable` for its own reasons
+    /// would become selectable the day it is spawned.
     ///
     /// Mutation: drop the `With<Selectable>` filter in `select`, and this
     /// fails.
