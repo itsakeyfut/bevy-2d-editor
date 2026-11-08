@@ -11,7 +11,7 @@ use bevy::camera::RenderTarget;
 use bevy::camera::visibility::RenderLayers;
 use bevy::image::{Image, ToExtents};
 use bevy::input::mouse::MouseScrollUnit;
-use bevy::picking::events::{Drag, Pointer, Scroll};
+use bevy::picking::events::{PointerDrag, PointerScroll};
 use bevy::picking::pointer::PointerButton;
 use bevy::prelude::*;
 use bevy::render::render_resource::{TextureDimension, TextureFormat, TextureUsages};
@@ -99,7 +99,7 @@ impl Plugin for ViewportPlugin {
 /// Mutation: drop the [`ViewportNode`] insert, and
 /// `the_viewport_camera_renders_to_the_region_and_not_the_window` fails.
 fn attach(
-    add: On<Add, Region>,
+    add: On<Add<Region>>,
     regions: Query<&Region>,
     mut images: ResMut<Assets<Image>>,
     mut commands: Commands,
@@ -159,7 +159,7 @@ fn attach(
 /// `OrthographicProjection::area`, **which is last frame's**. `area` is an
 /// output of Bevy's `camera_system`, which runs once per frame in `PostUpdate`;
 /// an observer that has already changed `scale` earlier in the same frame is
-/// looking at the extent from before it did. Several `Pointer<Scroll>` in one
+/// looking at the extent from before it did. Several `PointerScroll` in one
 /// frame is the ordinary case rather than a corner: `bevy_picking` turns every
 /// buffered wheel event into one, and one flick of a wheel is several.
 /// `a_burst_of_scrolling_in_one_frame_holds_the_cursor_still` is that claim.
@@ -198,14 +198,14 @@ fn world_per_pixel(node: &ComputedNode, projection: &OrthographicProjection) -> 
 /// fails. Mutation: move the world instead of the camera, and
 /// `a_pan_moves_the_camera_and_leaves_the_world_where_it_was` fails.
 fn pan(
-    drag: On<Pointer<Drag>>,
+    drag: On<PointerDrag>,
     regions: Query<&ComputedNode>,
     mut cameras: Query<(&mut Transform, &Projection), With<ViewportCamera>>,
 ) {
-    if drag.event().button != PointerButton::Middle {
+    if drag.button != PointerButton::Middle {
         return;
     }
-    let Ok(node) = regions.get(drag.event().entity) else {
+    let Ok(node) = regions.get(drag.entity) else {
         return;
     };
     let Ok((mut transform, projection)) = cameras.single_mut() else {
@@ -215,7 +215,7 @@ fn pan(
         return;
     };
 
-    let delta = drag.event().delta * world_per_pixel(node, orthographic);
+    let delta = drag.delta * world_per_pixel(node, orthographic);
     // Dragging right moves the world right, which moves the camera left; y is
     // the flip between screen space and world space.
     transform.translation.x -= delta.x;
@@ -234,18 +234,18 @@ fn pan(
 /// take the ratio before clamping, and `zoom_at_the_end_of_its_range_stays_put`
 /// fails.
 fn zoom(
-    scroll: On<Pointer<Scroll>>,
+    scroll: On<PointerScroll>,
     regions: Query<(&ComputedNode, &UiGlobalTransform)>,
     mut cameras: Query<(&mut Transform, &mut Projection), With<ViewportCamera>>,
 ) {
-    let notches = match scroll.event().unit {
-        MouseScrollUnit::Line => scroll.event().y,
-        MouseScrollUnit::Pixel => scroll.event().y / PIXELS_PER_NOTCH,
+    let notches = match scroll.unit {
+        MouseScrollUnit::Line => scroll.y,
+        MouseScrollUnit::Pixel => scroll.y / PIXELS_PER_NOTCH,
     };
     if notches == 0.0 {
         return;
     }
-    let Ok((node, ui_transform)) = regions.get(scroll.event().entity) else {
+    let Ok((node, ui_transform)) = regions.get(scroll.entity) else {
         return;
     };
     let Ok((mut transform, mut projection)) = cameras.single_mut() else {
@@ -265,8 +265,7 @@ fn zoom(
     // into world space.
     let logical = node.size() * node.inverse_scale_factor();
     let top_left = (ui_transform.translation - node.size() * 0.5) * node.inverse_scale_factor();
-    let from_centre =
-        (scroll.event().pointer_location.position - top_left) / logical - Vec2::splat(0.5);
+    let from_centre = (scroll.pointer.position - top_left) / logical - Vec2::splat(0.5);
     let from_centre = Vec2::new(from_centre.x, -from_centre.y);
 
     // Hold the world point under the cursor still. Arithmetic rather than a
@@ -284,7 +283,7 @@ mod tests {
     use bevy::camera::{NormalizedRenderTarget, RenderTarget};
     use bevy::input::mouse::MouseScrollUnit;
     use bevy::picking::backend::HitData;
-    use bevy::picking::events::{Drag, Pointer, Scroll};
+    use bevy::picking::events::{PointerDrag, PointerScroll};
     use bevy::picking::pointer::{Location, PointerButton, PointerId};
     use bevy::prelude::*;
     use bevy::render::render_resource::TextureUsages;
@@ -365,16 +364,13 @@ mod tests {
     fn drag(app: &mut App, button: PointerButton, delta: Vec2) {
         let viewport = region_of(app, Region::Viewport);
         let location = at(app, Vec2::new(600.0, 300.0));
-        app.world_mut().trigger(Pointer::new(
-            PointerId::Mouse,
-            location,
-            Drag {
-                button,
-                distance: delta,
-                delta,
-            },
-            viewport,
-        ));
+        app.world_mut().trigger(PointerDrag {
+            entity: viewport,
+            pointer: Pointer::new(PointerId::Mouse, location),
+            button,
+            distance: delta,
+            delta,
+        });
         app.update();
     }
 
@@ -387,18 +383,15 @@ mod tests {
     fn scroll_in(app: &mut App, position: Vec2, unit: MouseScrollUnit, amount: f32) {
         let viewport = region_of(app, Region::Viewport);
         let location = at(app, position);
-        app.world_mut().trigger(Pointer::new(
-            PointerId::Mouse,
-            location.clone(),
-            Scroll {
-                unit,
-                x: 0.0,
-                y: amount,
-                hit: HitData::new(viewport, 0.0, None, None),
-                phase: bevy::input::touch::TouchPhase::Moved,
-            },
-            viewport,
-        ));
+        app.world_mut().trigger(PointerScroll {
+            entity: viewport,
+            pointer: Pointer::new(PointerId::Mouse, location),
+            unit,
+            x: 0.0,
+            y: amount,
+            hit: HitData::new(viewport, 0.0, None, None),
+            phase: bevy::input::touch::TouchPhase::Moved,
+        });
         app.update();
     }
 
@@ -410,18 +403,15 @@ mod tests {
         let viewport = region_of(app, Region::Viewport);
         let location = at(app, position);
         for _ in 0..count {
-            app.world_mut().trigger(Pointer::new(
-                PointerId::Mouse,
-                location.clone(),
-                Scroll {
-                    unit: MouseScrollUnit::Line,
-                    x: 0.0,
-                    y: 1.0,
-                    hit: HitData::new(viewport, 0.0, None, None),
-                    phase: bevy::input::touch::TouchPhase::Moved,
-                },
-                viewport,
-            ));
+            app.world_mut().trigger(PointerScroll {
+                entity: viewport,
+                pointer: Pointer::new(PointerId::Mouse, location.clone()),
+                unit: MouseScrollUnit::Line,
+                x: 0.0,
+                y: 1.0,
+                hit: HitData::new(viewport, 0.0, None, None),
+                phase: bevy::input::touch::TouchPhase::Moved,
+            });
         }
         app.update();
     }
@@ -708,7 +698,7 @@ mod tests {
     /// A burst of scrolling in one frame holds the cursor still too.
     ///
     /// The other zoom test turns the wheel once per frame, and that is not how
-    /// a wheel is turned. `bevy_picking` makes one `Pointer<Scroll>` out of
+    /// a wheel is turned. `bevy_picking` makes one `PointerScroll` out of
     /// every buffered wheel event, so one flick arrives as several in the same
     /// frame, and `OrthographicProjection::area` does not move until Bevy's
     /// camera system runs at the end of it. Reading `area` in the second event

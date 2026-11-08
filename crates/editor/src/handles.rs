@@ -98,7 +98,9 @@ impl Plugin for HandlesPlugin {
             )
             .add_systems(
                 PostUpdate,
-                place_knob.after(VisibilitySystems::CalculateBounds),
+                place_knob
+                    .after(VisibilitySystems::CalculateBounds)
+                    .after(crate::moving::follow),
             );
     }
 }
@@ -107,7 +109,12 @@ impl Plugin for HandlesPlugin {
 ///
 /// After [`VisibilitySystems::CalculateBounds`], for the reason
 /// `outline::outline` gives: the bounds and the `GlobalTransform` the frame is
-/// built from are both written in `PostUpdate`.
+/// built from are both written in `PostUpdate`. And after `moving::follow`,
+/// which writes the angle a turn in progress has reached; unordered, the
+/// knob could be drawn a frame behind the pointer depending on which ran
+/// first. **No test holds this order**:
+/// removing it leaves every handle test green, measured, because each reads
+/// the knob after a frame in which nothing moves.
 ///
 /// **The stalk is measured on the viewport, not in the world.** The top of the
 /// frame goes to the viewport through the camera, the stalk is added there,

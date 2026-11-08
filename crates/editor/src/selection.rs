@@ -12,7 +12,9 @@ use bevy::ecs::lifecycle::Remove;
 use bevy::gizmos::AppGizmoBuilder;
 use bevy::gizmos::config::{GizmoConfig, GizmoConfigGroup};
 use bevy::input_focus::{InputFocus, InputFocusSystems};
-use bevy::picking::events::{Click, Drag, DragEnd, DragStart, Pointer, Press};
+use bevy::picking::events::{
+    PointerClick, PointerDrag, PointerDragEnd, PointerDragStart, PointerPress,
+};
 use bevy::picking::hover::HoverMap;
 use bevy::picking::pointer::{PointerButton, PointerId, PointerLocation};
 use bevy::picking::{Pickable, PickingSystems};
@@ -102,7 +104,7 @@ impl Next {
 
 /// What the gesture in progress means, fixed when the button went down.
 ///
-/// `Pointer<Click>` guarantees that the press and the release shared a target,
+/// `PointerClick` guarantees that the press and the release shared a target,
 /// and the target here is the viewport's UI node rather than anything in the
 /// world: the world is reached through a second pointer, so the engine's
 /// guarantee says nothing about which entity ends up selected. Without this,
@@ -134,7 +136,7 @@ struct Pressed {
     /// same state as "this gesture cannot become a box".
     ///
     /// Recorded here rather than at [`begin`], **which is too late**:
-    /// `Pointer<DragStart>` fires on the first move after the press, so by the
+    /// `PointerDragStart` fires on the first move after the press, so by the
     /// time it arrives the viewport's pointer is already at the moved-to
     /// position. Measured: a press at `(-300, -180)` dragged to `(300, 180)`
     /// reads as `(300, 180)` in a `DragStart` observer.
@@ -234,7 +236,7 @@ impl Plugin for SelectionPlugin {
 /// belongs to another plugin, and ordering a `Startup` system after it would
 /// mean cutting a public `SystemSet` into `PanelsPlugin` for this plugin's
 /// benefit.
-fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands) {
+fn attach(add: On<Add<Region>>, regions: Query<&Region>, mut commands: Commands) {
     if regions.get(add.entity) != Ok(&Region::Viewport) {
         return;
     }
@@ -249,7 +251,7 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
 
 /// Set the selection to what the left button was released over.
 ///
-/// Released rather than pressed: `Pointer<Click>` fires only when the press and
+/// Released rather than pressed: `PointerClick` fires only when the press and
 /// the release share a target, so a press that was a mistake is taken back by
 /// moving off before letting go. `docs/specs/ui.md` §4 records that.
 ///
@@ -295,7 +297,7 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
 ///   `dragging_one_of_several_selected_moves_them_all_and_keeps_the_selection`
 /// * drop the `pressed.handle` check: `clicking_the_knob_keeps_the_selection`
 fn select(
-    click: On<Pointer<Click>>,
+    click: On<PointerClick>,
     viewport: Query<&PointerId, With<ViewportNode>>,
     selectable: Query<(), With<Selectable>>,
     hover: Res<HoverMap>,
@@ -307,8 +309,7 @@ fn select(
     // it would read as a click on it and collapse a group to that one. A
     // click on the knob is a release over empty space, and would clear what
     // the knob is drawn on.
-    if click.event().button != PointerButton::Primary || pressed.moving || pressed.handle.is_some()
-    {
+    if click.button != PointerButton::Primary || pressed.moving || pressed.handle.is_some() {
         return;
     }
     // The pointer is read from the entity that carries `ViewportNode`, not from
@@ -367,7 +368,7 @@ fn select(
 /// The knob is read beside the hover map, in one parameter, because this
 /// observer is at the seven clippy allows.
 fn remember(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     viewport: Query<(&PointerId, &PointerLocation), With<ViewportNode>>,
     selectable: Query<(), With<Selectable>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
@@ -375,7 +376,7 @@ fn remember(
     keys: Res<ButtonInput<KeyCode>>,
     mut pressed: ResMut<Pressed>,
 ) {
-    if press.event().button != PointerButton::Primary {
+    if press.button != PointerButton::Primary {
         return;
     }
     let Ok((pointer, location)) = viewport.single() else {
@@ -406,8 +407,8 @@ fn remember(
 /// button check, and `a_drag_with_any_other_button_does_not_band` fails.
 /// Mutation: drop the `pressed.handle` check, and
 /// `a_drag_from_the_knob_is_not_a_box` fails.
-fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
-    if start.event().button != PointerButton::Primary {
+fn begin(start: On<PointerDragStart>, mut pressed: ResMut<Pressed>) {
+    if start.button != PointerButton::Primary {
         return;
     }
     if pressed.over.is_some() || pressed.handle.is_some() {
@@ -455,16 +456,16 @@ fn begin(start: On<Pointer<DragStart>>, mut pressed: ResMut<Pressed>) {
 /// about the entity before the knob, and
 /// `the_knob_takes_the_press_over_an_entity_under_it` fails.
 fn grab(
-    drag: On<Pointer<Drag>>,
+    drag: On<PointerDrag>,
     mut pressed: ResMut<Pressed>,
     selection: Res<Selection>,
     mut next: ResMut<Next>,
     mut commands: Commands,
 ) {
-    if drag.event().button != PointerButton::Primary || pressed.moving {
+    if drag.button != PointerButton::Primary || pressed.moving {
         return;
     }
-    if drag.event().distance.length() <= MOVE_THRESHOLD {
+    if drag.distance.length() <= MOVE_THRESHOLD {
         return;
     }
     if let Some(grip) = pressed.handle {
@@ -540,7 +541,7 @@ fn grab(
 /// green. What it costs if it goes is a middle button released mid-drag ending
 /// the box early, at wherever the pointer was.
 fn finish(
-    end: On<Pointer<DragEnd>>,
+    end: On<PointerDragEnd>,
     viewport: Query<&PointerLocation, With<ViewportNode>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
     bounds: Query<(Entity, &GlobalTransform, &Aabb), With<Selectable>>,
@@ -548,7 +549,7 @@ fn finish(
     selection: Res<Selection>,
     mut next: ResMut<Next>,
 ) {
-    if end.event().button != PointerButton::Primary {
+    if end.button != PointerButton::Primary {
         return;
     }
     let Some(anchor) = pressed.band.take() else {
@@ -834,7 +835,7 @@ fn draw_band(
 /// `something_that_stops_being_selectable_stops_being_selected` fails while the
 /// despawn test stays green. Mutation: `clear` in place of `retain`, and
 /// `despawning_one_of_several_leaves_the_rest_selected` fails.
-fn forget_what_is_gone(remove: On<Remove, Selectable>, mut selection: ResMut<Selection>) {
+fn forget_what_is_gone(remove: On<Remove<Selectable>>, mut selection: ResMut<Selection>) {
     selection.0.retain(|entity| *entity != remove.entity);
 }
 
@@ -850,7 +851,7 @@ mod tests {
     use crate::{Region, editor, headless};
     use bevy::camera::visibility::RenderLayers;
     use bevy::gizmos::config::GizmoConfigStore;
-    use bevy::picking::events::{Click, DragEnd, Pointer};
+    use bevy::picking::events::{PointerClick, PointerDragEnd};
     use bevy::picking::pointer::{PointerAction, PointerButton};
     use bevy::picking::{Pickable, PickingSystems};
     use bevy::prelude::*;
@@ -1087,7 +1088,7 @@ mod tests {
     /// that: `docs/specs/ui.md` §11. A third gesture, pressing one entity and
     /// letting go over another, was here and is gone for that reason.
     ///
-    /// Bevy's own same-target guarantee does not give this. `Pointer<Click>`
+    /// Bevy's own same-target guarantee does not give this. `PointerClick`
     /// fires when the press and the release shared a target, and the target
     /// here is the viewport's UI node, which is the same node all the way
     /// across the viewport. Before the press was remembered, the first gesture
@@ -1134,7 +1135,7 @@ mod tests {
 
     /// A gesture that leaves the viewport in one frame keeps the selection.
     ///
-    /// `Pointer<Click>` is dispatched from the previous frame's hover while
+    /// `PointerClick` is dispatched from the previous frame's hover while
     /// what is under the pointer is read from this frame's, so a release
     /// arriving in the same frame as the move out of the viewport is a click on
     /// the viewport node with nothing under the viewport's own pointer. Before
@@ -1956,10 +1957,10 @@ mod tests {
             .expect("there is a viewport region");
         app.world_mut()
             .entity_mut(region)
-            .observe(|_: On<Pointer<Click>>, mut order: ResMut<Order>| {
+            .observe(|_: On<PointerClick>, mut order: ResMut<Order>| {
                 order.0.push("Click");
             })
-            .observe(|_: On<Pointer<DragEnd>>, mut order: ResMut<Order>| {
+            .observe(|_: On<PointerDragEnd>, mut order: ResMut<Order>| {
                 order.0.push("DragEnd");
             });
 

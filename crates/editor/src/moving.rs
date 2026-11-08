@@ -8,10 +8,9 @@
 
 use bevy::input_focus::InputFocusSystems;
 use bevy::math::ops;
-use bevy::picking::events::{DragEnd, Pointer, Press};
+use bevy::picking::events::{PointerDragEnd, PointerPress};
 use bevy::picking::pointer::{PointerButton, PointerLocation};
 use bevy::prelude::*;
-use bevy::transform::TransformSystems;
 use bevy::ui::widget::ViewportNode;
 
 use crate::Region;
@@ -94,8 +93,7 @@ impl Plugin for MovePlugin {
                     .after(InputFocusSystems::FocusChangeEvents)
                     .after(record_choice)
                     .before(take_back)
-                    .before(put_back)
-                    .before(TransformSystems::Propagate),
+                    .before(put_back),
             )
             .add_observer(attach);
     }
@@ -108,7 +106,7 @@ impl Plugin for MovePlugin {
 /// observers on the same region rather than lines in `selection.rs`'s, because
 /// what the press and the release mean for a move is this module's, and the
 /// gesture's own observers already carry as many parameters as clippy allows.
-fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands) {
+fn attach(add: On<Add<Region>>, regions: Query<&Region>, mut commands: Commands) {
     if regions.get(add.entity) != Ok(&Region::Viewport) {
         return;
     }
@@ -127,8 +125,8 @@ fn attach(add: On<Add, Region>, regions: Query<&Region>, mut commands: Commands)
 ///
 /// Mutation: return before queueing, and
 /// `a_drag_whose_release_is_lost_is_recorded_at_the_next_press` fails.
-fn record_held(press: On<Pointer<Press>>, mut commands: Commands) {
-    if press.event().button == PointerButton::Primary {
+fn record_held(press: On<PointerPress>, mut commands: Commands) {
+    if press.button == PointerButton::Primary {
         commands.queue(finish_now);
     }
 }
@@ -143,8 +141,8 @@ fn record_held(press: On<Pointer<Press>>, mut commands: Commands) {
 /// `selection::finish` is not: reaching it takes a second button let go
 /// during a left drag. Without it, letting go of the middle button ends the
 /// move there, and the rest of the drag moves nothing.
-fn let_go(end: On<Pointer<DragEnd>>, mut commands: Commands) {
-    if end.event().button == PointerButton::Primary {
+fn let_go(end: On<PointerDragEnd>, mut commands: Commands) {
+    if end.button == PointerButton::Primary {
         commands.queue(|world: &mut World| {
             if let Some(held) = world.resource_mut::<Stroke>().0.as_mut() {
                 held.ended = true;
@@ -199,8 +197,19 @@ pub(crate) fn in_progress(world: &World) -> bool {
 ///   entry below the move
 /// * before the undo and redo keys, so that letting go and Ctrl+Z in one frame
 ///   take back the move
-/// * before propagation, so that the outline and picking read this frame's
-///   position
+///
+/// **It is not before transform propagation, and cannot be.** `bevy_ui_widgets`'
+/// `MenuFocusSystem` runs after visibility propagation and before
+/// `InputFocusSystems::FocusChangeEvents`, which puts the focus changes after
+/// `TransformSystems::Propagate`, so being after the one and before the other
+/// is a cycle the schedule refuses to build. The one kept is the one whose loss is worse:
+/// read before the commit a press caused, [`Held::from`] would hold the number
+/// from before it, and undoing the move would write it over the commit, which
+/// saves. The one dropped costs a frame: the outline and the knob trail a
+/// moving entity by one, and picking reads last frame's position.
+///
+/// **Anything that reads [`Stroke`] is ordered after this**, or it reads the
+/// last frame's drag; `handles::place_knob` is the one there is.
 ///
 /// **The delta is added to `translation` as it is**, a world delta written as
 /// a local one, and the pivot of a turn is read from `translation` in the
@@ -223,16 +232,15 @@ pub(crate) fn in_progress(world: &World) -> bool {
 /// `a_grab_and_a_release_in_one_frame_record_the_selection_below_the_move`
 /// fails.
 ///
-/// **Two of its orderings no test holds**, measured by removing each with the
+/// **One of its orderings no test holds**, measured by removing it with the
 /// whole suite green. Without `.after(FocusChangeEvents)` the system is
 /// unordered against the commit rather than before it, and the schedule
 /// happens to put it after, so the test of that path passes on the order the
 /// schedule picks; `docs/specs/ui.md` §10 accepts the same of
-/// `record_choice`. Without `.before(TransformSystems::Propagate)` the outline
-/// trails the entity by a frame, which nothing reads. The write only when a
+/// `record_choice`. The write only when a
 /// transform changes is unguarded too: what it saves is the inspector
 /// rebuilding on every frame the button is held still, which no test counts.
-fn follow(
+pub(crate) fn follow(
     mut stroke: ResMut<Stroke>,
     viewport: Query<&PointerLocation, With<ViewportNode>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,

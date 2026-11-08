@@ -18,9 +18,8 @@ pub use field::{field_line, field_row};
 use bevy::app::{App, Plugin};
 use bevy::color::Color;
 use bevy::feathers::dark_theme::create_dark_theme;
-use bevy::feathers::theme::{ThemeProps, ThemeToken, UiTheme};
-use bevy::feathers::tokens;
-use bevy::platform::collections::HashMap;
+use bevy::feathers::theme::{SemanticToken, ThemeProps, UiTheme};
+use bevy::feathers::tokens::semantic;
 
 /// The greys and the accent this editor is drawn from.
 ///
@@ -68,124 +67,112 @@ mod palette {
     pub const AXIS_Z: Color = Color::srgb(0.24, 0.45, 0.78);
 }
 
-/// The colour a token asks for, read from the role its name gives it.
+/// The colour each of Feathers' semantic tokens draws with here.
 ///
-/// Feathers names a token `feathers.<widget>.<role>`, and the roles repeat
-/// across widgets: `bg`, `bg.hover`, `border`, `text.disabled` and so on. So
-/// this matches the role rather than the widget, and one ramp answers all of
-/// them. The alternative is 137 values written out, most of them for widgets
-/// this editor has not put on screen yet, each one invented separately.
+/// Feathers 0.20 maps its design tokens, one per widget part, onto a few dozen
+/// semantic ones (`surface.pane.header`, `fill.solid.hover`, `text.dim`), and
+/// colours those. So the roles this project assigns are Feathers' own
+/// semantic tokens, and its design-to-semantic assignment is kept as it
+/// ships: [`docs/specs/ui.md` §3](../../../docs/specs/ui.md).
 ///
-/// `None` is a role this does not recognise, which is how a token added by a
-/// Feathers upgrade is caught: it arrives in the roster, gets no colour, and
-/// `every_token_feathers_reads_has_a_colour` fails.
+/// How each was chosen is in [`docs/specs/ui.md` §3](../../../docs/specs/ui.md);
+/// the rows that depart from that rule say why beside them.
 ///
-/// Mutation: return `Some(palette::WINDOW)` for the unmatched arm, and that
-/// test can no longer fail.
-fn role(token: &ThemeToken) -> Option<Color> {
-    // Two tokens name a thing rather than a role, and the suffix rules below
-    // would answer for them wrongly: a window's background is not a panel's,
-    // and a focus ring is not a border. They go through Feathers' own
-    // constants rather than the strings behind them, so that dropping either
-    // one upstream stops this compiling instead of quietly changing what it
-    // answers.
-    if *token == tokens::WINDOW_BG {
-        return Some(palette::WINDOW);
-    }
-    if *token == tokens::FOCUS_RING {
-        return Some(palette::ACCENT_HOVER);
-    }
-    let name = token.to_string();
-    let role = name
-        .strip_prefix("feathers.")
-        .and_then(|rest| rest.split_once('.').map(|(_widget, role)| role))
-        .unwrap_or("");
-    // One arm per colour rather than per widget, because the roles repeat and
-    // `match_same_arms` is a warning this workspace turns into an error. The
-    // patterns are ordered surface, control, accent, line, word.
-    Some(match role {
-        "bg" | "body.bg" | "slide.bg" | "label.bg" => palette::SURFACE,
-        "header.bg" => palette::RECESSED,
-        "plain.bg" | "thumb" | "bar" | "selection.unfocused" => palette::CONTROL,
-        "bg.hover"
-        | "slide.bg.hover"
-        | "plain.bg.hover"
-        | "thumb.hover"
-        | "bar.hover"
-        | "border.hover"
-        | "border.hover.pressed"
-        | "slide.border.hover" => palette::CONTROL_HOVER,
-        "bg.pressed"
-        | "slide.bg.pressed"
-        | "plain.bg.pressed"
-        | "bar.pressed"
-        | "border.pressed"
-        | "slide.border.pressed" => palette::CONTROL_PRESSED,
-        "bg.disabled"
-        | "slide.bg.disabled"
-        | "plain.bg.disabled"
-        | "bar.disabled"
-        | "border.disabled"
-        | "slide.border.disabled" => palette::CONTROL_DISABLED,
-        "bg.checked"
-        | "slide.bg.checked"
-        | "primary.bg"
-        | "selection"
-        | "bg.selected"
-        | "border.checked"
-        | "slide.border.checked" => palette::ACCENT,
-        "bg.checked.hover"
-        | "slide.bg.checked.hover"
-        | "primary.bg.hover"
-        | "bg.focused"
-        | "border.checked.hover"
-        | "slide.border.checked.hover" => palette::ACCENT_HOVER,
-        "bg.checked.pressed"
-        | "slide.bg.checked.pressed"
-        | "primary.bg.pressed"
-        | "border.checked.pressed"
-        | "slide.border.checked.pressed" => palette::ACCENT_PRESSED,
-        "bg.checked.disabled"
-        | "slide.bg.checked.disabled"
-        | "primary.bg.disabled"
-        | "border.checked.disabled"
-        | "slide.border.checked.disabled" => palette::ACCENT_DISABLED,
-        "border" | "body.border" | "slide.border" | "header.border" | "header.divider" => {
-            palette::LINE
-        }
-        "text" | "txt" | "main" | "header.text" | "primary.txt" | "cursor" | "mark"
-        | "mark.hover" | "mark.pressed" => palette::TEXT,
-        "text.disabled" | "txt.disabled" | "dim" | "primary.txt.disabled" | "mark.disabled" => {
-            palette::TEXT_DIM
-        }
-        "axis.x" => palette::AXIS_X,
-        "axis.y" => palette::AXIS_Y,
-        "axis.z" => palette::AXIS_Z,
-        _ => return None,
-    })
+/// A table rather than a `match`, because a `SemanticToken` holds a string and
+/// cannot be a pattern; the constants are Feathers', so dropping one upstream
+/// stops this compiling rather than quietly changing what it answers.
+const ROLES: [(SemanticToken, Color); 33] = [
+    (semantic::SURFACE_WINDOW, palette::WINDOW),
+    (semantic::SURFACE_PANE_BODY, palette::SURFACE),
+    (semantic::SURFACE_PANE_HEADER, palette::RECESSED),
+    (semantic::SURFACE_SUBPANE_BODY, palette::SURFACE),
+    (semantic::SURFACE_SUBPANE_HEADER, palette::RECESSED),
+    (semantic::SURFACE_GROUP, palette::SURFACE),
+    (semantic::SURFACE_DIALOG, palette::SURFACE),
+    (semantic::SURFACE_MENU, palette::SURFACE),
+    (semantic::BORDER_DEFAULT, palette::LINE),
+    (semantic::TEXT_DEFAULT, palette::TEXT),
+    (semantic::TEXT_DIM, palette::TEXT_DIM),
+    (semantic::TEXT_DISABLED, palette::TEXT_DIM),
+    (semantic::TEXT_ON_ACCENT, palette::TEXT),
+    (semantic::FILL_ACCENT_DEFAULT, palette::ACCENT),
+    (semantic::FILL_ACCENT_HOVER, palette::ACCENT_HOVER),
+    (semantic::FILL_ACCENT_PRESSED, palette::ACCENT_PRESSED),
+    (semantic::FILL_ACCENT_DISABLED, palette::ACCENT_DISABLED),
+    // A button: `palette::CONTROL` is "a control at rest", which is what the
+    // semantic token says, where most of the design tokens behind it had been
+    // given the panel's own surface by the suffix rule.
+    (semantic::FILL_SOLID_DEFAULT, palette::CONTROL),
+    (semantic::FILL_SOLID_HOVER, palette::CONTROL_HOVER),
+    (semantic::FILL_SOLID_PRESSED, palette::CONTROL_PRESSED),
+    (semantic::FILL_SOLID_DISABLED, palette::CONTROL_DISABLED),
+    // Transparent, as Feathers ships them: an item and a plain button take the
+    // colour of what they sit on, which is a structure rather than a colour.
+    (semantic::FILL_ITEM_DEFAULT, Color::NONE),
+    (semantic::FILL_ITEM_HOVER, palette::CONTROL_HOVER),
+    (semantic::FILL_ITEM_PRESSED, palette::CONTROL_PRESSED),
+    (semantic::FILL_FIELD_DEFAULT, palette::SURFACE),
+    (semantic::FILL_FIELD_HOVER, palette::CONTROL_HOVER),
+    (semantic::FILL_FIELD_PRESSED, palette::CONTROL_PRESSED),
+    (semantic::FILL_NONE, Color::NONE),
+    (semantic::AXIS_X, palette::AXIS_X),
+    (semantic::AXIS_Y, palette::AXIS_Y),
+    (semantic::AXIS_Z, palette::AXIS_Z),
+    // A quaternion's fourth number, which is not an axis on screen.
+    (semantic::AXIS_W, palette::TEXT_DIM),
+    (semantic::FOCUS_RING, palette::ACCENT_HOVER),
+];
+
+/// The colour a semantic token draws with here, or `None` for one this does
+/// not know.
+///
+/// `None` is how a token added by a Feathers upgrade is caught: it arrives in
+/// the roster, gets no colour, and
+/// `every_semantic_token_feathers_reads_has_a_colour` fails.
+fn role(token: &SemanticToken) -> Option<Color> {
+    ROLES
+        .iter()
+        .find(|(known, _)| known == token)
+        .map(|(_, colour)| *colour)
 }
 
-/// Every colour this editor draws with, under the token keys Feathers reads.
+/// Feathers' dark theme with every colour replaced by this project's.
 ///
-/// The keys are Feathers' own and stay that way. Its widgets reference the
-/// constants in `bevy_feathers::tokens` directly, and `UiTheme::color` on a key
-/// the theme lacks logs a warning and returns an error colour, so a renamed key
-/// would be wrong everywhere Feathers draws. What `docs/specs/ui.md` §3 asks to
-/// replace is the appearance, which is the values.
+/// The design-to-semantic assignment is Feathers' own and stays that way: its
+/// widgets reference the design tokens directly, and a renamed key would be
+/// wrong everywhere Feathers draws. What `docs/specs/ui.md` §3 asks to replace
+/// is the appearance, which is the semantic colours.
 ///
-/// The roster comes from Feathers rather than from a list here, so a token it
-/// adds in a later version arrives on its own.
+/// **The per-surface overrides keep their keys and take the base colour**, so
+/// in effect nothing is lifted on a lighter surface. Feathers lifts its fills
+/// there because its surfaces step by level; this project's do not, every body
+/// is `palette::SURFACE`, and leaving Feathers' values in place would draw its
+/// greys inside a group. The keys are kept so that a surface Feathers adds
+/// arrives with this project's colours. A surface that should differ by level
+/// gets a step in the `ROLES` table, not an override written here.
 ///
-/// Mutation: build this from an empty map, and
-/// `every_token_feathers_reads_has_a_colour` fails.
+/// Mutation: build the base from an empty map, and
+/// `every_semantic_token_feathers_reads_has_a_colour` fails. Mutation: leave
+/// the overrides as Feathers ships them, and
+/// `every_surface_override_draws_with_this_projects_colour` fails.
 pub fn unity_theme() -> ThemeProps {
-    let mut color: HashMap<ThemeToken, Color> = HashMap::default();
-    for token in create_dark_theme().color.keys() {
-        if let Some(chosen) = role(token) {
-            color.insert(token.clone(), chosen);
+    let mut theme = create_dark_theme();
+    let assigned: Vec<SemanticToken> = theme.token_assignments.values().cloned().collect();
+    theme.semantic_base = theme
+        .semantic_base
+        .keys()
+        .cloned()
+        .chain(assigned)
+        .filter_map(|token| role(&token).map(|colour| (token, colour)))
+        .collect();
+    for overrides in theme.semantic_overrides.values_mut() {
+        for (token, colour) in overrides.iter_mut() {
+            if let Some(ours) = role(token) {
+                *colour = ours;
+            }
         }
     }
-    ThemeProps { color }
+    theme
 }
 
 /// Puts [`unity_theme`] in place of whatever Feathers set up.
@@ -209,31 +196,53 @@ mod tests {
     use super::{ThemePlugin, palette, role, unity_theme};
     use bevy::app::App;
     use bevy::feathers::dark_theme::create_dark_theme;
-    use bevy::feathers::theme::{ThemeToken, UiTheme};
+    use bevy::feathers::theme::{SemanticToken, ThemeToken, UiTheme};
+    use bevy::platform::collections::HashSet;
 
-    /// Every token Feathers reads has a colour here.
+    /// Every semantic token Feathers reads, from what it ships.
     ///
-    /// The roster is Feathers' own, taken from the theme it ships, so this is
-    /// asserted against a set this project does not own: a token added by an
-    /// upgrade arrives here and fails until it has a role. That is RK-001's
+    /// The tokens it colours, the tokens its design tokens are assigned to,
+    /// and the tokens its per-surface overrides name. Taken from Feathers'
+    /// own theme so that the set is one this project does not own: RK-001's
     /// rule that a set is checked against something other than itself.
+    fn roster() -> HashSet<SemanticToken> {
+        let theirs = create_dark_theme();
+        theirs
+            .semantic_base
+            .keys()
+            .cloned()
+            .chain(theirs.token_assignments.values().cloned())
+            .chain(
+                theirs
+                    .semantic_overrides
+                    .values()
+                    .flat_map(|overrides| overrides.keys().cloned()),
+            )
+            .collect()
+    }
+
+    /// Every semantic token Feathers reads has a colour here.
     ///
-    /// Mutation: give `role` a catch-all arm returning a colour, and this can
-    /// no longer fail. Remove a role arm, and it fails naming the token.
+    /// A token added by an upgrade arrives in the roster and fails this until
+    /// it has a role.
+    ///
+    /// Mutation: build `unity_theme`'s base from an empty map, and this fails.
+    /// Remove a row from `ROLES`, and it fails naming the token.
     #[test]
-    fn every_token_feathers_reads_has_a_colour() {
-        let roster = create_dark_theme().color;
+    fn every_semantic_token_feathers_reads_has_a_colour() {
+        let roster = roster();
         assert!(
-            roster.len() > 100,
+            roster.len() >= 30,
             "the roster is {} tokens, which is not the set this was written for",
             roster.len()
         );
-        let ours = unity_theme().color;
-        let missing: Vec<String> = roster
-            .keys()
+        let ours = unity_theme().semantic_base;
+        let mut missing: Vec<String> = roster
+            .iter()
             .filter(|token| !ours.contains_key(*token))
             .map(ToString::to_string)
             .collect();
+        missing.sort();
         assert!(missing.is_empty(), "no colour for {missing:?}");
     }
 
@@ -246,8 +255,8 @@ mod tests {
     /// fails.
     #[test]
     fn the_theme_is_not_the_one_feathers_ships() {
-        let theirs = create_dark_theme().color;
-        let ours = unity_theme().color;
+        let theirs = create_dark_theme().semantic_base;
+        let ours = unity_theme().semantic_base;
         let same: Vec<String> = ours
             .iter()
             .filter(|(token, colour)| theirs.get(*token) == Some(*colour))
@@ -261,32 +270,56 @@ mod tests {
         );
     }
 
-    /// A named token draws with the ramp its role names.
+    /// A widget's design token draws with the ramp its role names, through
+    /// Feathers' assignment and this project's colour both.
     ///
-    /// Three tokens rather than a count, which is what the issue asks for: a
-    /// surface, a line and a word, each read back through the map.
+    /// Three tokens rather than a count: a surface, a line and a word, each
+    /// read the way a widget reads it, by design token. The line is a menu's
+    /// border rather than the pane header's, which Feathers 0.20 assigns to
+    /// the pane body's colour so that the divider blends into the body.
     ///
-    /// Mutation: move `header.bg` off `RECESSED` in `role`, and this fails.
+    /// Mutation: move `surface.pane.header` off `RECESSED` in `ROLES`, and
+    /// this fails.
     #[test]
     fn a_token_draws_with_the_ramp_its_role_names() {
-        let ours = unity_theme().color;
-        let of = |name: &'static str| ours.get(&ThemeToken::new_static(name)).copied();
-        assert_eq!(of("feathers.pane.header.bg"), Some(palette::RECESSED));
-        assert_eq!(of("feathers.pane.header.border"), Some(palette::LINE));
-        assert_eq!(of("feathers.text.main"), Some(palette::TEXT));
+        let ours = unity_theme();
+        let of = |name: &'static str| ours.color(&ThemeToken::new_static(name));
+        assert_eq!(of("feathers.pane.header.bg"), palette::RECESSED);
+        assert_eq!(of("feathers.menu.border"), palette::LINE);
+        assert_eq!(of("feathers.text.main"), palette::TEXT);
     }
 
-    /// A role this does not recognise gets no colour.
+    /// A semantic token this does not recognise gets no colour.
     ///
     /// This is what makes the coverage test above able to fail.
     ///
-    /// Mutation: give `role` a catch-all arm, and this fails.
+    /// Mutation: give `role` a fallback colour, and this fails.
     #[test]
     fn a_role_this_does_not_know_gets_no_colour() {
-        assert_eq!(
-            role(&ThemeToken::new_static("feathers.button.nonsense")),
-            None
+        assert_eq!(role(&SemanticToken::new_static("nonsense")), None);
+    }
+
+    /// Every per-surface override draws with this project's colour for its
+    /// token, so that Feathers' greys do not appear inside a group or a menu.
+    ///
+    /// Mutation: leave the overrides as Feathers ships them in `unity_theme`,
+    /// and this fails.
+    #[test]
+    fn every_surface_override_draws_with_this_projects_colour() {
+        let theme = unity_theme();
+        assert!(
+            !theme.semantic_overrides.is_empty(),
+            "Feathers ships no overrides, so this asserts nothing"
         );
+        for (level, overrides) in &theme.semantic_overrides {
+            for (token, colour) in overrides {
+                assert_eq!(
+                    Some(*colour),
+                    role(token),
+                    "{token} on {level:?} is not this project's colour"
+                );
+            }
+        }
     }
 
     /// The editor draws with this project's colours.
@@ -298,6 +331,6 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(ThemePlugin);
         let theme = app.world().resource::<UiTheme>();
-        assert_eq!(theme.0.color.len(), unity_theme().color.len());
+        assert_eq!(theme.0.semantic_base, unity_theme().semantic_base);
     }
 }

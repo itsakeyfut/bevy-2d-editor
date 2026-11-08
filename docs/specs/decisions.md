@@ -80,7 +80,7 @@ Quotations are left in the language of their source.
 | Item | Decision |
 | --- | --- |
 | Engine | Bevy |
-| Bevy version | 0.19+, tracking current development |
+| Bevy version | 0.20.1, tracking current development |
 | Language | Rust |
 | Target | 2D |
 | Other engines | not supported |
@@ -139,7 +139,7 @@ Quotations are left in the language of their source.
 | Data format | **BSN, as text** ([data-model.md §4](./data-model.md)) |
 | The BSN parser | **written here for the editor side**, with Jackdaw as the reference |
 | Tile data | **its own file**, referenced by path from BSN ([data-model.md §4](./data-model.md)) |
-| The official `.bsn` loader | arriving in Bevy 0.20 (PR #23576, merged); the runtime side moves onto it later |
+| The official `.bsn` loader | shipped in Bevy 0.20; the runtime side moves onto it in the `Scene Format` milestone, not before ([data-model.md §4](./data-model.md)) |
 | Reflection | core technology |
 | Asset system | core technology |
 | Gizmos | core technology |

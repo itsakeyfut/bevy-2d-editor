@@ -41,7 +41,7 @@ pub(crate) fn in_window(world: Vec2) -> Vec2 {
 ///
 /// Written as a [`PointerInput`] like the rest of this module, so the chain
 /// under test is the real one: the window, then UI picking deciding which node
-/// is under the pointer, then `Pointer<Scroll>` bubbling up from it.
+/// is under the pointer, then `PointerScroll` bubbling up from it.
 pub(crate) fn scroll_at(app: &mut App, position: Vec2, notches: f32) {
     write_input(app, position, PointerAction::Move { delta: Vec2::ONE });
     app.update();

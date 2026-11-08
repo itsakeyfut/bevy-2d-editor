@@ -25,7 +25,7 @@ b2d_editor_ui = { path = "crates/editor_ui" }
 # of it here is a second copy to go stale. xtask's
 # every_crate_that_takes_the_engine_gets_the_features_the_specification_settled
 # holds this entry against that section.
-bevy = { version = "0.19", default-features = false, features = [
+bevy = { version = "0.20.1", default-features = false, features = [
     "2d",
     "ui",
     "bevy_feathers",
