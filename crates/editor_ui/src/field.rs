@@ -47,10 +47,8 @@ pub fn field_line(name: impl Into<String>) -> impl Scene {
             column_gap: GAP,
         }
         Children [
-            (
-                Node { width: NAME_WIDTH, overflow: {Overflow::clip()} }
-                Children [label(name)]
-            ),
+            Node { width: NAME_WIDTH, overflow: {Overflow::clip()} }
+            Children [@label(name)]
         ]
     }
 }
@@ -69,8 +67,8 @@ pub fn field_line(name: impl Into<String>) -> impl Scene {
 /// `a_field_row_carries_the_name_and_the_value` fails.
 pub fn field_row(name: impl Into<String>, value: impl Into<String>) -> impl Scene {
     bsn! {
-        field_line(name)
-        Children [label_dim(value)]
+        @field_line(name)
+        Children [@label_dim(value)]
     }
 }
 

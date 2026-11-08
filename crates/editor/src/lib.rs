@@ -203,6 +203,16 @@ fn spawn_regions(mut commands: Commands) {
             Node {
                 width: percent(100),
                 height: percent(100),
+                // Without this the window's column is as tall as its content
+                // on Bevy 0.20, `height: percent(100)` notwithstanding: the
+                // root is laid out as a flex item of the camera's implicit
+                // node, so its automatic minimum is its content. Measured:
+                // one click on a placeholder and a press after it made it 1353
+                // pixels in the default 720 pixel window, with the inspector's
+                // rows pushing the middle row to 1145 and the viewport out
+                // from under the pointer. The middle row's own `min_height`
+                // below is the same fix one level down, from 0.19.
+                min_height: px(0),
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
             }
@@ -212,7 +222,7 @@ fn spawn_regions(mut commands: Commands) {
 
     commands
         .spawn_scene(bsn! {
-            pane()
+            @pane()
             ThemeBackgroundColor(tokens::PANE_HEADER_BG)
             ThemeBorderColor(tokens::PANE_HEADER_BORDER)
             Node { height: px(28), border: UiRect::bottom(px(1)) }
@@ -248,7 +258,7 @@ fn spawn_regions(mut commands: Commands) {
 
     commands
         .spawn_scene(bsn! {
-            pane()
+            @pane()
             ThemeBackgroundColor(tokens::PANE_BODY_BG)
             ThemeBorderColor(tokens::PANE_HEADER_BORDER)
             Node { width: px(240), border: UiRect::right(px(1)) }
@@ -257,7 +267,7 @@ fn spawn_regions(mut commands: Commands) {
 
     commands
         .spawn_scene(bsn! {
-            pane()
+            @pane()
             ThemeBackgroundColor(tokens::WINDOW_BG)
             Node { flex_grow: 1.0 }
         })
@@ -265,7 +275,7 @@ fn spawn_regions(mut commands: Commands) {
 
     commands
         .spawn_scene(bsn! {
-            pane()
+            @pane()
             ThemeBackgroundColor(tokens::PANE_BODY_BG)
             ThemeBorderColor(tokens::PANE_HEADER_BORDER)
             Node {
@@ -282,7 +292,7 @@ fn spawn_regions(mut commands: Commands) {
             }
             // The wheel is the engine's: `ScrollAreaPlugin` arrives with
             // `DefaultPlugins` through `UiWidgetsPlugins`, its observer is
-            // global, and `Pointer<Scroll>` bubbles from whatever label the
+            // global, and `PointerScroll` bubbles from whatever label the
             // pointer is over up to this pane. `ScrollArea` requires
             // `ScrollPosition`, so the position is on this entity too, which
             // is why it survives the panel being rebuilt under it.
@@ -292,7 +302,7 @@ fn spawn_regions(mut commands: Commands) {
 
     commands
         .spawn_scene(bsn! {
-            pane()
+            @pane()
             ThemeBackgroundColor(tokens::PANE_BODY_BG)
             ThemeBorderColor(tokens::PANE_HEADER_BORDER)
             Node { height: px(180), border: UiRect::top(px(1)) }
@@ -424,6 +434,54 @@ pub(crate) fn headless() -> PluginGroupBuilder {
             })),
             ..default()
         })
+}
+
+/// Load the fonts `bevy_feathers` draws with, and run the app until they are
+/// in, so that a test's text has its size from the frame it is spawned.
+///
+/// **Without it the inspector's tests depend on how busy the machine is.**
+/// `bevy_feathers` 0.20 asks for a font by path when a label is spawned, and
+/// the asset arrives on the IO task pool some frames later; until then the
+/// text has no size and the panel lays out short. Measured: the whole suite
+/// passed run one test at a time, twice, and lost between three and seven
+/// inspector tests on every parallel run, a different set each time. Loaded
+/// here first, the later loads of the same paths return the handle that is
+/// already in. The handles are kept in a resource so the fonts are not
+/// dropped and loaded again.
+///
+/// The wait is bounded by time rather than by frames, because how many frames
+/// a load takes is exactly what varies with load.
+#[cfg(test)]
+pub(crate) fn with_the_fonts_in(app: &mut App) {
+    use bevy::feathers::constants::fonts;
+    use std::time::{Duration, Instant};
+
+    #[derive(Resource)]
+    struct Kept(#[expect(dead_code, reason = "held so the fonts stay loaded")] Vec<Handle<Font>>);
+
+    let server = app.world().resource::<AssetServer>().clone();
+    let fonts: Vec<Handle<Font>> = [
+        fonts::REGULAR,
+        fonts::ITALIC,
+        fonts::BOLD,
+        fonts::BOLD_ITALIC,
+        fonts::MONO,
+    ]
+    .into_iter()
+    .map(|path| server.load(path))
+    .collect();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !fonts
+        .iter()
+        .all(|font| server.is_loaded_with_dependencies(font))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "bevy_feathers' fonts did not load in thirty seconds"
+        );
+        app.update();
+    }
+    app.insert_resource(Kept(fonts));
 }
 
 #[cfg(test)]
@@ -811,7 +869,7 @@ mod tests {
     /// The panels carry this project's theme, not the one Feathers ships.
     ///
     /// `FeathersCorePlugin` initialises `UiTheme` itself, so the claim is that
-    /// what ends up in the resource is this project's map. Asserted against
+    /// what ends up in the resource is this project's semantic colours. Asserted against
     /// `b2d_editor_ui::unity_theme`, which is where that decision lives.
     ///
     /// Mutation: drop `ThemePlugin` from `PanelsPlugin::build`, and this fails
@@ -821,11 +879,11 @@ mod tests {
         let app = editor(headless());
         let theme = app.world().resource::<UiTheme>();
         let ours = b2d_editor_ui::unity_theme();
-        assert_eq!(theme.0.color.len(), ours.color.len());
+        assert_eq!(theme.0.semantic_base.len(), ours.semantic_base.len());
         let differing: Vec<String> = ours
-            .color
+            .semantic_base
             .iter()
-            .filter(|(token, colour)| theme.0.color.get(*token) != Some(*colour))
+            .filter(|(token, colour)| theme.0.semantic_base.get(*token) != Some(*colour))
             .map(|(token, _)| token.to_string())
             .collect();
         assert!(

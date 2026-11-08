@@ -14,9 +14,7 @@ use core::any::TypeId;
 use b2d_editor_ui::{field_line, field_row};
 use bevy::clipboard::Clipboard;
 use bevy::feathers::containers::{pane_body, pane_header};
-use bevy::feathers::controls::{
-    FeathersNumberInput, NumberFormat, NumberInputValue, UpdateNumberInput,
-};
+use bevy::feathers::controls::{FeathersNumberInput, NumberInputValue};
 use bevy::feathers::display::{label, label_dim};
 use bevy::input_focus::{InputFocus, IsFocused};
 use bevy::prelude::*;
@@ -353,7 +351,7 @@ impl Plugin for InspectorPlugin {
 /// `the_panel_is_frozen_while_a_box_has_focus_and_catches_up_after`. Mutation:
 /// make that guard read `focus.get().is_some()`, and
 /// `focus_outside_the_panel_does_not_freeze_it` fails. Mutation: drop the
-/// `UpdateNumberInput` where a box is spawned, and
+/// `NumberInputValue` a box is spawned with, and
 /// `the_row_shows_what_the_component_holds_after_a_commit` fails on an empty
 /// box. Mutation: give `Writes::of` the first selected entity rather than
 /// `Shape::of`, and `an_edit_touches_one_field_of_one_entity` fails.
@@ -442,7 +440,7 @@ fn show(
         let mut rows: Vec<Row> = world
             .inspect_entity(*entity)
             .ok()?
-            .map(|info| {
+            .map(|(_, info)| {
                 let Some(of) = info.type_id() else {
                     return Row::Unregistered;
                 };
@@ -543,7 +541,7 @@ fn show(
                                 let (name, value) = (name.clone(), value.clone());
                                 commands
                                     .spawn_scene(bsn! {
-                                        field_row(name, value)
+                                        @field_row(name, value)
                                         Node { padding: {indent} }
                                     })
                                     .insert(ChildOf(group));
@@ -552,7 +550,7 @@ fn show(
                                 let value = value.clone();
                                 commands
                                     .spawn_scene(bsn! {
-                                        label_dim(value)
+                                        @label_dim(value)
                                         Node { padding: {indent} }
                                     })
                                     .insert(ChildOf(group));
@@ -561,7 +559,7 @@ fn show(
                                 let named = name.clone();
                                 let line = commands
                                     .spawn_scene(bsn! {
-                                        field_line(named)
+                                        @field_line(named)
                                         Node { padding: {indent} }
                                     })
                                     .insert(ChildOf(group))
@@ -570,16 +568,17 @@ fn show(
                                     commands
                                         .spawn_scene(label_dim(leaf.name.clone()))
                                         .insert(ChildOf(line));
-                                    // The box goes up empty and is filled by
-                                    // the event `bevy_feathers` provides for
-                                    // it. The `ValueChange` that comes back
-                                    // out carries `is_final: false`, which is
-                                    // what `commit` declines to act on.
-                                    let cell = commands
+                                    // The value goes up with the box, as
+                                    // `bevy_feathers`' own inputs are spawned:
+                                    // the box writes its text when the
+                                    // `NumberInputValue` is inserted, and the
+                                    // `F32` variant is what makes it a float
+                                    // box. Nothing comes back out as a commit.
+                                    let value = leaf.value;
+                                    commands
                                         .spawn_scene(bsn! {
-                                            @FeathersNumberInput {
-                                                @number_format: NumberFormat::F32,
-                                            }
+                                            @FeathersNumberInput
+                                            NumberInputValue::F32({value})
                                         })
                                         .insert((
                                             ChildOf(line),
@@ -589,12 +588,7 @@ fn show(
                                                 field: name.clone(),
                                                 leaf: leaf.name.clone(),
                                             },
-                                        ))
-                                        .id();
-                                    commands.trigger(UpdateNumberInput {
-                                        entity: cell,
-                                        value: NumberInputValue::F32(leaf.value),
-                                    });
+                                        ));
                                 }
                             }
                         }
@@ -699,14 +693,22 @@ fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
 
 /// Commit what a number box holds, when the user says so.
 ///
-/// **`is_final` is the whole shape of this.** It is Enter, or the box losing
-/// focus. `bevy_feathers` also emits on every keystroke with it false, and once
-/// more when [`UpdateNumberInput`] fills a box the panel has just spawned:
-/// measured with a throwaway probe, pushing `12.5` into a fresh box produced a
-/// `ValueChange` carrying `12.5` straight back out. Acting on those would move
-/// the sprite through `-`, `-1`, `-12` on the way to `-120`, each of them an
-/// entry in the history, and would make the panel's own initial draw write to
-/// the world.
+/// **`is_final` is the whole shape of this.** It is Enter, the box losing
+/// focus, or the end of a drag across the box, which `bevy_feathers` 0.20
+/// turns into a scrub of the value. It also emits on every keystroke and on
+/// every step of a scrub with it false, and on 0.19, measured with a
+/// throwaway probe, filling a freshly spawned box produced a `ValueChange`
+/// carrying the value straight back out. Acting on those would move the
+/// sprite through `-`, `-1`, `-12` on the way to `-120`, each of them an entry
+/// in the history, and would make the panel's own initial draw write to the
+/// world. So a scrub is one commit, at the release.
+///
+/// **The box is then given what was committed.** `bevy_feathers` 0.20 leaves
+/// a scrubbed box showing the number it started from and expects the app to
+/// put the new one back; left alone, the box held `0` over a leaf at `0.4`,
+/// and letting it go committed the `0` and took the scrub back without a word,
+/// measured. After Enter or a focus loss the box already shows what was
+/// committed and nothing changes. [`docs/specs/ui.md` §7](../../../docs/specs/ui.md).
 /// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md) carries why.
 ///
 /// The write goes through [`History::record`], and only when [`SetLeaf::read`]
@@ -714,6 +716,8 @@ fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
 ///
 /// Mutation: drop the `is_final` check, and
 /// `a_value_that_is_not_committed_leaves_the_component_alone` fails. Mutation:
+/// drop the `show_in_box` after recording, and
+/// `a_scrub_on_a_box_is_one_entry` fails. Mutation:
 /// call [`write_leaf`] here instead of recording, and
 /// `undoing_a_commit_puts_the_component_back_bit_for_bit` fails, because the
 /// history is empty when Ctrl+Z reaches it.
@@ -726,10 +730,13 @@ fn commit(change: On<ValueChange<f32>>, writes: Query<&Writes>, mut commands: Co
     };
     let target = target.clone();
     let value = change.value;
+    let cell = change.source;
     commands.queue(move |world: &mut World| {
-        if let Some(set) = SetLeaf::read(world, target, value) {
+        if let Some(set) = SetLeaf::read(world, target.clone(), value) {
             History::record(world, set);
         }
+        let focused = world.resource::<InputFocus>().get();
+        show_in_box(world, focused, cell, &target);
     });
 }
 
@@ -838,12 +845,15 @@ pub(crate) fn take_back_typing(world: &mut World) -> bool {
 /// Called after an undo. With no box focused the panel is rebuilt anyway, and
 /// this is harmless. With one focused, the panel is frozen
 /// ([ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md)),
-/// and **the focused box is the one that matters**: `UpdateNumberInput` skips
-/// it, and left holding the value from before the undo it writes that value
-/// back when it is let go. So its text is replaced by hand, and the others get
-/// the engine's event.
+/// and **the focused box is the one that matters**: left holding the value
+/// from before the undo, it writes that value back when it is let go. So its
+/// text is replaced by hand, now, and the others get a `NumberInputValue`
+/// inserted. The insert is not offered to the focused box: in `bevy_feathers`
+/// 0.20 its observer writes into a focused box as into any other, through an
+/// edit queued for the next frame, which is RK-014's window for the next key
+/// to commit the old text first.
 ///
-/// Mutation: send the focused box `UpdateNumberInput` like the rest, and
+/// Mutation: insert into the focused box like the rest, and
 /// `ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit` fails.
 /// Mutation: do nothing for the others, and
 /// `an_undo_reaches_the_boxes_that_are_not_focused` fails.
@@ -855,20 +865,26 @@ pub(crate) fn show_values_in_place(world: &mut World) {
         .map(|(cell, writes)| (cell, writes.clone()))
         .collect();
     for (cell, target) in cells {
-        let Some(value) = read_leaf(world, &target) else {
-            continue;
-        };
-        let typing_in_it = focused.filter(|inner| {
-            world
-                .get::<ChildOf>(*inner)
-                .is_some_and(|parent| parent.parent() == cell)
-        });
-        match typing_in_it {
-            Some(inner) => put_in_box(world, inner, value),
-            None => world.trigger(UpdateNumberInput {
-                entity: cell,
-                value: NumberInputValue::F32(value),
-            }),
+        show_in_box(world, focused, cell, &target);
+    }
+}
+
+/// Give one box its leaf's value: by hand and now when it holds the focus,
+/// and through a `NumberInputValue` when it does not, for the reasons
+/// [`show_values_in_place`] gives.
+fn show_in_box(world: &mut World, focused: Option<Entity>, cell: Entity, target: &Writes) {
+    let Some(value) = read_leaf(world, target) else {
+        return;
+    };
+    let typing_in_it = focused.filter(|inner| {
+        world
+            .get::<ChildOf>(*inner)
+            .is_some_and(|parent| parent.parent() == cell)
+    });
+    match typing_in_it {
+        Some(inner) => put_in_box(world, inner, value),
+        None => {
+            world.entity_mut(cell).insert(NumberInputValue::F32(value));
         }
     }
 }
@@ -876,7 +892,7 @@ pub(crate) fn show_values_in_place(world: &mut World) {
 /// Replace what a box's text holds with a value, **now**, and not in a later
 /// frame.
 ///
-/// The edits are the ones `bevy_feathers` queues in `number_input_on_update`,
+/// The edits are the ones `bevy_feathers` queues in `number_input_on_insert_value`,
 /// `SelectAll` and then `Insert`, but they are applied here through
 /// `EditableText::apply_pending_edits` rather than left for the engine's
 /// `apply_text_edits`. That system runs before `take_back` in `PostUpdate`, so
@@ -913,7 +929,7 @@ fn put_in_box(world: &mut World, inner: Entity, value: f32) {
 /// What [`put_in_box`] leaves in a box for `value`: its text, or nothing
 /// when that is longer than the box holds.
 ///
-/// `f32`'s `Display` never uses an exponent, so a value like `1e20` is more
+/// `f32`'s `Display` never uses an exponent, so a value like `1e30` is more
 /// characters than a `FeathersNumberInput` holds, and the engine refuses such
 /// an insert whole rather than cutting it. Inserted anyway, the box would keep
 /// the text from before the undo and write it over the undo when it is let
@@ -1122,11 +1138,38 @@ mod tests {
     ///
     /// The same one frame `outline::tests` settles for, and for the same
     /// reason: before it there are no regions, so there is nothing to click and
-    /// nowhere to draw.
+    /// nowhere to draw. The fonts are in before it starts, for the reason
+    /// `crate::with_the_fonts_in` gives.
     fn inspector_editor() -> App {
         let mut app = editor(headless());
         app.update();
+        crate::with_the_fonts_in(&mut app);
         app
+    }
+
+    /// The rectangle an entity is clipped to, in the window's logical pixels.
+    ///
+    /// `bevy_ui` 0.20 keeps one rectangle per clipping ancestor, each in that
+    /// ancestor's own space with the transform into it beside it, so a rotated
+    /// pane can clip. Each is taken back into the window and the overlap is
+    /// what the entity is drawn inside. A node clipped away entirely is a
+    /// rectangle of no size at the origin, which the bounds these tests set,
+    /// a bottom edge and a width, both accept.
+    fn clipped_to(app: &App, entity: Entity) -> Option<Rect> {
+        use bevy::ui::CalculatedClip;
+        match app.world().entity(entity).get::<CalculatedClip>()? {
+            CalculatedClip::FullyClipped => Some(Rect::default()),
+            CalculatedClip::Rects(rects) => rects
+                .iter()
+                .map(|clip| {
+                    let to_window = clip.world_to_clip_local.inverse();
+                    Rect::from_corners(
+                        to_window.transform_point2(clip.rect.min),
+                        to_window.transform_point2(clip.rect.max),
+                    )
+                })
+                .reduce(|overlap, rect| overlap.intersect(rect)),
+        }
     }
 
     /// The inspector region.
@@ -2087,11 +2130,7 @@ mod tests {
             "nothing is past the bottom of the pane, so this tests nothing"
         );
         for entity in past {
-            let clip = app
-                .world()
-                .entity(entity)
-                .get::<bevy::ui::CalculatedClip>()
-                .map(|clip| clip.clip);
+            let clip = clipped_to(&app, entity);
             assert!(
                 clip.is_some_and(|clip| clip.max.y <= bottom),
                 "a row below the pane is not clipped to it: {clip:?}"
@@ -2241,7 +2280,7 @@ mod tests {
     ///
     /// The panel is longer than the pane from the first click, so the rows past
     /// the bottom have to be reachable. The wheel is the engine's:
-    /// `ScrollAreaPlugin` arrives with `DefaultPlugins`, and `Pointer<Scroll>`
+    /// `ScrollAreaPlugin` arrives with `DefaultPlugins`, and `PointerScroll`
     /// bubbles from the label under the pointer up to the pane, which is where
     /// `ScrollArea` sits.
     ///
@@ -2280,7 +2319,7 @@ mod tests {
     /// decided.
     ///
     /// **What keeps them apart is the hierarchy, not the scrolling.** A
-    /// `Pointer<Scroll>` bubbles to its ancestors, and the viewport is the
+    /// `PointerScroll` bubbles to its ancestors, and the viewport is the
     /// inspector's sibling rather than its parent, so the wheel here never
     /// reaches `zoom` whatever this pane does with it. Measured: taking the
     /// scrolling away again, so the pane merely clips, leaves this green.
@@ -2371,11 +2410,7 @@ mod tests {
             })
             .expect("Pickable opened into should_block_lower");
 
-        let clip = app
-            .world()
-            .entity(named)
-            .get::<bevy::ui::CalculatedClip>()
-            .map(|clip| clip.clip);
+        let clip = clipped_to(&app, named);
         let column = clip.expect("the name is clipped by its column");
         assert!(
             column.width() <= 140.0,
@@ -2576,9 +2611,8 @@ mod tests {
 
     /// A value that is not committed leaves the component alone.
     ///
-    /// `bevy_feathers` emits a value on every keystroke, carrying
-    /// `is_final: false`, and once more when `UpdateNumberInput` fills a box
-    /// the panel has just spawned. Neither is a commit.
+    /// `bevy_feathers` emits a value on every keystroke and on every step of
+    /// a scrub, carrying `is_final: false`. None of them is a commit.
     ///
     /// Mutation: drop the `is_final` check in `commit`, and this fails with
     /// the placeholder already moved.
@@ -2728,8 +2762,8 @@ mod tests {
     /// panel is rebuilt from the world, so the box has to come back up holding
     /// what was actually written.
     ///
-    /// Mutation: drop the `UpdateNumberInput` trigger where a box is spawned,
-    /// and this fails with an empty box.
+    /// Mutation: drop the `NumberInputValue` a box is spawned with, and this
+    /// fails with an empty box.
     #[test]
     fn the_row_shows_what_the_component_holds_after_a_commit() {
         let mut app = inspector_editor();
@@ -3341,9 +3375,11 @@ mod tests {
     /// An undo to a value the box cannot hold is not written over when the
     /// box is let go.
     ///
-    /// `1e20` prints as twenty one digits, one more than the box holds, and
-    /// the engine refuses an insert that is too long rather than cutting it.
-    /// Five is committed over it with Enter, and Ctrl+Z puts `1e20` back. If
+    /// `1e30` prints as thirty one digits, one more than the box holds in
+    /// `bevy_feathers` 0.20, and the engine refuses an insert that is too long
+    /// rather than cutting it. It was `1e20` against 0.19's twenty: the limit
+    /// is read from the box, so only the value here had to move. Five is
+    /// committed over it with Enter, and Ctrl+Z puts `1e30` back. If
     /// the box kept `5`, letting go would write five over the undo.
     ///
     /// Mutation: return the text from `shown_for` whatever its length, and
@@ -3352,7 +3388,7 @@ mod tests {
     fn an_undo_to_a_value_the_box_cannot_hold_is_not_written_over() {
         let mut app = inspector_editor();
         let middle = select_the_middle(&mut app);
-        set_y(&mut app, middle, 1e20);
+        set_y(&mut app, middle, 1e30);
 
         let line = line_of(&mut app, "Transform", 0);
         let cell = boxes_on(&mut app, line)[1];
@@ -3364,7 +3400,7 @@ mod tests {
         undo(&mut app);
         assert_eq!(
             translation(&app, middle).y,
-            1e20,
+            1e30,
             "the commit was not taken back"
         );
         click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
@@ -3373,7 +3409,7 @@ mod tests {
 
         assert_eq!(
             translation(&app, middle).y,
-            1e20,
+            1e30,
             "letting go of the box wrote the undone value back"
         );
     }
@@ -3381,7 +3417,7 @@ mod tests {
     /// Ctrl+Z in a box left empty by a value it cannot hold reaches the
     /// history.
     ///
-    /// The box under `1e20` is empty because the panel could not put the value
+    /// The box under `1e30` is empty because the panel could not put the value
     /// there, not because anybody typed. Taking that for typing would make
     /// Ctrl+Z put back the same nothing every time it was pressed, and never
     /// reach the commit on `x`.
@@ -3392,7 +3428,7 @@ mod tests {
     fn ctrl_z_in_a_box_left_empty_by_a_long_value_reaches_the_history() {
         let mut app = inspector_editor();
         let middle = select_the_middle(&mut app);
-        set_y(&mut app, middle, 1e20);
+        set_y(&mut app, middle, 1e30);
 
         // With Enter rather than by clicking away: the placeholder is now far
         // off screen, so a click at the origin lands on empty space and takes
@@ -3422,18 +3458,19 @@ mod tests {
     /// box follows it.
     ///
     /// Enter commits without the focus leaving, so the box is still focused
-    /// when the undo lands and the panel is frozen. `UpdateNumberInput` skips
-    /// a focused box, so unless its text is replaced by hand it keeps ten, and
-    /// letting go of it writes ten back over the undo.
+    /// when the undo lands and the panel is frozen. A `NumberInputValue`
+    /// inserted into it would land a frame late, through an edit
+    /// `bevy_feathers` queues, so unless its text is replaced by hand now it
+    /// keeps ten for the next key, and letting go of it writes ten back over
+    /// the undo.
     ///
     /// **This is also the test that reports Bevy's own text undo arriving.**
     /// If the box starts taking Ctrl+Z for itself, the key stops reaching the
     /// history here and this fails. `docs/specs/ui.md` §8's last accepted risk
     /// is that.
     ///
-    /// Mutation: send the focused box `UpdateNumberInput` like the others in
-    /// `show_values_in_place`, and this fails on the box's text and then on
-    /// the component.
+    /// Mutation: insert a `NumberInputValue` into the focused box like the
+    /// others in `show_in_box`, and this fails.
     #[test]
     fn ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit() {
         let mut app = inspector_editor();
@@ -4314,6 +4351,172 @@ mod tests {
             translation_row(&mut app),
             ["-200", "0", "0"],
             "the panel stayed on what was selected before the redo"
+        );
+    }
+
+    /// Drag across a box four steps to the right and let go, the way
+    /// `bevy_feathers` 0.20 turns a drag into a scrub of the value.
+    ///
+    /// The events are the ones the engine sends the box's scrubber, sent to it
+    /// directly, for the reason `focus` sets the focus rather than pressing: a
+    /// headless layout has not settled the box's size. Several steps rather
+    /// than one (RK-007): one step is one value either way. The press gives
+    /// the box the focus, as it does in the window.
+    fn scrub(app: &mut App, cell: Entity) {
+        use bevy::camera::NormalizedRenderTarget;
+        use bevy::picking::backend::HitData;
+        use bevy::picking::events::{
+            Pointer, PointerDrag, PointerDragEnd, PointerDragStart, PointerPress, PointerRelease,
+        };
+        use bevy::picking::pointer::{Location, PointerId};
+        use bevy::window::{PrimaryWindow, WindowRef};
+
+        let inner = editable_under(app.world(), cell);
+        let scrubber = app
+            .world()
+            .entity(inner)
+            .get::<Children>()
+            .and_then(|children| children.first().copied())
+            .expect("the box has a scrubber over its text");
+        let window = app
+            .world_mut()
+            .query_filtered::<Entity, With<PrimaryWindow>>()
+            .single(app.world())
+            .expect("one primary window");
+        let pointer = Pointer::new(
+            PointerId::Mouse,
+            Location {
+                position: Vec2::new(1100.0, 100.0),
+                target: NormalizedRenderTarget::Window(
+                    WindowRef::Primary
+                        .normalize(Some(window))
+                        .expect("the primary window normalises"),
+                ),
+            },
+        );
+        let hit = HitData::new(scrubber, 0.0, None, None);
+        let button = PointerButton::Primary;
+
+        app.world_mut().trigger(PointerPress {
+            entity: scrubber,
+            pointer: pointer.clone(),
+            button,
+            hit: hit.clone(),
+            count: 1,
+        });
+        app.update();
+        app.world_mut().trigger(PointerDragStart {
+            entity: scrubber,
+            pointer: pointer.clone(),
+            button,
+            hit: hit.clone(),
+        });
+        app.update();
+        let step = Vec2::new(10.0, 0.0);
+        for steps in 1..=4u8 {
+            app.world_mut().trigger(PointerDrag {
+                entity: scrubber,
+                pointer: pointer.clone(),
+                button,
+                distance: step * f32::from(steps),
+                delta: step,
+            });
+            app.update();
+        }
+        app.world_mut().trigger(PointerRelease {
+            entity: scrubber,
+            pointer: pointer.clone(),
+            button,
+            hit,
+        });
+        app.world_mut().trigger(PointerDragEnd {
+            entity: scrubber,
+            pointer,
+            button,
+            distance: step * 4.0,
+        });
+        app.update();
+        app.update();
+    }
+
+    /// The middle placeholder's translation.
+    fn translation_of(app: &App, entity: Entity) -> Vec3 {
+        app.world()
+            .entity(entity)
+            .get::<Transform>()
+            .expect("a placeholder has a transform")
+            .translation
+    }
+
+    /// A scrub of a box is one entry in the history: one Ctrl+Z puts the
+    /// value back bit for bit, and the next reaches the click that selected
+    /// the entity.
+    ///
+    /// The widget emits a value on every step of the scrub with `is_final`
+    /// false and once more at the release with it true, and `commit` acts on
+    /// the last one alone: [`docs/specs/ui.md` §7](../../../docs/specs/ui.md).
+    ///
+    /// Mutation: drop the `is_final` check in `commit`, and this fails with
+    /// the first Ctrl+Z taking back only the last step. Mutation: drop the
+    /// `show_in_box` after recording in `commit`, and this fails: the box
+    /// keeps the number the scrub started from, and Ctrl+Z takes that for
+    /// typing rather than reaching the history.
+    #[test]
+    fn a_scrub_on_a_box_is_one_entry() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        let before = translation_of(&app, middle);
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[0];
+
+        scrub(&mut app, cell);
+        assert_ne!(
+            translation_of(&app, middle).x,
+            before.x,
+            "the scrub moved nothing"
+        );
+
+        undo(&mut app);
+        assert_eq!(
+            translation_of(&app, middle).x.to_bits(),
+            before.x.to_bits(),
+            "one Ctrl+Z did not take the whole scrub back"
+        );
+        undo(&mut app);
+        assert!(
+            app.world().resource::<Selection>().entities().is_empty(),
+            "the second Ctrl+Z did not reach the click"
+        );
+    }
+
+    /// Letting go of a box after a scrub keeps what the scrub committed.
+    ///
+    /// The press of a scrub leaves the focus in the box, and the box commits
+    /// what it shows when the focus leaves. Showing the number the scrub
+    /// started from, it took the scrub back without a word: row 6 of the
+    /// failure list, measured before `commit` put the value in the box.
+    ///
+    /// Mutation: drop the `show_in_box` after recording in `commit`, and this
+    /// fails with the placeholder back where the scrub began.
+    #[test]
+    fn letting_go_of_a_box_after_a_scrub_keeps_the_scrub() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        let line = line_of(&mut app, "Transform", 0);
+        let cell = boxes_on(&mut app, line)[0];
+        scrub(&mut app, cell);
+        let scrubbed = translation_of(&app, middle);
+
+        // Onto the middle placeholder again, which takes the focus out of the
+        // box, as `type_and_commit` lets go.
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+
+        assert_eq!(
+            translation_of(&app, middle).x.to_bits(),
+            scrubbed.x.to_bits(),
+            "letting go of the box took the scrub back"
         );
     }
 }
