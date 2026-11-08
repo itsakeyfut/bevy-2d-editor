@@ -387,24 +387,44 @@ mod tests {
         })
     }
 
-    /// Every manifest asks for the features the specification settled.
+    /// A manifest's lines with its comment lines taken out, so that a comment
+    /// quoting a dependency line is not read as one.
+    fn without_comments(text: &str) -> String {
+        text.lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The engine is declared once, at the root, with the features the
+    /// specification settled, and every crate that takes it inherits that
+    /// declaration as it is.
     ///
     /// `docs/specs/ui.md` §3 writes the list and says what dropping the rest
-    /// costs, measured. A manifest writes it again because that is where cargo
-    /// reads it. Neither is derived from the other, so they are a real
-    /// cross-check rather than a file agreeing with itself.
+    /// costs, measured. The root's `[workspace.dependencies]` writes it again
+    /// because that is where cargo reads it. Neither is derived from the
+    /// other, so they are a real cross-check rather than a file agreeing with
+    /// itself.
     ///
-    /// It walks `crates/` rather than naming the crates that take the engine.
-    /// Two do now and a third will, and a guard that has to be widened by hand
-    /// is one that holds whichever manifest somebody remembered.
+    /// A member could still undo the root: a written-out `bevy = { .. }` line
+    /// of its own, or `bevy = { workspace = true, features = [..] }`, which
+    /// adds to what it inherits. So every manifest under `crates/` is read,
+    /// rather than the crates that take the engine today, and the only line a
+    /// member may name the engine with is `bevy.workspace = true`, a
+    /// `[dependencies.bevy]` table included. The lines
+    /// are matched from column zero with the comments taken out, because a
+    /// comment quoting an entry has defeated a scrape like this here before.
     ///
     /// The lockfile cannot stand in for this. `bevy_feathers` is still
     /// resolved with the feature removed, measured, so an assertion about the
     /// lock would be one that cannot fail.
     ///
-    /// Mutation: drop a feature from any of those files, and this fails.
+    /// Mutation: drop a feature from the root's `bevy` entry, and this fails.
+    /// Mutation: give `crates/editor_ui/Cargo.toml`
+    /// `bevy = { workspace = true, features = ["3d"] }`, or a written-out
+    /// `bevy = { version = .. }` line, and this fails naming that manifest.
     #[test]
-    fn every_manifest_asks_for_the_features_the_specification_settled() {
+    fn the_engine_is_declared_once_with_the_features_the_specification_settled() {
         let spec = features_in(
             &std::fs::read_to_string(workspace_root().join("docs/specs/ui.md"))
                 .expect("the file is in the repository"),
@@ -414,7 +434,28 @@ mod tests {
             "no feature list was read from the specification, so this asserts nothing"
         );
 
-        let mut checked = Vec::new();
+        let root = without_comments(
+            &std::fs::read_to_string(workspace_root().join("Cargo.toml"))
+                .expect("the root manifest is in the repository"),
+        );
+        let entries: Vec<usize> = root.match_indices("\nbevy = ").map(|(at, _)| at).collect();
+        let [entry] = entries[..] else {
+            panic!(
+                "the root manifest declares the engine {} times, not once",
+                entries.len()
+            );
+        };
+        // Up to the entry's own closing brace, so that a later dependency's
+        // feature list cannot stand in for one this entry lost.
+        let declaration = &root[entry..];
+        let declaration = &declaration[..declaration.find('}').map_or(0, |end| end + 1)];
+        assert_eq!(
+            features_in(declaration),
+            spec,
+            "the root's bevy entry and docs/specs/ui.md §3 ask for different features"
+        );
+
+        let mut inheriting = Vec::new();
         for crate_dir in std::fs::read_dir(workspace_root().join("crates"))
             .expect("the directory is in the repository")
         {
@@ -422,22 +463,25 @@ mod tests {
                 .expect("the entry is readable")
                 .path()
                 .join("Cargo.toml");
-            let text = std::fs::read_to_string(&manifest).expect("every crate has a manifest");
-            if !text.contains("\nbevy = ") {
-                continue;
-            }
-            assert_eq!(
-                features_in(&text),
-                spec,
-                "{} and docs/specs/ui.md §3 ask for different features",
-                manifest.display()
+            let text = without_comments(
+                &std::fs::read_to_string(&manifest).expect("every crate has a manifest"),
             );
-            checked.push(manifest);
+            let names_the_engine =
+                |line: &&str| line.starts_with("bevy") || line.contains(".bevy]");
+            for line in text.lines().filter(names_the_engine) {
+                assert_eq!(
+                    line.trim_end(),
+                    "bevy.workspace = true",
+                    "{} names the engine other than by inheriting the root's entry",
+                    manifest.display()
+                );
+                inheriting.push(manifest.clone());
+            }
         }
         assert!(
-            checked.len() >= 2,
-            "only {} manifest(s) were examined, so this holds less than it reads as",
-            checked.len()
+            inheriting.len() >= 2,
+            "only {} manifest(s) inherit the engine, so this holds less than it reads as",
+            inheriting.len()
         );
     }
 

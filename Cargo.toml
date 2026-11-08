@@ -15,6 +15,24 @@ b2d_data = { path = "crates/data" }
 b2d_runtime = { path = "crates/runtime" }
 b2d_editor_ui = { path = "crates/editor_ui" }
 
+# Every external dependency is declared here, once, with its version and its
+# features, and a member names it as `<name>.workspace = true`. A version is
+# then changed in one place, and two members cannot ask for two of them.
+
+# The stack, and why the defaults are not taken, are settled in
+# docs/specs/ui.md §3. What dropping them costs is bevy_audio and bevy_gltf and
+# nothing this milestone needs; §3 carries the measurement, and a second copy
+# of it here is a second copy to go stale. xtask's
+# the_engine_is_declared_once_with_the_features_the_specification_settled holds
+# this entry against that section.
+bevy = { version = "0.19", default-features = false, features = [
+    "2d",
+    "ui",
+    "bevy_feathers",
+] }
+regex = "1.13.1"
+serde_json = "1.0.151"
+
 [workspace.lints.rust]
 # The gate runs clippy with `-D warnings`, so a crate that does not say what it
 # is for fails the build rather than drifting.

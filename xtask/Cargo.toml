@@ -8,7 +8,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-regex = "1.13.1"
+regex.workspace = true
 
 [lints]
 workspace = true
