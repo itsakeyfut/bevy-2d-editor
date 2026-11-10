@@ -98,6 +98,22 @@ pub(crate) fn every_task() -> impl Iterator<Item = &'static Task> {
     TASKS.iter().chain(gate::ROWS.iter())
 }
 
+/// The task typed as `name`, if there is one.
+///
+/// What `dispatch` looks a name up with, split out so the lookup has a test.
+/// `dispatch` itself cannot be called with a real task from the suite, because
+/// the gate runs `cargo test`, which runs the test.
+///
+/// Mutation: search `TASKS` alone here, and
+/// `every_check_the_workflow_runs_is_a_task_xtask_dispatches` fails naming
+/// `fmt`. The workflow's legs would otherwise each print `fmt is not a task`
+/// and exit 2.
+fn task_named(name: &str) -> Option<fn() -> bool> {
+    every_task()
+        .find(|(task, _)| *task == name)
+        .map(|(_, run)| *run)
+}
+
 /// Every check CI runs as a job of its own: the gate's rows, then every task
 /// besides the gate.
 ///
@@ -127,8 +143,8 @@ fn main() -> ExitCode {
 fn dispatch(task: Option<&str>) -> u8 {
     let passed = match task {
         Some("all") => all(&TASKS),
-        Some(name) => match every_task().find(|(task, _)| *task == name) {
-            Some((_, run)) => run(),
+        Some(name) => match task_named(name) {
+            Some(run) => run(),
             None => {
                 eprintln!("xtask: `{name}` is not a task");
                 return usage();
@@ -186,7 +202,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        TASKS, all, annotation, commands, dispatch, docs, exit_code, gate, workspace_root,
+        TASKS, all, annotation, commands, dispatch, docs, exit_code, gate, task_named,
+        workspace_root,
     };
     use regex::Regex;
     use yaml_rust2::{Yaml, YamlLoader};
@@ -238,6 +255,24 @@ mod tests {
     fn records_that_it_ran() -> bool {
         SECOND_TASK_RAN.store(true, Ordering::SeqCst);
         true
+    }
+
+    /// Every check the workflow runs is a task xtask dispatches, the gate
+    /// with them.
+    ///
+    /// A list of names is not a set of tasks until a name typed at a terminal
+    /// or in a job reaches its function, and the lookup is the step between.
+    ///
+    /// Mutation: search `TASKS` alone in `task_named`, and this fails naming
+    /// `fmt`.
+    #[test]
+    fn every_check_the_workflow_runs_is_a_task_xtask_dispatches() {
+        for name in crate::checks().into_iter().chain(["gate"]) {
+            assert!(
+                task_named(name).is_some(),
+                "`cargo xtask {name}` would print that {name} is not a task and exit 2"
+            );
+        }
     }
 
     /// A task that does not exist is not a pass.

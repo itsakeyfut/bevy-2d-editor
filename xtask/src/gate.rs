@@ -164,7 +164,7 @@ fn game_command(pkg: &str) -> Command {
 /// `--all-features` there would make that row see the split and stop it linting
 /// the feature-on configuration, and both configurations matter.
 ///
-/// **What this assembly is not held to: anything at all.** Nothing calls it, so
+/// **What this assembly is not held to: anything at all.** No test calls it, so
 /// replacing this body with `true` leaves every test in the workspace passing,
 /// and so does passing a list written in place instead of `GAME_ENTRY_POINTS`.
 /// Both were applied and the suite stayed green. The pieces it is built from
