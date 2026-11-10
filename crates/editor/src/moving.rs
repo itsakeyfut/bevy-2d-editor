@@ -1,10 +1,11 @@
-//! Moving and turning what is selected by dragging it, and recording it.
+//! Moving, turning and scaling what is selected by dragging it, and recording
+//! it.
 //!
 //! What turns a press into a drag, and what it takes hold of, is decided in
 //! `selection.rs`, because the click, the box and the drag are one gesture
 //! table: [`docs/specs/ui.md` §4](../../../docs/specs/ui.md). What dragging
 //! the body does, and what was turned down for it, is §11 of the same file;
-//! what dragging the rotate knob does is §12.
+//! what dragging the rotate knob does is §12, and a scale handle §13.
 
 use bevy::input_focus::InputFocusSystems;
 use bevy::math::ops;
@@ -26,9 +27,9 @@ impl Stroke {
     /// The pivot and the angle turned so far, while the rotate knob is held
     /// and [`follow`] has run at least once.
     ///
-    /// For the rotate knob alone, which is what it is named for: a handle
-    /// that does something else, as scale will, carries its own read-back
-    /// rather than stretching this one.
+    /// For the rotate knob alone, which is what it is named for. The scale
+    /// handles need none: they are drawn on the frame, which already follows
+    /// the entities. [`docs/specs/ui.md` §13](../../../docs/specs/ui.md).
     pub(crate) fn turned(&self) -> Option<(Grip, Vec2, f32)> {
         let held = self.0.as_ref()?;
         let (pivot, angle) = held.turned?;
@@ -50,6 +51,17 @@ pub(crate) enum Grip {
         base: Vec2,
         /// Where the knob was at the press, in world units.
         tip: Vec2,
+    },
+    /// A scale handle: the group scales about the side opposite it.
+    Scale {
+        /// Where the handle was at the press, in world units.
+        handle: Vec2,
+        /// The side opposite the handle, which holds still, in world units.
+        /// Level with the handle on the axis an edge does not scale.
+        pivot: Vec2,
+        /// On each axis, the least the factor can be: one logical pixel over
+        /// the frame's size on screen at the press.
+        floor: Vec2,
     },
 }
 
@@ -185,8 +197,8 @@ pub(crate) fn in_progress(world: &World) -> bool {
     world.resource::<Stroke>().0.is_some()
 }
 
-/// Move or turn the group with the pointer, and record it when the button
-/// has been let go.
+/// Move, turn or scale the group with the pointer, and record it when the
+/// button has been let go.
 ///
 /// Where it sits in `PostUpdate` is the whole of its correctness, and
 /// [`MovePlugin`] says it once:
@@ -237,7 +249,9 @@ pub(crate) fn in_progress(world: &World) -> bool {
 /// unordered against the commit rather than before it, and the schedule
 /// happens to put it after, so the test of that path passes on the order the
 /// schedule picks; `docs/specs/ui.md` §10 accepts the same of
-/// `record_choice`. The write only when a
+/// `record_choice`. **Shift is read on every frame of a scale** rather than
+/// at the press, so it can be pressed or let go while dragging; no test
+/// tells the two apart, since each holds Shift for the whole drag. The write only when a
 /// transform changes is unguarded too: what it saves is the inspector
 /// rebuilding on every frame the button is held still, which no test counts.
 pub(crate) fn follow(
@@ -245,6 +259,7 @@ pub(crate) fn follow(
     viewport: Query<&PointerLocation, With<ViewportNode>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
     mut transforms: Query<&mut Transform>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
 ) {
     let Some(held) = stroke.0.as_mut() else {
@@ -272,6 +287,15 @@ pub(crate) fn follow(
                 let angle = angle_between(held.anchor - pivot, now - pivot);
                 held.turned = Some((pivot, angle));
                 Box::new(turn(pivot, angle, from.len() > 1))
+            }
+            Grip::Scale {
+                handle,
+                pivot,
+                floor,
+            } => {
+                let reached = handle + (now - held.anchor);
+                let uniform = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+                Box::new(scale(pivot, factor(handle, pivot, floor, reached, uniform)))
             }
         };
         for (entity, at) in from.iter() {
@@ -369,6 +393,139 @@ fn turn(pivot: Vec2, angle: f32, together: bool) -> impl Fn(&Transform) -> Trans
     }
 }
 
+/// How much a drag from a scale handle scales each axis, with the handle
+/// carried to `reached`. [`docs/specs/ui.md` §13](../../../docs/specs/ui.md).
+///
+/// On each axis, the distance from the pivot to `reached` over the distance
+/// from the pivot to the handle. With `uniform`, on a corner, one factor for
+/// both: `reached` projected onto the line from the pivot through the handle.
+/// **An axis on which the handle is level with the pivot is not scaled**,
+/// which is the axis along an edge and any axis the frame has no size on, and
+/// is the only divisor that could be zero; so is an axis with no size on
+/// screen.
+///
+/// **The factor never goes below `floor`**, which is what keeps a drag across
+/// the pivot from writing a scale of zero or turning the sign over.
+///
+/// Mutation: ignore `uniform`, and `shift_keeps_a_corner_drag_in_proportion`
+/// fails. Mutation: drop the `max` with the floor, and both
+/// `a_drag_onto_the_opposite_side_does_not_write_a_scale_of_zero` and
+/// `a_drag_past_the_opposite_side_stops_at_one_pixel` fail.
+fn factor(handle: Vec2, pivot: Vec2, floor: Vec2, reached: Vec2, uniform: bool) -> Vec2 {
+    let from = handle - pivot;
+    let to = reached - pivot;
+    let scales = |axis: usize| from[axis] != 0.0 && floor[axis].is_finite();
+    if uniform && scales(0) && scales(1) {
+        return Vec2::splat((to.dot(from) / from.length_squared()).max(floor.max_element()));
+    }
+    let free = |axis: usize| {
+        if scales(axis) {
+            (to[axis] / from[axis]).max(floor[axis])
+        } else {
+            1.0
+        }
+    };
+    Vec2::new(free(0), free(1))
+}
+
+/// A scale by `factor` about `pivot`, as a function from where an entity was
+/// to where it goes.
+///
+/// **An axis whose factor is exactly one writes nothing**, for the reason
+/// [`turn`] writes nothing for an angle of zero: `pivot + 1.0 * (x - pivot)`
+/// does not always come back to `x`, and the difference would be an entry the
+/// user cannot see.
+///
+/// **An entity whose new transform the engine could not read back, where it
+/// could read the old one, is left as it was**: [`readable`]. The floor in
+/// [`factor`] keeps the factor above zero, but a small scale typed into the
+/// inspector times a small factor can still go below what the engine's
+/// decomposition can measure. Measured: selecting a sprite whose `scale.x`
+/// is that small panics in a debug build, in the `Rot2` the outline builds
+/// from the `NaN` rotation `GlobalTransform` reads back, and a zero scale is
+/// a sprite that cannot be picked again.
+/// [`docs/specs/ui.md` §13](../../../docs/specs/ui.md). **The half of this
+/// about infinity has no test**, because no fixture with a scale near
+/// `f32::MAX` and its frame on screen was found.
+///
+/// Mutation: return before writing, and
+/// `dragging_a_corner_scales_both_axes_about_the_opposite_corner` fails.
+/// Mutation: leave the positions alone, and
+/// `scaling_several_scales_their_positions_about_the_opposite_side` fails.
+/// Mutation: drop the return for a factor of exactly one, and
+/// `a_scale_by_nothing_changes_no_bit` fails. Mutation: drop the check on the
+/// written scale, and `a_scale_the_engine_could_not_read_back_keeps_the_entity_as_it_was`
+/// fails.
+fn scale(pivot: Vec2, factor: Vec2) -> impl Fn(&Transform) -> Transform {
+    move |at| {
+        let mut to = *at;
+        let moved = pivot + factor * (at.translation.truncate() - pivot);
+        if factor.x != 1.0 {
+            to.translation.x = moved.x;
+        }
+        if factor.y != 1.0 {
+            to.translation.y = moved.y;
+        }
+        let local = local_factor(at.rotation, factor);
+        if local.x != 1.0 {
+            to.scale.x = at.scale.x * local.x;
+        }
+        if local.y != 1.0 {
+            to.scale.y = at.scale.y * local.y;
+        }
+        if readable(at) && !readable(&to) {
+            return *at;
+        }
+        to
+    }
+}
+
+/// Whether the engine can read a transform's scale and rotation back out of
+/// the matrix it becomes, which is how `GlobalTransform::rotation` and
+/// `GlobalTransform::scale` read them.
+///
+/// The decomposition measures each axis as the square root of its square, so
+/// an axis scaled below about `1e-23` squares to zero, and the rotation it
+/// divides out comes back `NaN`. Asked of the decomposition itself rather
+/// than of a threshold, so that this agrees with the engine wherever its
+/// arithmetic draws the line.
+fn readable(at: &Transform) -> bool {
+    let (scale, rotation, _) = at.compute_affine().to_scale_rotation_translation();
+    scale.is_finite() && scale.cmpne(Vec3::ZERO).all() && rotation.is_finite()
+}
+
+/// The factor on each of an entity's local axes, for a `factor` on the
+/// screen's: [`docs/specs/ui.md` §13](../../../docs/specs/ui.md).
+///
+/// Each local axis takes `sqrt((fx * ux)^2 + (fy * uy)^2)` for the unit
+/// direction `(ux, uy)` it points on screen, which is exact at every quarter
+/// turn. One factor on both axes is that factor, exactly, at any angle. A
+/// rotation of all zeros is taken as no rotation, as [`turn`] takes it, and a
+/// local axis that points along the view axis is not scaled.
+///
+/// Mutation: return `factor` whatever the rotation, and
+/// `a_turned_entity_scales_along_the_axis_the_frame_shows` fails.
+fn local_factor(rotation: Quat, factor: Vec2) -> Vec2 {
+    if factor.x == factor.y {
+        return factor;
+    }
+    let rotation = if rotation.length_squared() == 0.0 {
+        Quat::IDENTITY
+    } else {
+        rotation
+    };
+    let along = |axis: Vec3| {
+        let points = (rotation * axis).truncate();
+        let length = points.length();
+        if length == 0.0 {
+            1.0
+        } else {
+            (factor * points).length() / length
+        }
+    };
+    Vec2::new(along(Vec3::X), along(Vec3::Y))
+}
+
 /// Put a finished drag in the history, if it changed anything.
 ///
 /// **Through [`History::record`], whose `execute` writes where the entities
@@ -463,7 +620,7 @@ fn put(world: &mut World, entity: Entity, at: Transform) {
 #[cfg(test)]
 mod tests {
     use crate::pointer::{
-        click_at, drag_through, hold_key, hold_letter, in_window, press_and_hold,
+        click_at, drag_through, hold_key, hold_letter, in_window, line, press_and_hold,
         press_then_release, release_key, release_letter, round, write_input,
     };
     use crate::selection::{Selectable, Selection};
@@ -1428,5 +1585,316 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// An entity's scale.
+    fn scale_of(app: &App, entity: Entity) -> Vec3 {
+        app.world()
+            .get::<Transform>(entity)
+            .expect("it has a transform")
+            .scale
+    }
+
+    /// A transform's bits, so that two compare as the same numbers.
+    fn transform_bits(app: &App, entity: Entity) -> Vec<u32> {
+        super::bits(
+            app.world()
+                .get::<Transform>(entity)
+                .expect("it has a transform"),
+        )
+    }
+
+    /// The middle placeholder's top right corner, where its handle is.
+    const TOP_RIGHT: Vec2 = Vec2::new(32.0, 32.0);
+    /// The middle of the middle placeholder's right edge, where its handle is.
+    const RIGHT: Vec2 = Vec2::new(32.0, 0.0);
+
+    /// Dragging a corner scales both axes, about the opposite corner, which
+    /// stays where it was.
+    ///
+    /// The middle placeholder's corner goes from `(32, 32)` to `(64, 64)`,
+    /// with the pivot at `(-32, -32)`: half as far again on each axis, and
+    /// the origin moves from 32 away from the pivot to 48 away.
+    ///
+    /// Mutation: return in `moving::scale` before writing, and this fails.
+    /// Mutation: put the pivot at the frame's centre in `handles::framed`, and
+    /// this fails reading a scale of two.
+    #[test]
+    fn dragging_a_corner_scales_both_axes_about_the_opposite_corner() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        drag_through(&mut app, &line(TOP_RIGHT, Vec2::new(64.0, 64.0), 4));
+
+        assert_near(scale_of(&app, middle), Vec3::new(1.5, 1.5, 1.0));
+        assert_near(translation(&app, middle), Vec3::new(16.0, 16.0, 0.0));
+        assert_eq!(selected(&app), [middle]);
+    }
+
+    /// Dragging an edge scales the one axis across it, and the pointer's
+    /// travel along the edge does nothing.
+    ///
+    /// Mutation: put an edge's pivot on a corner in `handles::framed`, and this
+    /// fails.
+    #[test]
+    fn dragging_an_edge_scales_only_the_axis_across_it() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        drag_through(&mut app, &line(RIGHT, Vec2::new(64.0, 20.0), 4));
+
+        assert_near(scale_of(&app, middle), Vec3::new(1.5, 1.0, 1.0));
+        assert_near(translation(&app, middle), Vec3::new(16.0, 0.0, 0.0));
+    }
+
+    /// With Shift held, a corner keeps the frame's proportions: the handle,
+    /// carried to `(64, 40)`, is projected onto the diagonal from the pivot,
+    /// which is `(96 * 64 + 72 * 64) / (2 * 64 * 64)`, or `1.3125`, of it.
+    ///
+    /// Shift goes in as the keyboard's own input and is held through the
+    /// whole drag, so it is read in the frames the gesture happens in.
+    ///
+    /// Mutation: ignore `uniform` in `moving::factor`, and this fails.
+    #[test]
+    fn shift_keeps_a_corner_drag_in_proportion() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        hold_key(&mut app, KeyCode::ShiftLeft);
+        drag_through(&mut app, &line(TOP_RIGHT, Vec2::new(64.0, 40.0), 4));
+        release_key(&mut app, KeyCode::ShiftLeft);
+
+        assert_near(scale_of(&app, middle), Vec3::new(1.3125, 1.3125, 1.0));
+    }
+
+    /// Shift does nothing on an edge: it still scales the one axis across it.
+    ///
+    /// Mutation: take the factor in proportion when either axis scales,
+    /// rather than both, in `moving::factor`, and this fails.
+    #[test]
+    fn shift_does_nothing_on_an_edge() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        hold_key(&mut app, KeyCode::ShiftLeft);
+        drag_through(&mut app, &line(RIGHT, Vec2::new(64.0, 0.0), 4));
+        release_key(&mut app, KeyCode::ShiftLeft);
+
+        assert_near(scale_of(&app, middle), Vec3::new(1.5, 1.0, 1.0));
+    }
+
+    /// Scaling several scales each one's position about the opposite side of
+    /// their frame, as well as its scale.
+    ///
+    /// The frame of the left and middle placeholders runs from `-232` to
+    /// `32`, so pulling its right edge 100 further scales by `364 / 264`
+    /// about `x = -232`.
+    ///
+    /// Mutation: leave the positions alone in `moving::scale`, and this
+    /// fails.
+    #[test]
+    fn scaling_several_scales_their_positions_about_the_opposite_side() {
+        let mut app = moving_editor();
+        let left = entity_at(&mut app, LEFT);
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(LEFT), PointerButton::Primary);
+        modifier_click_at(&mut app, in_window(MIDDLE));
+
+        drag_through(&mut app, &line(RIGHT, Vec2::new(132.0, 0.0), 5));
+
+        let factor = 364.0 / 264.0;
+        let pivot = -232.0;
+        for (entity, x) in [(left, LEFT.x), (middle, MIDDLE.x)] {
+            assert_near(
+                translation(&app, entity),
+                Vec3::new(pivot + factor * (x - pivot), 0.0, 0.0),
+            );
+            assert_near(scale_of(&app, entity), Vec3::new(factor, 1.0, 1.0));
+        }
+    }
+
+    /// One Ctrl+Z after a scale puts every entity's scale and position back
+    /// bit for bit, and a second reaches the click before it.
+    ///
+    /// Positions and scales that went through a rounding would show, and the
+    /// drag is several moves, so a scale recorded as several entries leaves
+    /// the first Ctrl+Z taking back only the last piece of it.
+    ///
+    /// Mutation: record on every frame in `follow`, rather than when the
+    /// button is let go, and this fails.
+    #[test]
+    fn one_ctrl_z_after_a_scale_puts_every_scale_and_position_back_bit_for_bit() {
+        let mut app = moving_editor();
+        let a_at = Transform::from_xyz(0.1, -150.3, 0.7).with_scale(Vec3::new(1.3, 0.7, 1.1));
+        let b_at = Transform::from_xyz(120.9, -149.7, 0.3);
+        let a = sprite(&mut app, a_at);
+        let b = sprite(&mut app, b_at);
+        let a_bits = transform_bits(&app, a);
+        let b_bits = transform_bits(&app, b);
+        click_at(
+            &mut app,
+            in_window(a_at.translation.truncate()),
+            PointerButton::Primary,
+        );
+        modifier_click_at(&mut app, in_window(b_at.translation.truncate()));
+        assert_eq!(selected(&app), [a, b]);
+
+        // The frame's right edge is `b`'s, at 152.9, and its middle is at
+        // -149.7, halfway between `b`'s top and bottom, which reach past
+        // `a`'s. Pressed three pixels outside, so that no rounding can put
+        // the press inside the frame.
+        let pressed = Vec2::new(155.9, -149.7);
+        drag_through(&mut app, &line(pressed, Vec2::new(200.0, -120.0), 5));
+        assert_ne!(transform_bits(&app, a), a_bits, "the drag scaled nothing");
+
+        undo(&mut app);
+        assert_eq!(transform_bits(&app, a), a_bits);
+        assert_eq!(transform_bits(&app, b), b_bits);
+
+        undo(&mut app);
+        assert_eq!(
+            selected(&app),
+            [a],
+            "the second Ctrl+Z did not reach the modifier click"
+        );
+    }
+
+    /// A drag that brings an edge exactly onto the opposite one does not
+    /// write a scale of zero: it stops at the frame being one logical pixel
+    /// across, which for a 64 pixel frame is a scale of `1 / 64`.
+    ///
+    /// Mutation: drop the `max` with the floor in `moving::factor`, and this
+    /// fails reading a scale of nearly zero.
+    #[test]
+    fn a_drag_onto_the_opposite_side_does_not_write_a_scale_of_zero() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        drag_through(&mut app, &line(RIGHT, Vec2::new(-32.0, 0.0), 4));
+
+        let scale = scale_of(&app, middle);
+        assert!(scale.is_finite(), "{scale}");
+        assert_near(scale, Vec3::new(1.0 / 64.0, 1.0, 1.0));
+    }
+
+    /// A drag past the opposite side stops at one pixel too, and the sign
+    /// never turns over: nothing is mirrored.
+    ///
+    /// Mutation: drop the `max` with the floor in `moving::factor`, and this
+    /// fails reading a negative scale.
+    #[test]
+    fn a_drag_past_the_opposite_side_stops_at_one_pixel() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        drag_through(&mut app, &line(RIGHT, Vec2::new(-100.0, 0.0), 6));
+
+        assert_near(scale_of(&app, middle), Vec3::new(1.0 / 64.0, 1.0, 1.0));
+        assert_near(translation(&app, middle), Vec3::new(-31.5, 0.0, 0.0));
+    }
+
+    /// A sprite turned a quarter turn scales along the local axis that points
+    /// across the edge pulled.
+    ///
+    /// The sprite is 64 wide and 32 high, turned so that its frame is 32 wide
+    /// and 64 high. Pulling the frame's right edge half as far again is
+    /// stretching the sprite's own `y`.
+    ///
+    /// Mutation: return `factor` whatever the rotation in
+    /// `moving::local_factor`, and this fails.
+    #[test]
+    fn a_turned_entity_scales_along_the_axis_the_frame_shows() {
+        let mut app = moving_editor();
+        let at = Vec2::new(0.0, -150.0);
+        let turned = app
+            .world_mut()
+            .spawn((
+                Sprite::from_color(Color::WHITE, Vec2::new(64.0, 32.0)),
+                Transform::from_translation(at.extend(0.0))
+                    .with_rotation(Quat::from_rotation_z(FRAC_PI_2)),
+                Selectable,
+            ))
+            .id();
+        app.update();
+        click_at(&mut app, in_window(at), PointerButton::Primary);
+
+        // The right edge is at 16; pressed three pixels outside it.
+        drag_through(
+            &mut app,
+            &line(Vec2::new(19.0, -150.0), Vec2::new(35.0, -150.0), 4),
+        );
+
+        assert_near(scale_of(&app, turned), Vec3::new(1.0, 1.5, 1.0));
+    }
+
+    /// A handle dragged out and back to exactly where it was pressed leaves
+    /// every bit where it was.
+    ///
+    /// The sprite stands at `x = -0.0`, where the pivot's arithmetic,
+    /// `-32 + 1 * (-0.0 + 32)`, comes back as `+0.0`.
+    ///
+    /// Mutation: drop the return for a factor of exactly one in
+    /// `moving::scale`, and this fails on the sign of a zero.
+    #[test]
+    fn a_scale_by_nothing_changes_no_bit() {
+        let mut app = moving_editor();
+        let at = Vec2::new(-0.0, -150.0);
+        let entity = sprite(&mut app, Transform::from_translation(at.extend(0.0)));
+        let before = transform_bits(&app, entity);
+        click_at(&mut app, in_window(at), PointerButton::Primary);
+        assert_eq!(selected(&app), [entity]);
+
+        let pressed = Vec2::new(35.0, -150.0);
+        let out = Vec2::new(80.0, -150.0);
+        let mut path = line(pressed, out, 3);
+        path.extend(line(out, pressed, 3));
+        drag_through(&mut app, &path);
+
+        assert_eq!(transform_bits(&app, entity), before);
+    }
+
+    /// An entity whose new scale the engine could not read back keeps the
+    /// transform it had, while the rest of the group scales.
+    ///
+    /// Its `scale.x` is `1e-21`, which the inspector can be typed to and the
+    /// engine still reads, and the group is shrunk to the floor of one pixel
+    /// in 64, which takes it to about `1.6e-23`, whose square is zero. The two
+    /// are selected with a box, because a sprite that thin cannot be clicked.
+    ///
+    /// Mutation: drop the check on the written transform in `moving::scale`,
+    /// and this fails: the outline panics on the rotation read back as `NaN`.
+    /// Mutation: check only that each new scale is a normal `f32`, which is
+    /// what this guard was first designed as, and this fails the same way.
+    #[test]
+    fn a_scale_the_engine_could_not_read_back_keeps_the_entity_as_it_was() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        let thin = sprite(
+            &mut app,
+            Transform::from_xyz(0.0, -150.0, 0.0).with_scale(Vec3::new(1e-21, 1.0, 1.0)),
+        );
+        let before = transform_bits(&app, thin);
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-60.0, -200.0)),
+            in_window(Vec2::new(60.0, 60.0)),
+        );
+        assert_eq!(selected(&app), [middle, thin]);
+
+        // The frame runs from -182 to 32 up, so its right edge's handle is at
+        // `(32, -75)`; pressed three pixels outside it.
+        drag_through(
+            &mut app,
+            &line(Vec2::new(35.0, -75.0), Vec2::new(-100.0, -75.0), 6),
+        );
+
+        assert_near(scale_of(&app, middle), Vec3::new(1.0 / 64.0, 1.0, 1.0));
+        assert_eq!(transform_bits(&app, thin), before);
     }
 }

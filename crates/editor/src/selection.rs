@@ -22,7 +22,7 @@ use bevy::prelude::*;
 use bevy::ui::widget::ViewportNode;
 
 use crate::Region;
-use crate::handles::Knob;
+use crate::handles::Handles;
 use crate::history::{EditorCommand, History, put_back, take_back};
 use crate::moving::{self, Grip};
 use crate::outline::{OUTLINE, SELECTION_LAYER};
@@ -142,14 +142,14 @@ struct Pressed {
     at: Option<Vec2>,
     /// Where a box drag began, once the press turned into one.
     band: Option<Vec2>,
-    /// Whether the gesture has become a move or a turn, which a press on an
-    /// entity or on the knob does once the pointer has gone further than
+    /// Whether the gesture has become a move, a turn or a scale, which a press
+    /// on an entity or on a handle does once the pointer has gone further than
     /// [`MOVE_THRESHOLD`]. From then on the release is not a click.
     moving: bool,
-    /// What the press took hold of when it was on a handle, which today is
-    /// only the rotate knob. It wins over whatever [`Pressed::over`] says is
-    /// under it, because a handle is drawn on top:
-    /// [`docs/specs/ui.md` §12](../../../docs/specs/ui.md). Every reader here
+    /// What the press took hold of when it was on a handle: the rotate knob or
+    /// a scale handle. It wins over whatever [`Pressed::over`] says is under
+    /// it, because a handle is drawn on top:
+    /// [`docs/specs/ui.md` §12](../../../docs/specs/ui.md) and §13. Every reader here
     /// asks this before it asks `over`.
     ///
     /// The grip itself rather than a flag, taken when the button goes down,
@@ -174,9 +174,10 @@ const MOVE_THRESHOLD: f32 = 4.0;
 /// without one is a thing that cannot be selected, which would read as a defect
 /// in this file rather than as a missing component over there.
 ///
-/// It also names the set the box drag below hit-tests against. The one
-/// handle there is, the rotate knob, is not an entity at all, and is tested by
-/// distance in `handles.rs`: [`docs/specs/ui.md` §12](../../../docs/specs/ui.md).
+/// It also names the set the box drag below hit-tests against. The handles,
+/// the rotate knob and the scale handles, are not entities at all, and are
+/// tested by distance in `handles.rs`:
+/// [`docs/specs/ui.md` §12](../../../docs/specs/ui.md) and §13.
 #[derive(Component, Default)]
 #[require(Pickable)]
 pub struct Selectable;
@@ -364,14 +365,14 @@ fn select(
 /// `a_band_over_two_entities_selects_both` fails, because no press could then
 /// anchor a box.
 ///
-/// The knob is read beside the hover map, in one parameter, because this
+/// The handles are read beside the hover map, in one parameter, because this
 /// observer is at the seven clippy allows.
 fn remember(
     press: On<PointerPress>,
     viewport: Query<(&PointerId, &PointerLocation), With<ViewportNode>>,
     selectable: Query<(), With<Selectable>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
-    (hover, knob): (Res<HoverMap>, Res<Knob>),
+    (hover, handles): (Res<HoverMap>, Res<Handles>),
     keys: Res<ButtonInput<KeyCode>>,
     mut pressed: ResMut<Pressed>,
 ) {
@@ -387,7 +388,7 @@ fn remember(
         at: pointer_world(location, &cameras),
         band: None,
         moving: false,
-        handle: knob.under(location),
+        handle: handles.under(location),
     };
 }
 

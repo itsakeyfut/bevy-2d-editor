@@ -1,10 +1,12 @@
-//! The handles drawn on what is selected: today, the rotate knob.
+//! The handles drawn on what is selected: the rotate knob and the scale
+//! handles.
 //!
 //! What the knob is, where it sits, what a press on it does and what was
 //! turned down for it are settled in
-//! [`docs/specs/ui.md` §12](../../../docs/specs/ui.md). The press is taken in
-//! `selection.rs`, because §4 is one gesture table, and the turn is done in
-//! `moving.rs`, because it is a drag like a move.
+//! [`docs/specs/ui.md` §12](../../../docs/specs/ui.md); the same for the scale
+//! handles is §13. The press is taken in `selection.rs`, because §4 is one
+//! gesture table, and the turn and the scale are done in `moving.rs`, because
+//! they are drags like a move.
 
 use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::{RenderLayers, VisibilitySystems};
@@ -21,24 +23,33 @@ use crate::viewport::ViewportCamera;
 
 /// How far the knob stands above the frame, in logical pixels.
 ///
-/// Chosen rather than measured, as are the two below.
+/// Chosen rather than measured, as are the three below.
 const STALK: f32 = 24.0;
 
 /// The knob's radius as drawn, in logical pixels.
 const KNOB_RADIUS: f32 = 6.0;
 
-/// How close a press has to be to the knob's centre to take it, in logical
-/// pixels. Larger than the knob, so that it can be hit without aiming.
-const KNOB_REACH: f32 = 9.0;
+/// A scale handle's side as drawn, in logical pixels.
+const HANDLE_SIZE: f32 = 8.0;
 
-/// Where the rotate knob was drawn last, so that a press is tested against
-/// what the user saw.
+/// How close a press has to be to a handle's centre to take it, in logical
+/// pixels. Larger than the knob and the squares, so that they can be hit
+/// without aiming. One reach for every handle.
+const REACH: f32 = 9.0;
+
+/// Where the handles were drawn last, so that a press is tested against what
+/// the user saw.
 ///
 /// Written in `PostUpdate` and read by the next frame's press in `PreUpdate`,
-/// so a press is tested against **the knob drawn in the frame before it**,
-/// which is the one on the screen when the button went down.
+/// so a press is tested against **the handles drawn in the frame before it**,
+/// which are the ones on the screen when the button went down.
 #[derive(Resource, Default)]
-pub(crate) struct Knob(Option<Placed>);
+pub(crate) struct Handles {
+    /// The rotate knob.
+    knob: Option<Placed>,
+    /// The selection's frame and the scale handles on it.
+    frame: Option<Framed>,
+}
 
 /// Where the knob is, in the two sets of units it is read in.
 struct Placed {
@@ -52,26 +63,97 @@ struct Placed {
     tip: Vec2,
 }
 
-impl Knob {
-    /// What a press at `location` takes hold of, when it is on the knob.
+/// The selection's frame on the viewport, and the eight scale handles on it.
+struct Framed {
+    /// The frame, in the coordinates the viewport's pointer is read in.
+    viewport: Rect,
+    /// The handles, corners first, so that a tie goes to a corner.
+    handles: Vec<ScaleHandle>,
+}
+
+/// One scale handle, in the two sets of units it is read in.
+struct ScaleHandle {
+    /// Its centre, in the coordinates the viewport's pointer is read in.
+    at: Vec2,
+    /// Its centre, in world units.
+    handle: Vec2,
+    /// The side opposite it, which holds still, in world units. For an
+    /// edge, it is level with the handle along the edge, so that axis has
+    /// nothing to scale by.
+    pivot: Vec2,
+    /// On each axis, one logical pixel over the frame's size on screen, which
+    /// is the least a factor can be.
+    floor: Vec2,
+}
+
+/// Where a handle is on the frame, as a multiple of its half size from the
+/// centre: the four corners, then the middles of the four edges.
+const AROUND: [Vec2; 8] = [
+    Vec2::new(-1.0, -1.0),
+    Vec2::new(1.0, -1.0),
+    Vec2::new(1.0, 1.0),
+    Vec2::new(-1.0, 1.0),
+    Vec2::new(-1.0, 0.0),
+    Vec2::new(1.0, 0.0),
+    Vec2::new(0.0, -1.0),
+    Vec2::new(0.0, 1.0),
+];
+
+impl Handles {
+    /// What a press at `location` takes hold of, when it is on a handle.
     ///
-    /// Mutation: compare against ten times `KNOB_REACH`, and
-    /// `a_press_beside_the_knob_is_not_on_it` fails. Mutation: a `KNOB_REACH`
-    /// of one, and `a_press_off_the_knobs_centre_within_its_reach_takes_it`
-    /// fails.
+    /// The knob first. It stands outside the frame, so no scale handle's reach
+    /// meets it; asked first anyway, so that a frame small enough to bring the
+    /// two together keeps the knob as the knob.
     pub(crate) fn under(&self, location: &PointerLocation) -> Option<Grip> {
-        let (Some(placed), Some(location)) = (&self.0, &location.location) else {
-            return None;
-        };
-        (placed.at.distance(location.position) <= KNOB_REACH).then_some(Grip::Knob {
+        let at = location.location.as_ref()?.position;
+        self.knob_under(at).or_else(|| self.scale_under(at))
+    }
+
+    /// The knob, when `at` is on it.
+    ///
+    /// Mutation: compare against ten times `REACH`, and
+    /// `a_press_beside_the_knob_is_not_on_it` fails. Mutation: a `REACH` of
+    /// one, and `a_press_off_the_knobs_centre_within_its_reach_takes_it` fails.
+    fn knob_under(&self, at: Vec2) -> Option<Grip> {
+        let placed = self.knob.as_ref()?;
+        (placed.at.distance(at) <= REACH).then_some(Grip::Knob {
             centre: placed.centre,
             base: placed.base,
             tip: placed.tip,
         })
     }
+
+    /// The nearest scale handle within reach of `at`, **unless `at` is inside
+    /// the frame**, where a press is the body's or the box's:
+    /// [`docs/specs/ui.md` §13](../../../docs/specs/ui.md). On the frame's
+    /// edge counts as outside.
+    ///
+    /// Mutation: drop the inside check, and
+    /// `a_press_inside_the_frame_near_a_corner_moves_the_body` fails.
+    /// Mutation: a `REACH` of one, and
+    /// `a_press_just_outside_a_corner_takes_it` fails.
+    fn scale_under(&self, at: Vec2) -> Option<Grip> {
+        let framed = self.frame.as_ref()?;
+        let inside = framed.viewport.min.cmplt(at).all() && at.cmplt(framed.viewport.max).all();
+        if inside {
+            return None;
+        }
+        framed
+            .handles
+            .iter()
+            .map(|handle| (handle, handle.at.distance(at)))
+            .filter(|(_, distance)| *distance <= REACH)
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(handle, _)| Grip::Scale {
+                handle: handle.handle,
+                pivot: handle.pivot,
+                floor: handle.floor,
+            })
+    }
 }
 
-/// The gizmo group the handles are drawn in.
+/// The gizmo group the rotate knob is drawn in.
 ///
 /// Its own group rather than `outline::SelectionGizmos`, on the same layer,
 /// for the reason `selection::BandGizmos` gives: the outline's tests read
@@ -79,6 +161,15 @@ impl Knob {
 #[derive(Default, Reflect, GizmoConfigGroup)]
 #[reflect(Default)]
 pub(crate) struct HandleGizmos;
+
+/// The gizmo group the scale handles are drawn in.
+///
+/// Its own group rather than [`HandleGizmos`], because `drawn_knob` reads the
+/// one rectangle that group draws as the knob, and eight squares beside it
+/// would leave it nothing to read.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+#[reflect(Default)]
+pub(crate) struct ScaleGizmos;
 
 /// The handles on what is selected.
 ///
@@ -88,24 +179,24 @@ pub struct HandlesPlugin;
 
 impl Plugin for HandlesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Knob>()
-            .insert_gizmo_config(
-                HandleGizmos,
-                GizmoConfig {
-                    render_layers: RenderLayers::layer(SELECTION_LAYER),
-                    ..default()
-                },
-            )
+        let on_the_selection_layer = || GizmoConfig {
+            render_layers: RenderLayers::layer(SELECTION_LAYER),
+            ..default()
+        };
+        app.init_resource::<Handles>()
+            .insert_gizmo_config(HandleGizmos, on_the_selection_layer())
+            .insert_gizmo_config(ScaleGizmos, on_the_selection_layer())
             .add_systems(
                 PostUpdate,
-                place_knob
+                place_handles
                     .after(VisibilitySystems::CalculateBounds)
                     .after(crate::moving::follow),
             );
     }
 }
 
-/// Place the knob above what is selected, draw it, and remember where.
+/// Place the knob above what is selected and the scale handles on its frame,
+/// draw them, and remember where.
 ///
 /// After [`VisibilitySystems::CalculateBounds`], for the reason
 /// `outline::outline` gives: the bounds and the `GlobalTransform` the frame is
@@ -122,12 +213,14 @@ impl Plugin for HandlesPlugin {
 /// size on screen at every zoom. Both directions are the camera's own pair,
 /// the one `selection::pointer_world` reads a press through, so no scale
 /// factor appears here, and a headless test stuck at a scale factor of one
-/// has nothing to miss.
+/// has nothing to miss. The squares are sized the same way.
 ///
 /// **While a turn is held**, the knob is drawn where the turn has carried it,
 /// about the pivot, rather than above the frame, whose top moves as the
-/// corners turn; and [`Knob`] is left as it was, since nothing reads it until
-/// the next press.
+/// corners turn; and the knob's place is left as it was, since nothing reads
+/// it until the next press. The scale handles are drawn on the frame
+/// whatever is held, and so trail a moving entity by a frame as the outline
+/// does: [`docs/specs/ui.md` §13](../../../docs/specs/ui.md).
 ///
 /// Mutation: return before drawing, and `selecting_an_entity_draws_a_knob_above_it`
 /// fails. Mutation: build the frame from every entity with bounds rather than
@@ -136,22 +229,31 @@ impl Plugin for HandlesPlugin {
 /// `the_knob_is_the_same_distance_on_screen_at_every_zoom` fails. Mutation:
 /// build the frame from the `Aabb` untransformed, and
 /// `the_knob_is_above_a_turned_and_scaled_entitys_frame` fails.
-fn place_knob(
+fn place_handles(
     selection: Res<Selection>,
     bounds: Query<(&GlobalTransform, &Aabb)>,
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
     stroke: Res<Stroke>,
-    mut knob: ResMut<Knob>,
-    mut gizmos: Gizmos<HandleGizmos>,
+    mut handles: ResMut<Handles>,
+    mut gizmos: (Gizmos<HandleGizmos>, Gizmos<ScaleGizmos>),
 ) {
     let Ok((camera, eye)) = cameras.single() else {
-        knob.0 = None;
+        *handles = Handles::default();
         return;
     };
+    let frame = frame(&selection, &bounds);
+
+    handles.frame = frame.and_then(|frame| framed(camera, eye, frame));
+    if let Some(framed) = &handles.frame {
+        for handle in &framed.handles {
+            draw_square(&mut gizmos.1, camera, eye, handle.handle);
+        }
+    }
+
     if let Some((Grip::Knob { base, tip, .. }, pivot, angle)) = stroke.turned() {
         let round = Rot2::radians(angle);
         draw(
-            &mut gizmos,
+            &mut gizmos.0,
             camera,
             eye,
             pivot + round * (base - pivot),
@@ -160,9 +262,9 @@ fn place_knob(
         return;
     }
 
-    knob.0 = frame(&selection, &bounds).and_then(|frame| place(camera, eye, frame));
-    if let Some(placed) = &knob.0 {
-        draw(&mut gizmos, camera, eye, placed.base, placed.tip);
+    handles.knob = frame.and_then(|frame| place(camera, eye, frame));
+    if let Some(placed) = &handles.knob {
+        draw(&mut gizmos.0, camera, eye, placed.base, placed.tip);
     }
 }
 
@@ -194,10 +296,52 @@ fn place(camera: &Camera, eye: &GlobalTransform, frame: Rect) -> Option<Placed> 
     })
 }
 
+/// The scale handles on `frame`.
+///
+/// Each point goes to the viewport through the camera on its own, so the
+/// viewport's downward `y` is never turned over by hand, and the floor is
+/// one logical pixel over the frame's size there, for the reason
+/// [`place_handles`] measures the stalk on the viewport.
+///
+/// Mutation: put an edge's pivot on a corner, `centre - half * side.signum()`,
+/// and
+/// `dragging_an_edge_scales_only_the_axis_across_it` fails. Mutation: put the
+/// pivot at the frame's centre, and
+/// `dragging_a_corner_scales_both_axes_about_the_opposite_corner` fails.
+fn framed(camera: &Camera, eye: &GlobalTransform, frame: Rect) -> Option<Framed> {
+    let to_viewport = |at: Vec2| camera.world_to_viewport(eye, at.extend(0.0)).ok();
+    let viewport = Rect::from_corners(to_viewport(frame.min)?, to_viewport(frame.max)?);
+    let floor = Vec2::ONE / viewport.size();
+    let (centre, half) = (frame.center(), frame.half_size());
+    let handles = AROUND
+        .iter()
+        .map(|side| {
+            let handle = centre + half * *side;
+            Some(ScaleHandle {
+                at: to_viewport(handle)?,
+                handle,
+                pivot: centre - half * *side,
+                floor,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Framed { viewport, handles })
+}
+
+/// The side on the viewport of `size` logical pixels, as a length in the
+/// world beside `at`.
+fn world_across(camera: &Camera, eye: &GlobalTransform, at: Vec2, size: f32) -> Option<f32> {
+    let on_screen = camera.world_to_viewport(eye, at.extend(0.0)).ok()?;
+    let edge = camera
+        .viewport_to_world_2d(eye, on_screen + Vec2::new(size, 0.0))
+        .ok()?;
+    Some(at.distance(edge))
+}
+
 /// Draw the stalk from `base` and the knob at `tip`.
 ///
 /// The radius is `KNOB_RADIUS` on the viewport, taken back into the world
-/// beside the knob, for the reason [`place_knob`] measures the stalk there.
+/// beside the knob, for the reason [`place_handles`] measures the stalk there.
 fn draw(
     gizmos: &mut Gizmos<HandleGizmos>,
     camera: &Camera,
@@ -206,13 +350,21 @@ fn draw(
     tip: Vec2,
 ) {
     gizmos.line_2d(base, tip, OUTLINE);
-    let Ok(at) = camera.world_to_viewport(eye, tip.extend(0.0)) else {
-        return;
-    };
-    let Ok(edge) = camera.viewport_to_world_2d(eye, at + Vec2::new(KNOB_RADIUS, 0.0)) else {
-        return;
-    };
-    gizmos.circle_2d(tip, tip.distance(edge), OUTLINE);
+    if let Some(radius) = world_across(camera, eye, tip, KNOB_RADIUS) {
+        gizmos.circle_2d(tip, radius, OUTLINE);
+    }
+}
+
+/// Draw one scale handle, a square `HANDLE_SIZE` across on the viewport.
+///
+/// Mutation: return before drawing, and
+/// `selecting_an_entity_draws_eight_scale_handles_on_its_frame` fails.
+/// Mutation: use `HANDLE_SIZE` as world units, and
+/// `the_scale_handles_are_the_same_size_on_screen_at_every_zoom` fails.
+fn draw_square(gizmos: &mut Gizmos<ScaleGizmos>, camera: &Camera, eye: &GlobalTransform, at: Vec2) {
+    if let Some(side) = world_across(camera, eye, at, HANDLE_SIZE) {
+        gizmos.rect_2d(Isometry2d::from_translation(at), Vec2::splat(side), OUTLINE);
+    }
 }
 
 /// Where the knob was drawn, in world units, read back from the drawing.
@@ -240,11 +392,17 @@ fn drawn_stalk(app: &App) -> Option<(Vec2, Vec2)> {
     drawn.first().copied()
 }
 
+/// Every scale handle drawn, as the square it was drawn as, in world units.
+#[cfg(test)]
+fn drawn_scale_handles(app: &App) -> Vec<Rect> {
+    crate::drawn::rectangles_of::<ScaleGizmos>(app)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{drawn_knob, drawn_stalk};
+    use super::{drawn_knob, drawn_scale_handles, drawn_stalk};
     use crate::pointer::{
-        click_at, drag_through, in_window, press_and_hold, press_then_release, round,
+        click_at, drag_through, in_window, line, press_and_hold, press_then_release, round,
     };
     use crate::selection::{Selectable, Selection};
     use crate::viewport::ViewportCamera;
@@ -523,5 +681,127 @@ mod tests {
         drag_through(&mut app, &round(MIDDLE, beside, 45.0, 3));
 
         assert_eq!(transform(&app, middle).rotation, Quat::IDENTITY);
+    }
+
+    /// Where the scale handles should be on the middle placeholder: its four
+    /// corners and the middles of its four edges.
+    const MIDDLE_HANDLES: [Vec2; 8] = [
+        Vec2::new(-32.0, -32.0),
+        Vec2::new(32.0, -32.0),
+        Vec2::new(32.0, 32.0),
+        Vec2::new(-32.0, 32.0),
+        Vec2::new(-32.0, 0.0),
+        Vec2::new(32.0, 0.0),
+        Vec2::new(0.0, -32.0),
+        Vec2::new(0.0, 32.0),
+    ];
+
+    /// Every drawn square is on one of `wanted`, `side` across, and every one
+    /// of `wanted` has a square.
+    fn assert_squares_on(drawn: &[Rect], wanted: &[Vec2], side: f32) {
+        assert_eq!(drawn.len(), wanted.len(), "drawn: {drawn:?}");
+        for at in wanted {
+            let square = drawn
+                .iter()
+                .find(|square| square.center().abs_diff_eq(*at, 1e-3))
+                .unwrap_or_else(|| panic!("no square on {at}: {drawn:?}"));
+            assert_near(square.size(), Vec2::splat(side));
+        }
+    }
+
+    /// Selecting an entity draws a square on each corner of its frame and on
+    /// the middle of each edge, 8 pixels across.
+    ///
+    /// Mutation: return in `handles::draw_square` before drawing, and this
+    /// fails. Mutation: drop the four edges from `AROUND`, and this fails.
+    #[test]
+    fn selecting_an_entity_draws_eight_scale_handles_on_its_frame() {
+        let mut app = knob_editor();
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        assert_squares_on(&drawn_scale_handles(&app), &MIDDLE_HANDLES, 8.0);
+    }
+
+    /// Zoomed out, the squares are the same size on screen, which is more of
+    /// the world, and still on the frame's corners and edges.
+    ///
+    /// Mutation: take `HANDLE_SIZE` as world units in `handles::draw_square`,
+    /// and this fails.
+    #[test]
+    fn the_scale_handles_are_the_same_size_on_screen_at_every_zoom() {
+        let mut app = knob_editor();
+        zoom_to(&mut app, 2.0);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        assert_squares_on(&drawn_scale_handles(&app), &MIDDLE_HANDLES, 16.0);
+    }
+
+    /// A press just outside a corner, within its reach, takes it: dragged, it
+    /// scales.
+    ///
+    /// Six pixels out from the corner on each axis, about eight and a half
+    /// from its centre, where the reach is nine.
+    ///
+    /// Mutation: a `REACH` of one, and this fails.
+    #[test]
+    fn a_press_just_outside_a_corner_takes_it() {
+        let mut app = knob_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        drag_through(
+            &mut app,
+            &line(Vec2::new(38.0, 38.0), Vec2::new(70.0, 70.0), 4),
+        );
+
+        assert_ne!(transform(&app, middle).scale, Vec3::ONE);
+    }
+
+    /// A press inside the frame, within a corner's reach, is the body's: it
+    /// moves what is selected and scales nothing.
+    ///
+    /// Mutation: drop the inside check in `Handles::scale_under`, and this
+    /// fails.
+    #[test]
+    fn a_press_inside_the_frame_near_a_corner_moves_the_body() {
+        let mut app = knob_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        drag_through(
+            &mut app,
+            &line(Vec2::new(28.0, 28.0), Vec2::new(50.0, 50.0), 4),
+        );
+
+        assert_eq!(transform(&app, middle).scale, Vec3::ONE);
+        assert_near(
+            transform(&app, middle).translation.truncate(),
+            Vec2::new(22.0, 22.0),
+        );
+    }
+
+    /// Clicking a scale handle leaves the selection as it was and scales
+    /// nothing.
+    ///
+    /// Five pixels right of the right edge's handle, within its reach and
+    /// over nothing, so the click that comes with the release would clear
+    /// the selection if the handle did not hold it back.
+    ///
+    /// Mutation: drop the `pressed.handle` check in `selection::select`, and
+    /// this fails.
+    #[test]
+    fn clicking_a_scale_handle_keeps_the_selection() {
+        let mut app = knob_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        click_at(
+            &mut app,
+            in_window(Vec2::new(37.0, 0.0)),
+            PointerButton::Primary,
+        );
+
+        assert_eq!(selected(&app), [middle]);
+        assert_eq!(transform(&app, middle).scale, Vec3::ONE);
     }
 }
