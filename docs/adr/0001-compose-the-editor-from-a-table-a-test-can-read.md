@@ -24,11 +24,9 @@ chosen here is the shape they inherit.
   engine has a mechanism before building one. Bevy has one, so anything else is
   a deviation that has to pay for itself.
 * A member that quietly leaves the group, or quietly joins it, must fail a named
-  test. This is the shape the knowledge bank's RK-001 records, and it has
-  recurred here rather than being a hazard read about somewhere else. How many
-  times is not a number this record should assert: the entry's own headline and
-  the incidents it narrates do not agree, and reconciling that belongs to the
-  entry.
+  test. A check that reports success about a set it never examined has
+  recurred in this repository, rather than being a hazard read about somewhere
+  else.
 * Bevy 0.20.1's `PluginGroupBuilder` cannot be enumerated. `order` and `plugins`
   are private, there is no iterator, and `contains::<T>()` answers about one
   named type at a time. `App` is the same: its `SubApp`'s `plugin_registry` is
@@ -93,7 +91,7 @@ member makes it assertable, and this section is to be updated in that change.
 * Good, because the set can be asserted whole: names, order and count.
 * Good, because `compose` takes the table as an argument, so the columns can be
   exercised while the table is still empty. A table whose rows are all empty
-  otherwise exercises none of its columns, which is RK-001's newest instance.
+  otherwise exercises none of its columns, which has already happened here.
 * Bad, because it is ours to maintain, and because `stringify!` is a weaker name
   than `core::any::type_name`, which is not a `const fn` and so cannot be a
   column of a `const` table.

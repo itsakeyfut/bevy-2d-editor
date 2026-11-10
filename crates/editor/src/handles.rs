@@ -121,7 +121,8 @@ impl Plugin for HandlesPlugin {
 /// and the knob comes back into the world the same way, so it is the same
 /// size on screen at every zoom. Both directions are the camera's own pair,
 /// the one `selection::pointer_world` reads a press through, so no scale
-/// factor appears here and RK-005 has nothing to bite.
+/// factor appears here, and a headless test stuck at a scale factor of one
+/// has nothing to miss.
 ///
 /// **While a turn is held**, the knob is drawn where the turn has carried it,
 /// about the pivot, rather than above the frame, whose top moves as the
@@ -360,9 +361,10 @@ mod tests {
     /// The knob stands above the frame a turned and scaled entity actually
     /// covers.
     ///
-    /// RK-006: every placeholder is unturned and unscaled, so this spawns the
-    /// awkward one. A 64 pixel square scaled by two and turned an eighth of a
-    /// turn reaches `64 * sqrt(2)` above its origin.
+    /// Every placeholder is unturned and unscaled, which leaves transform
+    /// maths unguarded, so this spawns the awkward one. A 64 pixel square
+    /// scaled by two and turned an eighth of a turn reaches `64 * sqrt(2)`
+    /// above its origin.
     ///
     /// Mutation: build the frame from the `Aabb` untransformed, and this
     /// fails.
@@ -409,8 +411,9 @@ mod tests {
 
     /// Clicking the knob leaves the selection as it was and turns nothing.
     ///
-    /// RK-008: the release lands on empty space, where the click that
-    /// accompanies it would clear the selection.
+    /// One release runs two writers, the click and the drag end. Here the
+    /// release lands on empty space, where the click that accompanies it would
+    /// clear the selection.
     ///
     /// Mutation: drop the `pressed.handle` check in `selection::select`, and
     /// this fails.
@@ -429,7 +432,8 @@ mod tests {
     /// A drag from the knob is a turn and not a box, though it began where
     /// nothing is.
     ///
-    /// RK-008: it ends over the left placeholder, with a box that would have
+    /// One release runs two writers, the click and the drag end. Here it ends
+    /// over the left placeholder, with a box that would have
     /// covered both, so the box's own write is what would change the
     /// selection; the click that comes with the release is held back by the
     /// turn either way.

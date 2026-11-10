@@ -203,8 +203,8 @@ mod tests {
     ///
     /// The tokens it colours, the tokens its design tokens are assigned to,
     /// and the tokens its per-surface overrides name. Taken from Feathers'
-    /// own theme so that the set is one this project does not own: RK-001's
-    /// rule that a set is checked against something other than itself.
+    /// own theme so that the set is one this project does not own: a set is
+    /// checked against something other than itself.
     fn roster() -> HashSet<SemanticToken> {
         let theirs = create_dark_theme();
         theirs

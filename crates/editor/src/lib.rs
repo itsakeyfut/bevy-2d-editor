@@ -560,9 +560,9 @@ mod tests {
     ///
     /// `MEMBERS` is what `EditorPlugins` is built from, so a member that
     /// quietly leaves it leaves the editor without saying so, and a member that
-    /// quietly joins it arrives with nothing asserting anything about it. That
-    /// is the shape RK-001 is about, and asserting the table against a literal
-    /// written here is what stops it being a table that agrees with itself.
+    /// quietly joins it arrives with nothing asserting anything about it.
+    /// Asserting the table against a literal written here is what stops it
+    /// being a table that agrees with itself.
     ///
     /// Mutation: give `MEMBERS` the row `member!(Probe)`, and this fails.
     #[test]
@@ -588,8 +588,8 @@ mod tests {
     /// This is the whole of "adding a plugin is one line in the group": a row
     /// handed to `compose` reaches the built app, with nothing written anywhere
     /// else. It is also what exercises the table's columns while the table has
-    /// no rows, which RK-001 says is otherwise where a written table quietly
-    /// means nothing.
+    /// no rows, which is otherwise where a written table quietly means
+    /// nothing.
     ///
     /// Mutation: fold `&MEMBERS` in `compose` instead of the argument, and this
     /// fails.
@@ -638,8 +638,7 @@ mod tests {
     ///
     /// Spelled out here rather than read from a constant the spawning also
     /// reads: a test that compares a table with itself passes whatever the
-    /// table says, which is RK-001 and which an earlier version of this test
-    /// had.
+    /// table says, which an earlier version of this test did.
     ///
     /// The app is run for one update, because the regions are spawned by a
     /// `Startup` system and a built app has not run one yet.
@@ -899,9 +898,8 @@ mod tests {
     /// The name column is the whole of what
     /// `the_group_carries_the_members_the_table_names` reads, so a `member!`
     /// that wrote the same name for every row would leave that test agreeing
-    /// with a table that means something else. RK-001 in its narrowest form: a
-    /// column added to a table that has no rows yet is a column nothing has
-    /// looked at.
+    /// with a table that means something else. A column added to a table that
+    /// has no rows yet is a column nothing has looked at.
     ///
     /// Asserted against the type's own name rather than against the literal
     /// alone, so that the two columns are held to each other and not to a third

@@ -77,8 +77,7 @@ impl Selection {
 /// turns what is here into at most one entry, later in the frame.
 /// [`docs/specs/ui.md` §10](../../../docs/specs/ui.md) has why. `None` is "no
 /// gesture this frame". One slot, taken once a frame, is what makes the click
-/// and the drag end that one release produces (RK-008) one entry rather than
-/// two.
+/// and the drag end that one release produces one entry rather than two.
 ///
 /// **What [`Next::chosen`] starts from is not guarded.** A gesture starts
 /// from what an earlier one in the same frame left here, which matters only
@@ -432,7 +431,8 @@ fn begin(start: On<PointerDragStart>, mut pressed: ResMut<Pressed>) {
 ///
 /// `Drag::distance` is measured from the press, in the window pointer's
 /// logical pixels, which is what an observer on the region hears. So the
-/// threshold does not change with zoom, and RK-005 has nothing to bite.
+/// threshold does not change with zoom, and a headless test stuck at a scale
+/// factor of one has nothing to miss.
 ///
 /// Mutation: drop the button check, and `a_middle_button_drag_moves_nothing`
 /// fails. Mutation: a threshold of zero, and
@@ -715,7 +715,8 @@ fn under(
 /// same bounds `outline::outline` draws on. **All four corners are
 /// transformed**, rather than the centre alone with the half extents left as
 /// they are, so a turned or scaled entity is tested against where it actually
-/// is; RK-006 in the knowledge bank is why that needs saying, and
+/// is. Every entity the editor spawns is unturned and unscaled, which is why
+/// that needs saying, and
 /// `a_band_selects_a_turned_and_scaled_entity_it_touches` is why deleting it
 /// fails.
 ///
@@ -752,7 +753,8 @@ pub(crate) fn world_bounds(at: &GlobalTransform, aabb: &Aabb) -> Rect {
 ///
 /// Both sides are the engine's own logical pixels, `logical_viewport_rect`
 /// against a `PointerLocation` that `viewport_picking` wrote in the same units,
-/// so nothing here multiplies by a scale factor and RK-005 has nothing to bite.
+/// so nothing here multiplies by a scale factor, and a headless test stuck at
+/// a scale factor of one has nothing to miss.
 ///
 /// Mutation: drop the clamp, and
 /// `a_band_stops_at_the_edge_of_what_the_viewport_shows` fails.
@@ -1638,9 +1640,9 @@ mod tests {
     /// and the middle one and leaves the right one alone, so it is also the
     /// claim that a box selects what it covers and not everything.
     ///
-    /// Two rather than one, which is RK-007 in the knowledge bank: a loop over
-    /// a selection that has only ever held one thing guards none of its
-    /// plurals, and this is the first gesture that adds several at once.
+    /// Two rather than one: a loop over a selection that has only ever held
+    /// one thing guards none of its plurals, and this is the first gesture
+    /// that adds several at once.
     ///
     /// Mutation: return from `finish` before writing the selection, and this
     /// fails. Mutation: take the first entity the box touches rather than every
@@ -1861,7 +1863,7 @@ mod tests {
 
     /// A box drag selects a turned and scaled entity it touches.
     ///
-    /// RK-006 in the knowledge bank: every `Selectable` the editor spawns is an
+    /// Every `Selectable` the editor spawns is an
     /// axis-aligned square at the centre of its own sprite, so the transform in
     /// `world_bounds` is otherwise free to delete. This one is turned an eighth
     /// of a turn, twice the size, and anchored at its top left, which puts its
@@ -2039,7 +2041,7 @@ mod tests {
     /// first, so the world hands the pair back in the wrong order and only the
     /// ranking puts it last. The pair is spawned here rather than taken from
     /// the placeholders, which all sit at `z == 0` and would rank as a tie,
-    /// which is RK-006's shape.
+    /// leaving the ranking unexercised.
     ///
     /// Mutation: delete the sort in `finish`, and this fails.
     #[test]
@@ -2186,7 +2188,7 @@ mod tests {
     /// Undoing a selection change leaves out what has stopped being
     /// selectable since.
     ///
-    /// Two entities in what is restored, per RK-007: with one, leaving it out
+    /// Two entities in what is restored: with one, leaving it out
     /// and emptying the selection are the same program.
     ///
     /// Mutation: drop the `selectable_of` call in `replace_selection`, and this fails with
@@ -2209,7 +2211,7 @@ mod tests {
 
     /// A box that replaces a selection is one entry, however many it adds.
     ///
-    /// One release is a click and a drag end (RK-008), and the click clears
+    /// One release is a click and a drag end, and the click clears
     /// the selection before the drag end fills it. What was selected before is
     /// not empty, so that an entry for the click alone would be visible as a
     /// Ctrl+Z that leaves nothing selected.

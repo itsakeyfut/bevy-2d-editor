@@ -100,9 +100,9 @@ pub(crate) fn press_and_hold(app: &mut App, press: Vec2, to: Vec2) {
 /// Press at the first window position, move through the rest one frame
 /// apart, and let go at the last.
 ///
-/// A real drag is dozens of moves, and RK-007 is what a gesture of one move
-/// cannot tell apart: a drag that begins again on every move looks the same
-/// as one that begins once.
+/// A real drag is dozens of moves, and a gesture of one move cannot tell two
+/// drags apart: one that begins again on every move looks the same as one
+/// that begins once.
 pub(crate) fn drag_through(app: &mut App, path: &[Vec2]) {
     let (first, rest) = path.split_first().expect("a path has somewhere to start");
     for action in [
