@@ -397,7 +397,9 @@ own, on a render layer the viewport camera adds and the camera the panels are
 drawn to does not.
 
 The corners stay empty. They are where a transform gizmo puts its handles, and
-a mark that looks grabbable and is not is worse than no mark.
+a mark that looks grabbable and is not is worse than no mark. *Superseded by
+[§13](#13-the-scale-handles), which put the scale handles there once they
+could be dragged; the outline itself still draws nothing on its corners.*
 
 **While a box drag is happening, the viewport draws the box**: an outline in the
 same colour, on the same render layer, in a gizmo group of its own, with nothing
@@ -431,7 +433,8 @@ the UI pass that nobody here has measured.
 
 **Corner marks, or a box with handles at the corners.** That is a gizmo, and it
 is a separate piece of work. Drawing something that looks like a handle before
-one can be dragged teaches the wrong thing.
+one can be dragged teaches the wrong thing. *Taken up by
+[§13](#13-the-scale-handles), as handles that can be dragged.*
 
 **A light line over a dark one**, so the outline reads over any artwork. It is
 two draws and an offset for a contrast problem that has not appeared yet. It
@@ -1322,7 +1325,7 @@ and it works again the moment the button is let go.
 
 ## 12. The rotate knob
 
-Decided on issue #62, and built by it: `place_knob` in
+Decided on issue #62, and built by it: `place_handles` in
 `crates/editor/src/handles.rs` draws the knob and remembers where,
 `remember` and `grab` in `crates/editor/src/selection.rs` take a press on it,
 and `follow` in `crates/editor/src/moving.rs` turns what is selected and

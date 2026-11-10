@@ -102,9 +102,9 @@ const AROUND: [Vec2; 8] = [
 impl Handles {
     /// What a press at `location` takes hold of, when it is on a handle.
     ///
-    /// The knob first. It stands outside the frame, so no scale handle's reach
-    /// meets it; asked first anyway, so that a frame small enough to bring the
-    /// two together keeps the knob as the knob.
+    /// The knob first, though the order is not observable and no test holds
+    /// it: the knob stands `STALK` pixels above the frame and the nearest
+    /// scale handle is on it, so their reaches, `REACH` each, never meet.
     pub(crate) fn under(&self, location: &PointerLocation) -> Option<Grip> {
         let at = location.location.as_ref()?.position;
         self.knob_under(at).or_else(|| self.scale_under(at))
@@ -481,7 +481,7 @@ mod tests {
 
     /// Selecting an entity draws a knob above the middle of its top edge.
     ///
-    /// Mutation: return in `place_knob` before drawing, and this fails.
+    /// Mutation: return in `place_handles` before drawing, and this fails.
     #[test]
     fn selecting_an_entity_draws_a_knob_above_it() {
         let mut app = knob_editor();
@@ -557,7 +557,7 @@ mod tests {
     /// above the frame, and its stalk turns with it, from where it left the
     /// frame turned by the same angle.
     ///
-    /// Mutation: drop the branch in `place_knob` that draws a turn in
+    /// Mutation: drop the branch in `place_handles` that draws a turn in
     /// progress, and this fails. Mutation: draw the stalk from where it left
     /// the frame unturned, and this fails on the stalk.
     #[test]
@@ -657,7 +657,7 @@ mod tests {
     /// Eight pixels beside the knob's centre, where the knob's reach is nine
     /// and its radius six, so the press is outside the circle as drawn.
     ///
-    /// Mutation: a `KNOB_REACH` of one, and this fails.
+    /// Mutation: a `REACH` of one, and this fails.
     #[test]
     fn a_press_off_the_knobs_centre_within_its_reach_takes_it() {
         let mut app = knob_editor();
@@ -677,8 +677,8 @@ mod tests {
     /// Fifteen pixels above the knob's centre, where the knob's reach is
     /// nine.
     ///
-    /// Mutation: compare against ten times `KNOB_REACH` in `Knob::under`, and
-    /// this fails.
+    /// Mutation: compare against ten times `REACH` in `Handles::knob_under`,
+    /// and this fails.
     #[test]
     fn a_press_beside_the_knob_is_not_on_it() {
         let mut app = knob_editor();

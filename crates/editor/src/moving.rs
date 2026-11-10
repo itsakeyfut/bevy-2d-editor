@@ -74,7 +74,7 @@ struct Held {
     /// Where the press was, in world units.
     anchor: Vec2,
     /// The pivot and the angle turned so far, written by [`follow`] while
-    /// the knob is held, so that `handles::place_knob` can keep the knob
+    /// the knob is held, so that `handles::place_handles` can keep the knob
     /// under the pointer.
     turned: Option<(Vec2, f32)>,
     /// Each entity's transform when the drag began.
@@ -221,11 +221,13 @@ pub(crate) fn in_progress(world: &World) -> bool {
 /// moving entity by one, and picking reads last frame's position.
 ///
 /// **Anything that reads [`Stroke`] is ordered after this**, or it reads the
-/// last frame's drag; `handles::place_knob` is the one there is.
+/// last frame's drag; `handles::place_handles` is the one there is.
 ///
 /// **The delta is added to `translation` as it is**, a world delta written as
 /// a local one, and the pivot of a turn is read from `translation` in the
-/// same way. That holds while nothing in the editor has a parent, and a
+/// same way. A scale writes a factor measured on the screen into the local
+/// `scale`, and scales the local `translation` about a pivot in the world.
+/// All of that holds while nothing in the editor has a parent, and a
 /// hierarchy is what breaks it.
 ///
 /// **A transform is only written when it changes**, so that holding the
@@ -249,11 +251,14 @@ pub(crate) fn in_progress(world: &World) -> bool {
 /// unordered against the commit rather than before it, and the schedule
 /// happens to put it after, so the test of that path passes on the order the
 /// schedule picks; `docs/specs/ui.md` §10 accepts the same of
-/// `record_choice`. **Shift is read on every frame of a scale** rather than
-/// at the press, so it can be pressed or let go while dragging; no test
-/// tells the two apart, since each holds Shift for the whole drag. The write only when a
-/// transform changes is unguarded too: what it saves is the inspector
-/// rebuilding on every frame the button is held still, which no test counts.
+/// `record_choice`.
+///
+/// **Two more things no test holds.** The write only when a transform
+/// changes: what it saves is the inspector rebuilding on every frame the
+/// button is held still, which no test counts. And **Shift is read on every
+/// frame of a scale** rather than at the press, so it can be pressed or let
+/// go while dragging; no test tells the two apart, since each holds Shift
+/// for the whole drag.
 pub(crate) fn follow(
     mut stroke: ResMut<Stroke>,
     viewport: Query<&PointerLocation, With<ViewportNode>>,
@@ -445,7 +450,9 @@ fn factor(handle: Vec2, pivot: Vec2, floor: Vec2, reached: Vec2, uniform: bool) 
 /// a sprite that cannot be picked again.
 /// [`docs/specs/ui.md` §13](../../../docs/specs/ui.md). **The half of this
 /// about infinity has no test**, because no fixture with a scale near
-/// `f32::MAX` and its frame on screen was found.
+/// `f32::MAX` and its frame on screen was found. Nor has the condition that
+/// the old transform was readable: one that is not has a scale of about zero,
+/// which cannot be clicked or boxed, so no drag reaches it.
 ///
 /// Mutation: return before writing, and
 /// `dragging_a_corner_scales_both_axes_about_the_opposite_corner` fails.
