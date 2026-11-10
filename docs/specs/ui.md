@@ -576,6 +576,15 @@ reader and it moves when a plugin is added.
 It differs from the chosen option by the two rows that say something is there
 and unnamed, so it buys tidiness by deleting the honest part.
 
+**That reason is weaker than when it was written.** On Bevy 0.19.1 the unnamed
+row was one, the editor's own `Selectable`. On 0.20.1 there are two, and the
+second is `SyncToRenderWorld`, the engine's bookkeeping for the render world.
+Both are mechanical rather than anything the user put there, so on a placeholder
+today the honest part tells the user nothing they can act on. The rejection is
+not reopened here: which components the inspector lists is deferred, with its
+trigger, in [open-questions.md §1](./open-questions.md), and this is part of
+that question.
+
 **A hand-written list of components to hide.** The Unity-shaped picture, three
 rows. It is a list nobody can check against anything, written before the schema
 that would justify it, and rebuilt in phase 3. It also puts component type names
