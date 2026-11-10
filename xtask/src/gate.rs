@@ -278,9 +278,20 @@ fn test_command() -> Command {
     cmd
 }
 
-/// Run one row, printing `ok` or `FAIL` and what it said.
+/// Run one row, with cargo's own output as it happens, then `ok` or `FAIL`.
 ///
-/// # What a Windows exit code of `0xC0000409` in the log below means
+/// **Streamed, not captured.** On a runner a row can take minutes, `test` on
+/// Windows most of a quarter of an hour, and a captured log says nothing until
+/// the row ends: the job sits silent and nobody can tell a slow build from a
+/// hung one. So the child inherits this process's output, and the `ok` or
+/// `FAIL` line after it closes the row. What a failure said is above that
+/// line, all of it, the way cargo printed it.
+///
+/// No test holds the streaming. The suite cannot watch its own output, and
+/// capturing again would be seen on the first run anyone looked at: a job
+/// with no `Compiling` lines in it.
+///
+/// # What a Windows exit code of `0xC0000409` in the log means
 ///
 /// It means a compiler process aborted, and nothing more than that. Windows
 /// spells the code `STATUS_STACK_BUFFER_OVERRUN`, which is the report code
@@ -298,7 +309,7 @@ fn test_command() -> Command {
 ///                                                        -> 0xC0000409
 /// ```
 ///
-/// So the log printed below separates the two cases on its own: an allocation
+/// So the log separates the two cases on its own: an allocation
 /// failure says `memory allocation of N bytes failed` before it goes, and a
 /// bare `0xC0000409` came from somewhere that aborted without a word. Keeping
 /// the log is therefore the whole of the evidence, and
@@ -317,32 +328,32 @@ fn test_command() -> Command {
 /// Exit 101 and a sentence, rather than a code and silence. Whatever else is
 /// wrong when this appears, the rustc stack is not the thing to reach for.
 fn row(name: &str, cmd: &mut Command) -> bool {
-    let out = match cmd.output() {
-        Ok(out) => out,
+    println!("  run   {name}");
+    match cmd.status() {
+        Ok(status) if status.success() => {
+            println!("  ok    {name}");
+            true
+        }
+        Ok(status) => {
+            fail(
+                name,
+                &format!("cargo exited with {status}; its output is above"),
+            );
+            false
+        }
         Err(err) => {
             fail(name, &format!("could not run cargo: {err}"));
-            return false;
+            false
         }
-    };
-    if out.status.success() {
-        println!("  ok    {name}");
-        return true;
     }
-    let mut log = String::from_utf8_lossy(&out.stdout).into_owned();
-    log.push_str(&String::from_utf8_lossy(&out.stderr));
-    fail(name, &log);
-    false
 }
 
-/// Report a failed row, with everything it said.
+/// Report a failed row, with what this process has to say about it.
 ///
 /// Every failing row goes through here, which is what makes one annotation in
-/// [`failure_report`] enough to name any of them on the Checks page.
-///
-/// All of it, not a tail. A tail of the last lines of a cargo log is the
-/// `could not compile, 8 previous errors` summary and none of the errors, and
-/// the person reading it is often looking at a runner they cannot cheaply
-/// rerun.
+/// [`failure_report`] enough to name any of them on the Checks page. A cargo
+/// row's own output has already been printed by then, by [`row`]; what comes
+/// here is the rest, such as a process that could not be started.
 fn fail(name: &str, log: &str) {
     println!("{}", failure_report(name, log, on_github()));
 }
