@@ -4,7 +4,7 @@
 //! about the pointer: two modules ask the same thing of the same storage, and a
 //! parser that drifted between them would be two different claims wearing one
 //! name. The outline asks it of `outline::SelectionGizmos`, the box drag of
-//! `selection::BandGizmos`, the rotate knob of `handles::HandleGizmos` and
+//! `selection::BandGizmos`, the rotate knob of `handles::KnobGizmos` and
 //! the scale handles of `handles::ScaleGizmos`, so the group is the
 //! parameter.
 

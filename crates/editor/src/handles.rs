@@ -160,11 +160,11 @@ impl Handles {
 /// whether that group has a handle at all to mean "nothing is drawn".
 #[derive(Default, Reflect, GizmoConfigGroup)]
 #[reflect(Default)]
-pub(crate) struct HandleGizmos;
+pub(crate) struct KnobGizmos;
 
 /// The gizmo group the scale handles are drawn in.
 ///
-/// Its own group rather than [`HandleGizmos`], because `drawn_knob` reads the
+/// Its own group rather than [`KnobGizmos`], because `drawn_knob` reads the
 /// one rectangle that group draws as the knob, and eight squares beside it
 /// would leave it nothing to read.
 #[derive(Default, Reflect, GizmoConfigGroup)]
@@ -184,7 +184,7 @@ impl Plugin for HandlesPlugin {
             ..default()
         };
         app.init_resource::<Handles>()
-            .insert_gizmo_config(HandleGizmos, on_the_selection_layer())
+            .insert_gizmo_config(KnobGizmos, on_the_selection_layer())
             .insert_gizmo_config(ScaleGizmos, on_the_selection_layer())
             .add_systems(
                 PostUpdate,
@@ -235,7 +235,7 @@ fn place_handles(
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
     stroke: Res<Stroke>,
     mut handles: ResMut<Handles>,
-    mut gizmos: (Gizmos<HandleGizmos>, Gizmos<ScaleGizmos>),
+    mut gizmos: (Gizmos<KnobGizmos>, Gizmos<ScaleGizmos>),
 ) {
     let Ok((camera, eye)) = cameras.single() else {
         *handles = Handles::default();
@@ -351,7 +351,7 @@ fn world_across(camera: &Camera, eye: &GlobalTransform, at: Vec2, size: f32) -> 
 /// The radius is `KNOB_RADIUS` on the viewport, taken back into the world
 /// beside the knob, for the reason [`place_handles`] measures the stalk there.
 fn draw(
-    gizmos: &mut Gizmos<HandleGizmos>,
+    gizmos: &mut Gizmos<KnobGizmos>,
     camera: &Camera,
     eye: &GlobalTransform,
     base: Vec2,
@@ -387,7 +387,7 @@ fn draw_square(gizmos: &mut Gizmos<ScaleGizmos>, camera: &Camera, eye: &GlobalTr
 /// not with the code.
 #[cfg(test)]
 pub(crate) fn drawn_knob(app: &App) -> Option<Rect> {
-    let drawn = crate::drawn::rectangles_of::<HandleGizmos>(app);
+    let drawn = crate::drawn::rectangles_of::<KnobGizmos>(app);
     assert!(drawn.len() <= 1, "more than one knob drawn: {drawn:?}");
     drawn.first().copied()
 }
@@ -395,7 +395,7 @@ pub(crate) fn drawn_knob(app: &App) -> Option<Rect> {
 /// Where the stalk was drawn, from the frame to the knob, in world units.
 #[cfg(test)]
 fn drawn_stalk(app: &App) -> Option<(Vec2, Vec2)> {
-    let drawn = crate::drawn::lines_of::<HandleGizmos>(app);
+    let drawn = crate::drawn::lines_of::<KnobGizmos>(app);
     assert!(drawn.len() <= 1, "more than one stalk drawn: {drawn:?}");
     drawn.first().copied()
 }
