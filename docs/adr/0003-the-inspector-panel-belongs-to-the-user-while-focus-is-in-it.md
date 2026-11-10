@@ -19,7 +19,7 @@ hold it outside the row rather than to start reconciling."
 the values, so **committing an edit changes the component, which changes
 `Shape`, which despawns the box that was just typed into.** The same thing
 happens without any edit at all: hovering the selected sprite changes its
-`PickingInteraction`, which is one of the fourteen components the panel lists.
+`PickingInteraction`, which is one of the sixteen components the panel lists.
 
 What the panel shows is [`docs/specs/ui.md` §6](../specs/ui.md) and what it lets
 the user edit is [§7](../specs/ui.md); neither is repeated here.
@@ -133,10 +133,10 @@ in the panel or was last frame.
   `number_input_on_update` already declines to overwrite a focused widget.
 * Good, because the panel would stop rebuilding when a value moves, which is
   most of the rebuilds there are.
-* Bad, because the panel is mostly not numbers. Measured on one placeholder: 22
-  value lines, of which 9 would be boxes. Every other line needs its own way to
-  be updated in place, and that is the row-by-row reconcile ADR-0002 rejected,
-  arriving through the back door.
+* Bad, because the panel is mostly not numbers. Measured on one placeholder
+  on Bevy 0.20.1: 25 value lines, of which 5 are boxes. Every other line needs
+  its own way to be updated in place, and that is the row-by-row reconcile
+  ADR-0002 rejected, arriving through the back door.
 * Bad, because pushing a value in emits a `ValueChange` back out. Measured with
   a throwaway probe under `headless()`: `UpdateNumberInput` with `12.5` on a
   freshly spawned input left the buffer reading `12.5` and an observer hearing

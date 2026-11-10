@@ -301,10 +301,10 @@ impl Plugin for InspectorPlugin {
 /// * **What a value reads as is its `Debug`**, which is total over
 ///   `ReflectRef` and so has no arm that can panic. A named-field struct opens
 ///   into its fields and nothing descends further; `docs/specs/ui.md` §6 has
-///   what that turned down. Measured on a clicked placeholder: of its 13
-///   readable components, 6 are named-field structs and 7 are not, so the
+///   what that turned down. Measured on a clicked placeholder: of its 14
+///   readable components, 5 are named-field structs and 9 are not, so the
 ///   unnamed line in [`fields_of`] is the ordinary case rather than the edge
-///   one. Two of the six open into nothing, being structs with no fields.
+///   one. One of the five opens into nothing, being a struct with no fields.
 /// * **`reflect_auto_register` is on**, through Bevy's `default_app`. A
 ///   component that derives `Reflect` is registered without anybody calling
 ///   `register_type`, so phase 3's user-defined components arrive here on their
@@ -1918,8 +1918,8 @@ mod tests {
     ///
     /// Three shapes at once, because they are three arms and not one: a tuple
     /// struct, an enum and a struct with no fields. Measured on a clicked
-    /// placeholder, 7 of its 13 readable components take the unnamed line and 2
-    /// more open into nothing, so all three of these are the ordinary case
+    /// placeholder, 9 of its 14 readable components take the unnamed line and 1
+    /// more opens into nothing, so all three of these are the ordinary case
     /// rather than the edge one.
     ///
     /// **`Weight` reads as its whole type path and `Anchor` does not**, which
@@ -2033,8 +2033,8 @@ mod tests {
     /// The regions keep their places when the inspector is full.
     ///
     /// A panel whose content is longer than the window is what this change
-    /// first put on screen: 14 components and 22 value lines, which with the
-    /// header is 37 rows, in a pane 512 pixels tall.
+    /// first put on screen. A clicked placeholder is 16 components and 25 value
+    /// lines, which with the header is 42 rows, in a pane 512 pixels tall.
     ///
     /// **Measured before `spawn_regions` bounded the middle row**, in the
     /// default 1280 by 720 window: one click made that row 882 pixels, which
@@ -2079,8 +2079,8 @@ mod tests {
     /// A row past the bottom of the panel is clipped rather than drawn over
     /// what is under it.
     ///
-    /// Fourteen components open into 22 value lines, which with their own
-    /// names and the header is 37 rows in a pane 512 pixels tall, so the panel
+    /// Sixteen components open into 25 value lines, which with their own
+    /// names and the header is 42 rows in a pane 512 pixels tall, so the panel
     /// is longer than the space it has from the first click. Scrolling and collapsing are both deferred in
     /// `docs/specs/ui.md` §6, and what is left is that the overflow has to stop
     /// at the pane's edge: without it the rows carry on down the window, over
