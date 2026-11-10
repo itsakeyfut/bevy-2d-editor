@@ -397,7 +397,9 @@ own, on a render layer the viewport camera adds and the camera the panels are
 drawn to does not.
 
 The corners stay empty. They are where a transform gizmo puts its handles, and
-a mark that looks grabbable and is not is worse than no mark.
+a mark that looks grabbable and is not is worse than no mark. *Superseded by
+[§13](#13-the-scale-handles), which put the scale handles there once they
+could be dragged; the outline itself still draws nothing on its corners.*
 
 **While a box drag is happening, the viewport draws the box**: an outline in the
 same colour, on the same render layer, in a gizmo group of its own, with nothing
@@ -431,7 +433,8 @@ the UI pass that nobody here has measured.
 
 **Corner marks, or a box with handles at the corners.** That is a gizmo, and it
 is a separate piece of work. Drawing something that looks like a handle before
-one can be dragged teaches the wrong thing.
+one can be dragged teaches the wrong thing. *Taken up by
+[§13](#13-the-scale-handles), as handles that can be dragged.*
 
 **A light line over a dark one**, so the outline reads over any artwork. It is
 two draws and an offset for a contrast problem that has not appeared yet. It
@@ -1322,7 +1325,7 @@ and it works again the moment the button is let go.
 
 ## 12. The rotate knob
 
-Decided on issue #62, and built by it: `place_knob` in
+Decided on issue #62, and built by it: `place_handles` in
 `crates/editor/src/handles.rs` draws the knob and remembers where,
 `remember` and `grab` in `crates/editor/src/selection.rs` take a press on it,
 and `follow` in `crates/editor/src/moving.rs` turns what is selected and
@@ -1432,3 +1435,165 @@ The angle of a point to itself is taken as zero, so for as long as the pointer
 sits there the entity is back where the turn began, and it follows again when
 the pointer leaves. Nothing is lost: what is recorded is where the release
 leaves it. Row 4.
+
+---
+
+## 13. The scale handles
+
+Decided on issue #63, and built by it: `place_handles` and `Handles::under`
+in `crates/editor/src/handles.rs` draw the handles and take a press on one,
+and `factor`, `scale` and `local_factor` in `crates/editor/src/moving.rs`
+scale what is selected. Each row below is held by a test named in those
+functions' doc comments, with two exceptions no test holds. Shift is read on
+every frame of the drag, which `follow`'s doc comment says. And *An axis the
+frame has no size on* has no fixture: a frame with no width comes from a
+scale of zero, an entity with one cannot be clicked or boxed, and one that is
+already selected when its scale is typed to zero panics the outline in a
+debug build, measured, which this section did not change.
+
+It goes through the drag of
+[§11](#11-dragging-what-is-selected), sits beside the knob of
+[§12](#12-the-rotate-knob), and fills the corners
+[§5](#5-what-a-selection-looks-like-in-the-viewport) left empty.
+
+### Decision
+
+| | |
+| --- | --- |
+| What is drawn | **eight square handles on the selection's frame**, one on each corner and one on the middle of each edge, drawn whenever something is selected, beside the outline and the knob |
+| The frame | the frame of [§12](#12-the-rotate-knob): the axis-aligned rectangle covering the world bounds of everything selected |
+| Their size | **a size on screen**, 8 logical pixels across, the same at every zoom |
+| A press on one | taken by the nearest handle within 9 logical pixels of its centre, the knob's reach, **unless the press is inside the frame**. Inside the frame, a press is the body's or the box's, as it was before this section |
+| A click on one | nothing. The selection stays as it is |
+| A drag from one | past [§11](#11-dragging-what-is-selected)'s threshold, scales what is selected. The selection stays as it is |
+| What a corner scales | both axes, each by its own factor. **With Shift held, both by one factor**, which keeps the frame's proportions |
+| What an edge scales | the one axis across it. Shift does nothing on an edge |
+| The pivot | **the side opposite the handle**: the opposite corner for a corner, the opposite edge for an edge. It stays where it is |
+| The factor | on each axis, the distance from the pivot to where the handle would be had it moved with the pointer, over the distance from the pivot to where it was at the press. With Shift, that point projected onto the line from the pivot through the handle |
+| Past the pivot | **the factor stops where the frame is 1 logical pixel across on that axis**, or where it is, for a frame already thinner than that: the floor stops a shrink and never causes a growth. The sign never changes, so nothing is mirrored |
+| An axis the frame has no size on | not scaled |
+| What is written | each entity's `translation` in x and y, scaled about the pivot, and its `scale` in x and y. `z`, `rotation` and `scale.z` are left alone. An axis whose factor is exactly one writes nothing |
+| A turned entity | each of its local axes is scaled by the factor of the direction it points on screen: `sqrt((fx * ux)^2 + (fy * uy)^2)` for a local axis pointing along the unit `(ux, uy)`. With one factor on both axes, that factor |
+| A scale that cannot be written | an entity whose new transform the engine could not read a finite, non-zero scale and a finite rotation back out of, where it could from the old one, keeps the transform it had when the drag began |
+| While it scales | the entities are written every frame, as [§11](#11-dragging-what-is-selected)'s move is |
+| What the history gets | what [§11](#11-dragging-what-is-selected) gives a move: one entry, when the button is let go |
+
+### Rationale
+
+**Edges as well as corners**, so that stretching one way needs no key. A
+beginner who wants a wider platform pulls its side.
+
+**Free by default, Shift for proportion.** An edge is free by nature, so a
+corner that is free too gives one rule for every handle, and Shift is the
+exception that adds a constraint. Ctrl and Cmd are already the selection's
+modifier ([§4](#4-what-the-mouse-does-in-the-viewport)), and no gesture in the
+viewport reads Shift.
+
+**The opposite side holds still**, so what moves is the side the user took
+and the rest stays put. Dividing by the frame's own size means the divisor is
+zero only for a frame with no size on that axis, which is an axis this leaves
+alone. A pivot at the entity's origin would put a sprite anchored on a corner
+exactly on its own handle, with nothing to divide by.
+
+**Stopping rather than mirroring.** A scale of zero makes the entity's
+`GlobalTransform` impossible to invert, and `bevy_sprite` 0.20.1's picking
+hit-tests through `affine().inverse()` with no check for that, so the sprite
+could not be clicked again, and that is saved. A negative scale avoids zero
+but puts a second state into everything that reads a transform later:
+colliders, children, the frame's own arithmetic. One pixel on screen keeps
+the entity visible and pickable at the zoom it was scaled at.
+
+**Inside the frame is the body.** A 16 pixel sprite at one pixel a unit is
+narrower than two handles' reach, so a handle that won over the body there
+would leave small sprites movable only after zooming in. Only the part of a
+handle's reach outside the frame takes a press, which is at least half of it.
+
+**A turned entity's axes take the factor of where they point.** The frame is
+axis-aligned, so pulling the right edge of a sprite turned a quarter turn
+means stretching its local y. This is exact at every quarter turn, which is
+where a tile game's sprites are turned. At any other angle the stretch the
+frame asks for would need a shear, which a `Transform` cannot hold, and the
+factor along each local axis is the nearest it gets.
+
+**The guard on the written scale moves a failure up.** The factor is bounded
+below by the pixel floor, so a scale the engine cannot read only appears from
+an entity whose scale was already tiny, typed into the inspector, scaled down
+in a group with ordinary ones. The engine measures each axis of a transform
+as the square root of its square, so the line is near `1e-23` and not at
+zero: below it the rotation reads back as `NaN`, which panics the outline in
+a debug build and is a sprite nothing can pick in a release one. The guard
+asks the engine's own decomposition rather than a threshold, so it draws the
+line where the engine does. Keeping the old transform is row 4; writing the
+new one is row 3 in a debug build and row 6 in a release one.
+
+The guard was first designed as a check that the scale is neither zero nor
+infinite. Building it found the line above, and a scale of `1.6e-23`, which
+is neither, still panicked.
+
+### Rejected options
+
+**Corners only.** Stretching one way would take a corner and a key.
+
+**Proportion by default, Shift for free.** Shift would mean on a corner the
+opposite of what an edge does without it.
+
+**The entity's origin as pivot, as the knob turns about.** One entity would
+write only its scale, but a sprite anchored on a corner has that corner's
+handle on the pivot, with nothing to divide by.
+
+**The frame's centre with Alt.** A second modifier and its tests, for a
+symmetric scale nobody has asked for yet.
+
+**Mirroring past the pivot,** by a negative scale or by `Sprite::flip_x`. The
+first is the second state above. The second writes a component other than
+`Transform`, which the drag's command does not take back, and does nothing
+for an entity that is not a sprite.
+
+**Handles that win over the body, as the knob does.** The knob stands outside
+the frame and never competes with the body; corner handles do, and on a small
+sprite they would cover it.
+
+**Hiding the handles on a small frame.** A threshold constant, and scaling
+something small would need a zoom first.
+
+**Each axis's factor on the local axis of the same name.** A quarter-turned
+sprite would grow the wrong way when its side is pulled.
+
+**Proportion only, for anything turned.** An edge handle that scales both
+axes on some entities and one on others is a rule the picture does not show.
+
+**A read-back from the drag for drawing the handles,** as the knob has. The
+handles sit on the frame, which already follows the entities, a frame late as
+the outline is.
+
+### Accepted risk
+
+**At angles other than quarter turns, a free scale does not follow the
+pointer exactly.** The frame ends a little off where it was pulled. Row 4:
+the user sees it, and Ctrl+Z takes it back. With Shift it is exact at every
+angle.
+
+**A group with a turned member, scaled freely, stretches that member along
+its own axes rather than the group's.** The same limit, for the same reason.
+Row 4.
+
+**The floor is one pixel at the zoom of the press.** Zoomed in afterwards,
+the thin entity is wider on screen. Nothing is lost, and its scale can be
+pulled back out. Row 4.
+
+**A frame thinner than a pixel cannot be shrunk with a handle**, only grown
+or left alone, until the view is zoomed in far enough to make it a pixel or
+more. The floor was first a pixel whatever the frame, and a review found
+that it then grew such a frame on a drag let go where it began, by as much
+as the frame was short of a pixel, and recorded it: a tile at the furthest
+zoom doubled in the world while staying under a pixel on screen. That was
+row 6; this is row 4.
+
+**Half of the guard on the written scale has no test.** The half that keeps
+a scale from going too small to read is held by a test of a scale of
+`1e-21` shrunk by 64. The half that keeps it from reaching infinity needs a scale near `f32::MAX` already on
+the entity with its frame on screen, and no fixture for that was found.
+
+**A scale writes a world factor into a local scale**, and scales a world
+position as a local one. That holds while nothing in the editor has a
+parent, as [§11](#11-dragging-what-is-selected)'s move does.

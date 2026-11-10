@@ -138,6 +138,16 @@ pub(crate) fn round(pivot: Vec2, from: Vec2, degrees: f32, steps: u16) -> Vec<Ve
         .collect()
 }
 
+/// The window positions of a straight path from `from` to `to`, in `steps`
+/// equal moves, both given in world units.
+///
+/// It starts at `from` itself, as [`round`] does, for the same reason.
+pub(crate) fn line(from: Vec2, to: Vec2, steps: u16) -> Vec<Vec2> {
+    (0..=steps)
+        .map(|step| in_window(from.lerp(to, f32::from(step) / f32::from(steps))))
+        .collect()
+}
+
 /// The window an input is addressed to.
 ///
 /// The pointer's [`Location`] needs it. The keyboard's message carries it and
