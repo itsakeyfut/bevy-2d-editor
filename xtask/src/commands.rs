@@ -58,8 +58,8 @@ const READ: [&str; 4] = ["md", "rs", "toml", "yml"];
 /// The workspace's member list, as the root manifest declares it.
 ///
 /// Anchored at column zero, so a comment quoting the line is not read as the
-/// declaration. That is RK-001's newest clause, and the guard it was written
-/// for was defeated by exactly such a comment.
+/// declaration. A guard elsewhere in this crate that read source as text was
+/// defeated by exactly such a comment.
 const MEMBERS: &str = r"(?m)^members\s*=\s*\[([^\]]*)\]";
 
 /// Commands that are named on purpose and cannot be run.
@@ -91,7 +91,8 @@ pub struct Prose {
     packages: BTreeSet<String>,
     /// What went wrong while reading, rather than while checking: a file that
     /// would not decode, or a `.gitignore` this cannot interpret. Kept rather
-    /// than skipped, because a file that silently leaves the corpus is RK-001.
+    /// than skipped, because a file that silently leaves the corpus is a check
+    /// reporting success about a set it never examined.
     read_problems: Vec<String>,
 }
 
@@ -159,8 +160,8 @@ impl Prose {
     /// either.
     ///
     /// `git ls-files` would answer too and is not used: `workspace_root`
-    /// already refuses to need a git checkout, and RK-002 records that a
-    /// tier-2 review runs in a copied tree with no `.git` in it. There,
+    /// already refuses to need a git checkout, and a review runs this in a
+    /// copied tree with no `.git` in it. There,
     /// `git ls-files` returns nothing and this would report success about a
     /// corpus it never had.
     pub fn read(root: &Path) -> Prose {
@@ -223,8 +224,8 @@ impl Prose {
     /// file arm below already does that, and the asymmetry was the quieter
     /// half: an unreadable file costs the corpus one file and says so, while
     /// an unreadable directory took a whole subtree out of the corpus and left
-    /// the run printing `problems: 0`. That is RK-001, which the field
-    /// documentation above invokes for the file case.
+    /// the run printing `problems: 0`, a success reported about a set it never
+    /// examined, which the field documentation above says for the file case.
     ///
     /// Mutation: return without pushing, and
     /// `a_directory_that_cannot_be_listed_is_reported` fails.
@@ -278,7 +279,7 @@ impl Prose {
     /// a fixture directory, which the task template already points
     /// implementers at, silently excused any command naming it, while the run
     /// went on printing `problems: 0` about a set it was no longer really
-    /// checking. That is RK-001.
+    /// checking.
     ///
     /// A member entry is a directory, or one ending `/*`, which are the two
     /// forms this workspace uses. Anything else is reported rather than
@@ -492,9 +493,9 @@ enum Claim {
 /// What one command claims, when it claims anything answerable.
 ///
 /// A task name is read here and checked against the table itself rather than
-/// scraped out of the source that declares it, which is the sharpest clause of
-/// RK-001: the guard written to hold the gate's entry point list read the
-/// other file as text, and three ordinary comments defeated it.
+/// scraped out of the source that declares it: the guard written to hold the
+/// gate's entry point list read the other file as text, and three ordinary
+/// comments defeated it.
 fn claim(command: &str) -> Option<Claim> {
     // A command carrying a placeholder is a shape rather than a claim, and is
     // not one of them: `dependency_direction.rs` names one to say which
@@ -967,8 +968,8 @@ run `cargo xtask lint` here
     ///
     /// It is the number a person reads to decide the check examined anything,
     /// so counting every backticked span would have it say a thousand things
-    /// were read when a dozen were. That is RK-001 in the one place the whole
-    /// check reports about itself.
+    /// were read when a dozen were: a success reported about a set it never
+    /// examined, in the one place the whole check reports about itself.
     ///
     /// Mutation: count every span in `claims`, and this fails.
     #[test]
@@ -1116,7 +1117,7 @@ name = \"b2d_core\"
     ///
     /// A file that will not decode is already reported. The directory case was
     /// the quieter half of the same failure: a whole subtree leaving the
-    /// corpus while the run printed `problems: 0`, which is RK-001. A root
+    /// corpus while the run printed `problems: 0`. A root
     /// that is not there is the portable way to reach that arm.
     ///
     /// Mutation: return from `walk` without pushing, and this fails.
@@ -1212,8 +1213,8 @@ name = \"b2d_core\"
     /// A file that is there and will not decode is reported.
     ///
     /// It is in `present`, so a claim about it resolves, while nothing inside
-    /// it is ever read. That is a file leaving the corpus quietly, which is
-    /// RK-001 and the reason `read_problems` exists.
+    /// it is ever read. That is a file leaving the corpus quietly, which is the
+    /// reason `read_problems` exists.
     ///
     /// Mutation: drop the push from the `Err` arm of the file read in `walk`,
     /// and this fails.
@@ -1274,8 +1275,8 @@ name = \"b2d_core\"
     ///
     /// A comment showing what the alias looks like is not the alias, and a
     /// needle that matched it anywhere would report the alias present in a
-    /// file that no longer defines it. RK-001's newest clause is that failure
-    /// in Rust source.
+    /// file that no longer defines it. A guard elsewhere in this crate failed
+    /// exactly that way on Rust source.
     ///
     /// Mutation: drop the anchor in `defines_the_xtask_alias`, and this fails.
     #[test]
@@ -1324,8 +1325,8 @@ name = \"b2d_core\"
     ///
     /// Read from the real tree, and asserted against names taken from
     /// somewhere other than the corpus itself: the two `xtask` sources, the
-    /// alias file the gate depends on, and a document. RK-001 is a check that
-    /// reports success about a set it never examined.
+    /// alias file the gate depends on, and a document, so that this cannot
+    /// report success about a set it never examined.
     ///
     /// Mutation: drop `"rs"` from `READ`, or stop skipping what `.gitignore`
     /// excludes, and this fails.

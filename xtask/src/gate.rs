@@ -129,9 +129,8 @@ fn fmt_command() -> Command {
 /// `crates/editor/tests/dependency_direction.rs`, written out rather than read
 /// from it, and held equal to it by
 /// `the_gates_entry_point_list_agrees_with_the_dependency_graphs`. Two independently
-/// written lists compared against each other is the shape RK-001 asks for: a
-/// list read out of the file it is checking agrees with that file however wrong
-/// both are.
+/// written lists compared against each other, because a list read out of the
+/// file it is checking agrees with that file however wrong both are.
 pub(crate) const GAME_ENTRY_POINTS: &[&str] = &["b2d_runtime"];
 
 /// The `game` row's command, for one entry point.
@@ -206,8 +205,8 @@ fn game_row_name(pkg: &str) -> String {
 /// arms are then claims a test can make without spawning a cargo process per
 /// assertion, and the empty-list arm has no cheap mutation from outside.
 ///
-/// **A row that examined no entry points is a failure**, the RK-001 shape: a
-/// list that quietly emptied would print nothing and pass.
+/// **A row that examined no entry points is a failure**: a list that quietly
+/// emptied would print nothing and pass.
 ///
 /// `&` rather than `&&`, so a second entry point still runs after the first has
 /// failed. That is the rule `verdict` here and `all` in `main.rs` already keep:
@@ -399,9 +398,10 @@ mod tests {
 
     /// A `game` row with no entry points fails rather than passing quietly.
     ///
-    /// RK-001, in the shape this row can take it: a list that emptied would
-    /// spawn nothing, print nothing, and leave the gate green about the
-    /// configuration a user's game compiles.
+    /// A check reporting success about a set it never examined, in the shape
+    /// this row can take: a list that emptied would spawn nothing, print
+    /// nothing, and leave the gate green about the configuration a user's game
+    /// compiles.
     ///
     /// Mutation: drop the `is_empty` arm from `game_rows`, and this fails.
     /// Nothing else does.
@@ -451,9 +451,8 @@ mod tests {
     ///
     /// Two independently written lists, compared against each other. Reading
     /// `GAME_ENTRY_POINTS` out of `dependency_direction.rs` and using it as the
-    /// row's own list would agree with that file however wrong it was, which is
-    /// the second half of RK-001; so the list here is written out and this
-    /// holds the two equal.
+    /// row's own list would agree with that file however wrong it was; so the
+    /// list here is written out and this holds the two equal.
     ///
     /// The non-empty assertion is not decoration: a pattern that stopped
     /// matching would compare an empty set against an empty set and pass.
@@ -472,8 +471,9 @@ mod tests {
     /// quoting a crate name would otherwise be read as an entry, which the same
     /// stripping handles.
     ///
-    /// That is RK-001 arriving inside the guard written to apply RK-001: the
-    /// set being compared was not the set anybody meant.
+    /// So the guard written against a check examining the wrong set examined
+    /// the wrong set itself: the one being compared was not the one anybody
+    /// meant.
     ///
     /// Mutation: add a name to `GAME_ENTRY_POINTS` on either side and not the
     /// other, empty either one, drop the leading newline from `DECLARATION`, or
@@ -596,8 +596,9 @@ const GAME_ENTRY_POINTS";
     /// `game_command` can ignore its argument and hardcode `b2d_runtime`
     /// without the assertion above noticing: it passes that same name in. The
     /// day `runtime_myphysics` arrives, the row would compile one crate twice
-    /// and print `ok` about the other, which is RK-001 in this row's shape and
-    /// the reason acceptance criterion 3 of #15 exists.
+    /// and print `ok` about the other, a success reported about a crate it
+    /// never examined, which is the reason acceptance criterion 3 of #15
+    /// exists.
     ///
     /// Mutation: ignore `pkg` in `game_command` and name a crate in its place,
     /// and this fails. Nothing else does.

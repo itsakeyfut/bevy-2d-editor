@@ -622,8 +622,8 @@ mod tests {
     /// A turned and scaled entity moves by what the pointer moved, in the
     /// world, and not along its own axes.
     ///
-    /// RK-006: every placeholder is unturned and unscaled, so this spawns the
-    /// awkward one.
+    /// Every placeholder is unturned and unscaled, which leaves transform
+    /// maths unguarded, so this spawns the awkward one.
     ///
     /// Mutation: put the delta through the entity's rotation and scale, and
     /// this fails.
@@ -652,8 +652,9 @@ mod tests {
     /// Dragging one of several selected moves all of them, and the release
     /// does not collapse the selection to the one under the pointer.
     ///
-    /// RK-007 and RK-008: two entities, and a release that ends over the one
-    /// pressed, where the click that accompanies it would act.
+    /// Two entities, because one guards no plural, and a release that ends
+    /// over the one pressed, where the click that accompanies the drag end
+    /// would act.
     ///
     /// Mutation: move only the entity pressed, and this fails. Mutation: drop
     /// the `pressed.moving` check in `selection::select`, and this fails with
@@ -1121,7 +1122,9 @@ mod tests {
     /// The sprite is anchored at its bottom-left corner, so its origin is not
     /// the middle of its frame and a pivot at the frame's centre gives a
     /// different angle. Its `x` is `-0.0`, which turning the position about
-    /// the origin would make `+0.0`. The drag is several moves (RK-007).
+    /// the origin would make `+0.0`. The drag is several moves, because one
+    /// move cannot tell a drag that begins once from one that begins on every
+    /// move.
     ///
     /// Mutation: `Quat::from_rotation_x` in `moving::turn`, and this fails.
     /// Mutation: always the frame's centre in `moving::pivot`, and this fails.
@@ -1189,8 +1192,8 @@ mod tests {
     ///
     /// The middle and left placeholders span `-232` to `32` across, so the
     /// frame's centre is at `-100`; a quarter turn carries the middle one a
-    /// hundred above it and the left one a hundred below. RK-007: two
-    /// entities, and a drag of several moves.
+    /// hundred above it and the left one a hundred below. Two entities, and a
+    /// drag of several moves, because one of either guards no plural.
     ///
     /// Mutation: always the first entity's origin in `moving::pivot`, and this
     /// fails. Mutation: leave the positions alone whatever `together` says in
@@ -1267,7 +1270,8 @@ mod tests {
     /// Turning several keeps each one's depth and composes the turn onto the
     /// rotation each already had, a tilt included.
     ///
-    /// RK-006: every placeholder sits at `z == 0` unturned, so this spawns two
+    /// Every placeholder sits at `z == 0` unturned, which leaves this path
+    /// unexercised, so this spawns two
     /// at different depths, already turned, one of them tilted about X, which
     /// the inspector's raw numbers can leave behind. The angle turned is read
     /// back from the one with no tilt, since the pointer's path is not round

@@ -223,7 +223,7 @@ impl PartialEq for Leaf {
     /// different type, which [`Row`] already compares. It is written out
     /// rather than dropped because a `PartialEq` that ignores half of what it
     /// is defined over is a trap for whoever adds the next field, and saying
-    /// so beats letting a green suite imply a guard, which is RK-005.
+    /// so beats letting a green suite imply a guard.
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name && self.value.to_bits() == other.value.to_bits()
     }
@@ -437,7 +437,7 @@ fn show(
         // of one costs nothing, and because the entity that reaches here first
         // will be one some later gesture put in the selection without that
         // observer's knowledge. Saying so beats letting a green suite imply a
-        // guard, which is RK-005's rule.
+        // guard.
         let mut rows: Vec<Row> = world
             .inspect_entity(*entity)
             .ok()?
@@ -844,8 +844,9 @@ pub(crate) fn take_back_typing(world: &mut World) -> bool {
 ///
 /// Mutation: give the focused box the value without replacing its text first,
 /// and `an_undo_to_a_value_the_box_cannot_hold_is_not_written_over` fails. The
-/// edit the widget would then queue a frame late is the window RK-014 names,
-/// and no other test reaches into it:
+/// edit the widget would then queue a frame late falls in the frame a gesture
+/// happens in, which setting the state directly skips, and no other test
+/// reaches into it:
 /// `ctrl_z_in_a_box_with_nothing_typed_takes_back_the_last_commit` and
 /// `enter_right_after_ctrl_z_commits_what_the_box_shows` both stay green under
 /// that mutation, measured, because the edit lands before they read.
@@ -885,7 +886,7 @@ fn show_in_box(world: &mut World, focused: Option<Entity>, cell: Entity, target:
     // box was spawned with, a click into it and a focus loss wrote that old
     // value back over a commit, a scrub or an undo, found by review. With the
     // text already equal, the edit the widget would queue is not queued, so
-    // RK-014's frame-late window stays shut.
+    // nothing can land a frame late.
     if let Some(inner) = typing_in_it {
         put_in_box(world, inner, value);
     }
@@ -1455,7 +1456,7 @@ mod tests {
     /// Select the middle placeholder and then the left one, and say which they
     /// are, in the order they were chosen.
     ///
-    /// Two rather than one, per RK-007: with one entity selected, `.last()` and
+    /// Two rather than one: with one entity selected, `.last()` and
     /// `.first()` are the same program.
     fn select_the_middle_then_the_left(app: &mut App) -> [Entity; 2] {
         click_at(app, in_window(Vec2::ZERO), PointerButton::Primary);
@@ -1475,8 +1476,7 @@ mod tests {
     ///
     /// The first test in the workspace of the ordering `Selection` documents.
     /// Two entities are selected because one guards nothing here: with a single
-    /// element, taking the last and taking the first are the same program,
-    /// which is RK-007.
+    /// element, taking the last and taking the first are the same program.
     ///
     /// Mutation: replace `.last()` with `.first()` in `show`, and this fails
     /// naming the middle placeholder.
@@ -1558,8 +1558,8 @@ mod tests {
     /// The inspector lists the components the entity has.
     ///
     /// Asserted against names written out here rather than against the list the
-    /// code produced, which is RK-001: a test that reads its expectation from
-    /// the thing under test agrees with it whatever it means. The count is
+    /// code produced: a test that reads its expectation from the thing under
+    /// test agrees with it whatever it means. The count is
     /// asserted as non-empty for the same reason.
     ///
     /// Mutation: drop either `Sprite` or `Transform` from what `show` collects,
@@ -1699,9 +1699,9 @@ mod tests {
     /// The header uses the entity's name when it has one.
     ///
     /// The other side of `Entity 356v0`. Nothing in the world carries a `Name`
-    /// yet, so without this the `Name` branch is written and unguarded, which
-    /// is the shape RK-006 describes: a fixture that cannot reach a path makes
-    /// the tests around it read as coverage.
+    /// yet, so without this the `Name` branch is written and unguarded, and a
+    /// fixture that cannot reach a path makes the tests around it read as
+    /// coverage.
     ///
     /// Mutation: drop the `found.get::<Name>()` in `show` and always format the
     /// entity, and this fails.
@@ -1818,8 +1818,8 @@ mod tests {
     /// A field row reads the entity's own value, not the type's default.
     ///
     /// The translation is written out here rather than read back from the
-    /// component, which is RK-001: a test that takes its expectation from the
-    /// thing under test agrees with it whatever it means. It is also not a
+    /// component: a test that takes its expectation from the thing under test
+    /// agrees with it whatever it means. It is also not a
     /// value any placeholder starts with, so a row showing `Transform`'s
     /// default cannot pass.
     ///
@@ -1881,9 +1881,10 @@ mod tests {
     /// the selection last changed.
     ///
     /// Mutation: leave `fields` out of what `Shape` compares, and this fails
-    /// with the first value still on screen. That is RK-009's rule applied to
-    /// this change: the compared value has to carry everything the panel is a
-    /// claim about, and the values are new in it.
+    /// with the first value still on screen. A fixture where everything
+    /// differs cannot catch a comparison that is too coarse, so the compared
+    /// value has to carry everything the panel is a claim about, and the
+    /// values are new in it.
     #[test]
     fn a_field_row_follows_the_component_it_reads() {
         let mut app = inspector_editor();
@@ -1975,7 +1976,7 @@ mod tests {
     /// reflection from it: `World::get_reflect_mut` needs `&mut World` and does
     /// not compile here, which is row 1 of `CLAUDE.md`'s list rather than row 2.
     /// What this holds is the rest of the path, the commands included, and it
-    /// holds it over two entities because one guards no plural (RK-007).
+    /// holds it over two entities because one guards no plural.
     ///
     /// Mutation: insert a changed `Transform` from `show`, and this fails.
     #[test]
@@ -2182,8 +2183,8 @@ mod tests {
         // padding alone does not say that: a node wrapping the row carries the
         // same padding and the same words underneath it, so the assertion
         // above holds under either shape. Measured, on a version of this test
-        // that stopped there: the wrapper form left all 93 green. That is
-        // RK-012.
+        // that stopped there: the wrapper form left all 93 green, because a
+        // flattened read cannot see the tree.
         assert_eq!(
             directly_under(app.world(), text),
             vec!["\"the middle one\"".to_owned()],
@@ -2206,7 +2207,7 @@ mod tests {
     ///
     /// Direct rather than every descendant, which is the whole point: a
     /// flattened read is satisfied by a wrapper and guards nothing about the
-    /// tree. RK-012.
+    /// tree.
     fn directly_under(world: &World, entity: Entity) -> Vec<String> {
         world
             .entity(entity)
@@ -2547,7 +2548,7 @@ mod tests {
     ///
     /// Read off the `FeathersNumberInput` entity itself, because that is the
     /// entity `ValueChange::source` names: on the line, or on a node wrapping
-    /// the box, the observer would find nothing. RK-012.
+    /// the box, the observer would find nothing.
     ///
     /// Mutation: insert `Writes` on the line rather than on the box, and this
     /// fails.
@@ -2656,7 +2657,7 @@ mod tests {
     /// started emitting a parsed-as-far-as-possible value, or a zero, would
     /// put that value into somebody's component, which is row 6, and this is
     /// what would say so. Written down rather than left to a green suite to
-    /// imply a guard, per RK-005.
+    /// imply a guard.
     #[test]
     fn an_unparseable_value_is_never_written() {
         let mut app = inspector_editor();
@@ -2688,7 +2689,7 @@ mod tests {
 
     /// An edit touches one field of one entity.
     ///
-    /// Two entities are selected, per RK-007: with one, "the active entity"
+    /// Two entities are selected: with one, "the active entity"
     /// and "every selected entity" are the same program. The whole world's
     /// transforms are compared, so an edit that reached anything else shows
     /// up wherever it landed.
@@ -2969,8 +2970,9 @@ mod tests {
 
     /// Press a letter with modifiers held, and let everything go.
     ///
-    /// Two updates after, per RK-013: the undo lands in the first, and the
-    /// panel's rebuild after it settles in the second.
+    /// Two updates after, because a panel entity taken after one update is
+    /// dead by the next: the undo lands in the first, and the panel's rebuild
+    /// after it settles in the second.
     fn press_with(app: &mut App, modifiers: &[KeyCode], key: KeyCode, letter: &str) {
         for modifier in modifiers {
             hold_key(app, *modifier);
@@ -3036,7 +3038,8 @@ mod tests {
     /// entity back to the committed number, not to the one before it.
     /// `docs/specs/ui.md` §11.
     ///
-    /// The press and the first move are written in one batch, per RK-014: a
+    /// The press and the first move are written in one batch, because setting
+    /// the state a gesture would set skips the frame it happens in: a
     /// frame apart, the commit lands first whichever way `from` is read. That
     /// batch reads the press where the move ended, because `remember` reads
     /// the viewport's pointer after the whole batch, so the first move stays
@@ -3516,7 +3519,7 @@ mod tests {
     /// so `x`'s box shows the restored value only because it was sent it. Row 4
     /// if it did not, and only until the focus left, but
     /// `show_values_in_place` says it does this and a claim with no test is
-    /// what RK-005 is about.
+    /// a green suite implying a guard.
     ///
     /// Mutation: do nothing in the `None` arm of `show_values_in_place`, and
     /// this fails with `x`'s box still reading ten.
@@ -3556,8 +3559,8 @@ mod tests {
     /// in `PostUpdate`; the undo has to come after it.
     ///
     /// Written as one frame by hand rather than through `click_at`, which
-    /// runs updates between its actions, per RK-014: the defect this guards
-    /// lives inside a frame.
+    /// runs updates between its actions: the defect this guards lives inside a
+    /// frame.
     ///
     /// Mutation: add `take_back` to `Update` instead of after
     /// `FocusChangeEvents`, and this fails with ten still in place.
@@ -3864,7 +3867,7 @@ mod tests {
     /// first, five would be put back and seven committed over it, and the next
     /// Ctrl+Z would stop at five: an entry the user never made.
     ///
-    /// Written as one frame by hand, per RK-014.
+    /// Written as one frame by hand, because the defect lives inside a frame.
     ///
     /// Mutation: add `put_back` to `Update` instead of after
     /// `FocusChangeEvents`, and this fails with the undo stopping at five.
@@ -4212,7 +4215,8 @@ mod tests {
     /// commit it caused: the first Ctrl+Z puts the selection back, and the
     /// second takes the number back with that entity on the panel.
     ///
-    /// One frame by hand, per RK-014. Across two frames the press takes the
+    /// One frame by hand, because the defect lives inside a frame. Across two
+    /// frames the press takes the
     /// focus and the box commits in the first, before the click exists, so
     /// the order would be right however the click were recorded.
     ///
@@ -4433,8 +4437,8 @@ mod tests {
     /// `bevy_feathers` 0.20 turns a drag into a scrub of the value.
     ///
     /// Sent to the box's scrubber, for the reason [`scrubber_of`] gives.
-    /// Several steps rather than one (RK-007): one step is one value either
-    /// way. The press gives the box the focus, as it does in the window.
+    /// Several steps rather than one: one step is one value either way. The
+    /// press gives the box the focus, as it does in the window.
     fn scrub(app: &mut App, cell: Entity) {
         use bevy::picking::events::{
             PointerDrag, PointerDragEnd, PointerDragStart, PointerPress, PointerRelease,

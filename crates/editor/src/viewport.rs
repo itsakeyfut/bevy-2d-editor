@@ -184,7 +184,7 @@ fn visible(node: &ComputedNode, projection: &OrthographicProjection) -> Vec2 {
 /// of one: `Window::resolution.set_scale_factor_override` does not move
 /// `ComputedNode::inverse_scale_factor` without winit, measured. What it costs
 /// is panning at half speed on a display at 200%, which is invisible on a
-/// machine at 100%. RK-005 in the knowledge bank carries that.
+/// machine at 100%, and a headless test cannot catch it.
 fn world_per_pixel(node: &ComputedNode, projection: &OrthographicProjection) -> Vec2 {
     visible(node, projection) / (node.size() * node.inverse_scale_factor())
 }
@@ -532,8 +532,8 @@ mod tests {
     /// The second half is the claim, and it is asserted over a different set
     /// from the one `pan` writes to: every `GlobalTransform` in the world
     /// except the camera's, before and after. A test that read the camera back
-    /// after moving it would agree with itself, which is the shape RK-001 is
-    /// about and which this issue's body named in advance.
+    /// after moving it would agree with itself, which this issue's body named
+    /// in advance.
     ///
     /// Mutation: move the placeholder instead of the camera, and this fails.
     #[test]
@@ -809,8 +809,7 @@ mod tests {
     ///
     /// The count and the positions are written out here rather than read from
     /// `PLACEHOLDERS`, which is the table the spawning also reads: a test that
-    /// compares a table with itself passes whatever the table says, which is
-    /// RK-001.
+    /// compares a table with itself passes whatever the table says.
     ///
     /// Mutation: stop spawning one of them in `attach`, and this fails.
     #[test]

@@ -309,8 +309,8 @@ mod tests {
     /// were: everything in the world is an unrotated, unscaled, centre-anchored
     /// sprite, so removing the rotation, the scale or the `Aabb`'s own centre
     /// from `outline` left all eight of the tests around this green, measured.
-    /// This is the same shape as RK-005 in the knowledge bank, where a fixture
-    /// that cannot reach a path makes the tests around it look like cover.
+    /// A fixture that cannot reach a path makes the tests around it look like
+    /// cover.
     ///
     /// The expected rectangle is built by turning the sprite's four corners,
     /// which is not how `outline` builds it: it places one point and hands the

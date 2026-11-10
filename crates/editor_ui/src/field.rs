@@ -127,8 +127,9 @@ mod tests {
     /// The claim on [`NAME_WIDTH`] is that a panel mixing the two reads as one
     /// column, and that holds only while [`field_row`] is built on
     /// [`field_line`] rather than drawing a name column of its own. Read off
-    /// the name node itself rather than by flattening the tree, per RK-012:
-    /// a width on a wrapper would satisfy a flattened read either way.
+    /// the name node itself rather than by flattening the tree, because a
+    /// flattened read cannot see the tree: a width on a wrapper would satisfy
+    /// it either way.
     ///
     /// Mutation: give `field_row` its own `Node { width: ... }` for the name,
     /// at any other width, and this fails.

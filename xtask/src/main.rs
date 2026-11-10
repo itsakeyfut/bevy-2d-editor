@@ -210,8 +210,8 @@ mod tests {
 
     /// The workflow, parsed.
     ///
-    /// Through a parser rather than as text, because a text scrape is what
-    /// RK-001 records being defeated by comments three ways. A commented-out
+    /// Through a parser rather than as text, because a text scrape in this
+    /// crate has already been defeated by comments, three ways. A commented-out
     /// step or matrix entry is not in the tree this returns, which is the
     /// right answer: it does not run.
     fn workflow() -> Yaml {
@@ -324,8 +324,8 @@ mod tests {
     ///
     /// `all` runs this table, so a task that leaves it leaves every runner
     /// without saying so: the remaining tasks stay green and the run reports a
-    /// pass. That is the shape RK-001 is about, and this asserts the table is
-    /// the set that was meant.
+    /// pass: a check reporting success about a set it never examined. This
+    /// asserts the table is the set that was meant.
     ///
     /// Mutation: remove either row from `TASKS`, and this fails.
     #[test]
@@ -411,8 +411,8 @@ mod tests {
     ///
     /// The names are a list, and a list is not a platform until something runs
     /// on it, so `runs-on` is held to the matrix too: pinning it to one runner
-    /// leaves all three names in place and every leg on one machine, the way
-    /// RK-001 first arrived in this test.
+    /// leaves all three names in place and every leg on one machine, which is
+    /// how an earlier version of this test passed while checking nothing.
     ///
     /// Mutation: remove `windows-latest` from the matrix, pin `runs-on` to
     /// `ubuntu-latest`, name the job without `matrix.check`, or run
