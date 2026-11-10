@@ -81,8 +81,8 @@ struct ScaleHandle {
     /// edge, it is level with the handle along the edge, so that axis has
     /// nothing to scale by.
     pivot: Vec2,
-    /// On each axis, one logical pixel over the frame's size on screen, which
-    /// is the least a factor can be.
+    /// On each axis, one logical pixel over the frame's size on screen, and
+    /// never more than one, which is the least a factor can be.
     floor: Vec2,
 }
 
@@ -303,6 +303,14 @@ fn place(camera: &Camera, eye: &GlobalTransform, frame: Rect) -> Option<Placed> 
 /// one logical pixel over the frame's size there, for the reason
 /// [`place_handles`] measures the stalk on the viewport.
 ///
+/// **The floor is never more than one.** A frame already thinner than a
+/// pixel, a tile at the furthest zoom or a line, would otherwise have a floor
+/// above one, and a drag let go where it was pressed would grow it and record
+/// that: [`docs/specs/ui.md` §13](../../../docs/specs/ui.md). Capped, it stops
+/// a shrink and never causes a growth.
+///
+/// Mutation: drop the cap, and
+/// `a_frame_thinner_than_a_pixel_is_not_grown_by_the_floor` fails.
 /// Mutation: put an edge's pivot on a corner, `centre - half * side.signum()`,
 /// and
 /// `dragging_an_edge_scales_only_the_axis_across_it` fails. Mutation: put the
@@ -311,7 +319,7 @@ fn place(camera: &Camera, eye: &GlobalTransform, frame: Rect) -> Option<Placed> 
 fn framed(camera: &Camera, eye: &GlobalTransform, frame: Rect) -> Option<Framed> {
     let to_viewport = |at: Vec2| camera.world_to_viewport(eye, at.extend(0.0)).ok();
     let viewport = Rect::from_corners(to_viewport(frame.min)?, to_viewport(frame.max)?);
-    let floor = Vec2::ONE / viewport.size();
+    let floor = (Vec2::ONE / viewport.size()).min(Vec2::ONE);
     let (centre, half) = (frame.center(), frame.half_size());
     let handles = AROUND
         .iter()

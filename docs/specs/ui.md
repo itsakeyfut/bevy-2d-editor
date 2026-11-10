@@ -1467,7 +1467,7 @@ It goes through the drag of
 | What an edge scales | the one axis across it. Shift does nothing on an edge |
 | The pivot | **the side opposite the handle**: the opposite corner for a corner, the opposite edge for an edge. It stays where it is |
 | The factor | on each axis, the distance from the pivot to where the handle would be had it moved with the pointer, over the distance from the pivot to where it was at the press. With Shift, that point projected onto the line from the pivot through the handle |
-| Past the pivot | **the factor stops where the frame is 1 logical pixel across on that axis.** The sign never changes, so nothing is mirrored |
+| Past the pivot | **the factor stops where the frame is 1 logical pixel across on that axis**, or where it is, for a frame already thinner than that: the floor stops a shrink and never causes a growth. The sign never changes, so nothing is mirrored |
 | An axis the frame has no size on | not scaled |
 | What is written | each entity's `translation` in x and y, scaled about the pivot, and its `scale` in x and y. `z`, `rotation` and `scale.z` are left alone. An axis whose factor is exactly one writes nothing |
 | A turned entity | each of its local axes is scaled by the factor of the direction it points on screen: `sqrt((fx * ux)^2 + (fy * uy)^2)` for a local axis pointing along the unit `(ux, uy)`. With one factor on both axes, that factor |
@@ -1577,6 +1577,14 @@ Row 4.
 **The floor is one pixel at the zoom of the press.** Zoomed in afterwards,
 the thin entity is wider on screen. Nothing is lost, and its scale can be
 pulled back out. Row 4.
+
+**A frame thinner than a pixel cannot be shrunk with a handle**, only grown
+or left alone, until the view is zoomed in far enough to make it a pixel or
+more. The floor was first a pixel whatever the frame, and a review found
+that it then grew such a frame on a drag let go where it began, by as much
+as the frame was short of a pixel, and recorded it: a tile at the furthest
+zoom doubled in the world while staying under a pixel on screen. That was
+row 6; this is row 4.
 
 **Half of the guard on the written scale has no test.** The half that keeps
 a scale from going too small to read is held by a test of a scale of

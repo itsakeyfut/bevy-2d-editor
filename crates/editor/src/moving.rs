@@ -401,8 +401,7 @@ fn turn(pivot: Vec2, angle: f32, together: bool) -> impl Fn(&Transform) -> Trans
 /// both: `reached` projected onto the line from the pivot through the handle.
 /// **An axis on which the handle is level with the pivot is not scaled**,
 /// which is the axis along an edge and any axis the frame has no size on, and
-/// is the only divisor that could be zero; so is an axis with no size on
-/// screen.
+/// is the only divisor that could be zero.
 ///
 /// **The factor never goes below `floor`**, which is what keeps a drag across
 /// the pivot from writing a scale of zero or turning the sign over.
@@ -414,7 +413,7 @@ fn turn(pivot: Vec2, angle: f32, together: bool) -> impl Fn(&Transform) -> Trans
 fn factor(handle: Vec2, pivot: Vec2, floor: Vec2, reached: Vec2, uniform: bool) -> Vec2 {
     let from = handle - pivot;
     let to = reached - pivot;
-    let scales = |axis: usize| from[axis] != 0.0 && floor[axis].is_finite();
+    let scales = |axis: usize| from[axis] != 0.0;
     if uniform && scales(0) && scales(1) {
         return Vec2::splat((to.dot(from) / from.length_squared()).max(floor.max_element()));
     }
@@ -2006,5 +2005,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A frame already thinner than a pixel is not grown by the floor: its
+    /// top edge's handle dragged along it and back, to where it was pressed,
+    /// leaves every bit where it was.
+    ///
+    /// The sprite is 64 wide and half a unit high, which is half a pixel at
+    /// the default zoom, as a 16 unit tile is at the furthest one.
+    ///
+    /// Mutation: drop the cap of one on the floor in `handles::framed`, and
+    /// this fails reading a scale of two.
+    #[test]
+    fn a_frame_thinner_than_a_pixel_is_not_grown_by_the_floor() {
+        let mut app = moving_editor();
+        let thin = app
+            .world_mut()
+            .spawn((
+                Sprite::from_color(Color::WHITE, Vec2::new(64.0, 0.5)),
+                Transform::from_xyz(0.0, -150.0, 0.0),
+                Selectable,
+            ))
+            .id();
+        app.update();
+        let before = transform_bits(&app, thin);
+        press_then_release(
+            &mut app,
+            in_window(Vec2::new(-60.0, -170.0)),
+            in_window(Vec2::new(60.0, -130.0)),
+        );
+        assert_eq!(selected(&app), [thin]);
+
+        // The top edge's handle is at -149.75; pressed 2.75 above it.
+        let pressed = Vec2::new(0.0, -147.0);
+        let along = Vec2::new(20.0, -147.0);
+        let mut path = line(pressed, along, 3);
+        path.extend(line(along, pressed, 3));
+        drag_through(&mut app, &path);
+
+        assert_eq!(transform_bits(&app, thin), before);
     }
 }
