@@ -590,6 +590,12 @@ fn finish(
 /// that is compared after [`selectable_of`], so that something the gesture
 /// named and that stopped being selectable in the same frame does not leave an
 /// entry whose undo changes nothing.
+///
+/// Mutation: drop `.before(take_back)` in [`SelectionPlugin`], and
+/// `a_schedule_that_takes_back_before_the_selection_is_recorded_does_not_build`
+/// fails. Mutation: drop `.before(put_back)`, and
+/// `a_schedule_that_puts_back_before_the_selection_is_recorded_does_not_build`
+/// fails.
 pub(crate) fn record_choice(mut next: ResMut<Next>, mut commands: Commands) {
     let Some(to) = next.0.take() else {
         return;
@@ -841,14 +847,15 @@ fn forget_what_is_gone(remove: On<Remove<Selectable>>, mut selection: ResMut<Sel
 
 #[cfg(test)]
 mod tests {
-    use super::{BandGizmos, SELECTION_LAYER, Selectable, Selection};
+    use super::{BandGizmos, SELECTION_LAYER, Selectable, Selection, record_choice};
     use crate::drawn::covered_by;
+    use crate::history::{put_back, take_back};
     use crate::pointer::{
         click_at, hold_key, hold_letter, in_window, press_and_hold, press_then_release,
         release_key, release_letter, write_input,
     };
     use crate::viewport::PLACEHOLDERS;
-    use crate::{Region, editor, headless};
+    use crate::{EditorPlugins, MovePlugin, Region, editor, headless};
     use bevy::camera::visibility::RenderLayers;
     use bevy::gizmos::config::GizmoConfigStore;
     use bevy::picking::events::{PointerClick, PointerDragEnd};
@@ -2232,15 +2239,14 @@ mod tests {
     /// The press is a frame earlier, without the modifier, so that the click
     /// replaces rather than adds.
     ///
-    /// **This guards nothing about the order on Bevy 0.20.1.** Drop
-    /// `.before(take_back)` on `record_choice` and every test in the crate
-    /// still passes, measured twice: without the line the two systems are
-    /// unordered rather than reversed, and the order 0.20.1's schedule happens
-    /// to pick is the right one. On the engine this was written against, the
-    /// same mutation failed it with the left placeholder selected, because the
-    /// undo took back the click before it and this click was then recorded on
-    /// top. Issue #74 restores a guard. What the test asserts is still true,
-    /// so it stays.
+    /// **This is not what guards the order.** In the whole editor
+    /// `moving::follow` runs after `record_choice` and before the undo key, so
+    /// dropping `record_choice`'s own `.before(take_back)` changes nothing
+    /// here; dropping both leaves the two unordered, and 0.20.1's schedule
+    /// happens to pick the right order. What fails when `record_choice`'s line
+    /// goes is
+    /// `a_schedule_that_takes_back_before_the_selection_is_recorded_does_not_build`.
+    /// What this asserts is still true, so it stays.
     #[test]
     fn a_click_and_ctrl_z_in_one_frame_take_back_the_click() {
         let mut app = selection_editor();
@@ -2302,10 +2308,10 @@ mod tests {
     ///
     /// Mutation: leave out the `clear` in `History::record`, and this fails
     /// with the middle placeholder put back by the redo.
-    /// Mutation: drop `.before(put_back)` on `record_choice`, and this fails with
-    /// the middle placeholder selected. **Measured, and not promised**, for
-    /// the reason `a_click_and_ctrl_z_in_one_frame_take_back_the_click`
-    /// gives.
+    /// The order of the click and the key is not guarded here, for the reason
+    /// `a_click_and_ctrl_z_in_one_frame_take_back_the_click` gives:
+    /// `a_schedule_that_puts_back_before_the_selection_is_recorded_does_not_build`
+    /// is what fails when `record_choice`'s `.before(put_back)` goes.
     #[test]
     fn a_click_and_ctrl_y_in_one_frame_leave_nothing_to_redo() {
         let mut app = selection_editor();
@@ -2334,6 +2340,92 @@ mod tests {
 
         assert_eq!(after_the_frame, [placeholder(&mut app, 0)]);
         assert_eq!(selected(&app), []);
+    }
+
+    /// The editor without `MovePlugin`.
+    ///
+    /// `moving::follow` is ordered after `record_choice` and before both
+    /// keys, so in the whole editor it decides their order by itself and
+    /// `SelectionPlugin`'s own lines cannot be seen to matter. Without it,
+    /// they are the only thing that does.
+    fn editor_without_moving() -> App {
+        let mut app = App::new();
+        app.add_plugins(headless());
+        app.add_plugins(EditorPlugins.build().disable::<MovePlugin>());
+        app
+    }
+
+    /// Whether `PostUpdate` builds, without running anything in it.
+    ///
+    /// Built rather than run: an app without `MovePlugin` panics on the
+    /// missing `Stroke` once a system that reads it runs, which would fail a
+    /// test for a reason that is not the order.
+    fn post_update_builds(mut app: App) -> bool {
+        let mut schedule = app
+            .world_mut()
+            .resource_mut::<Schedules>()
+            .remove(PostUpdate)
+            .expect("the app has a PostUpdate schedule");
+        schedule.initialize(app.world_mut()).is_ok()
+    }
+
+    /// A system that does nothing, for a test to order against.
+    fn probe() {}
+
+    /// A schedule that takes back before the selection is recorded does not
+    /// build.
+    ///
+    /// The probe puts the undo key before `record_choice`, the order that
+    /// would take back the click before this one and then record this one on
+    /// top. With `record_choice`'s `.before(take_back)` that is a cycle, and
+    /// it is one whichever order the schedule would give an unordered pair.
+    /// The editor without the probe is built first, so that a build error
+    /// from anything else cannot pass this.
+    ///
+    /// Not matched on which `ScheduleBuildError` it is: measured on 0.20.1,
+    /// the same probe is a cycle in the whole editor and a cross dependency
+    /// without `MovePlugin`. That follows the graph's shape and is not the
+    /// claim.
+    ///
+    /// Mutation: drop `.before(take_back)` on `record_choice`, and this fails
+    /// with the schedule built.
+    #[test]
+    fn a_schedule_that_takes_back_before_the_selection_is_recorded_does_not_build() {
+        assert!(
+            post_update_builds(editor_without_moving()),
+            "the editor without the probe did not build"
+        );
+        let mut app = editor_without_moving();
+        app.add_systems(PostUpdate, probe.after(take_back).before(record_choice));
+
+        assert!(
+            !post_update_builds(app),
+            "the undo key was ordered before the selection was recorded"
+        );
+    }
+
+    /// A schedule that puts back before the selection is recorded does not
+    /// build.
+    ///
+    /// As the test for the undo key, with redo: run first, the redo would put
+    /// back an undone selection and the click would then be recorded on top
+    /// of it, leaving an entry the user never made.
+    ///
+    /// Mutation: drop `.before(put_back)` on `record_choice`, and this fails
+    /// with the schedule built.
+    #[test]
+    fn a_schedule_that_puts_back_before_the_selection_is_recorded_does_not_build() {
+        assert!(
+            post_update_builds(editor_without_moving()),
+            "the editor without the probe did not build"
+        );
+        let mut app = editor_without_moving();
+        app.add_systems(PostUpdate, probe.after(put_back).before(record_choice));
+
+        assert!(
+            !post_update_builds(app),
+            "the redo key was ordered before the selection was recorded"
+        );
     }
 
     /// Ctrl+Y, pressed and let go.

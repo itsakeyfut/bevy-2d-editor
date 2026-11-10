@@ -1190,10 +1190,12 @@ something deletes an entity.
 **Clicking around after an undo throws the redo away.** Row 4: nothing is
 written, and the user can see Ctrl+Y do nothing.
 
-**A click and Ctrl+Z in one frame depend on an ordering line.** `record_choice` is
-ordered before the undo key is read. Without that line the two are unordered
-rather than reversed, so the test that holds it catches the order the schedule
-happens to pick.
+**A click and Ctrl+Z or Ctrl+Y in one frame depend on ordering lines.**
+`record_choice` is ordered before both keys are read, and in the whole editor
+`moving::follow` orders the two again on its own, so dropping
+`record_choice`'s lines changes nothing a behavioural test can see. What holds
+them is a pair of tests in an editor without `MovePlugin` that order a key
+before `record_choice` and assert the schedule refuses to build.
 
 ---
 
