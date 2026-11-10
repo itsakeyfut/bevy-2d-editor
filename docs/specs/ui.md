@@ -503,9 +503,9 @@ they came from, and a component whose value cannot be read is exactly the one
 that gets the `<no reflection>` row.
 
 **Opening only named-field structs is not a special case**: measured on one
-clicked placeholder, 6 of its 13 readable components are named-field structs and
-7 are tuple structs or enums. The single line those seven get is the ordinary
-path, not the exception.
+clicked placeholder, 5 of its 14 readable components are named-field structs and
+9 are not. The single line those nine get is the ordinary path, not the
+exception.
 
 **A value is its `Debug` text because the alternative is a table of type
 names.** `Debug` through `PartialReflect` is defined for every shape reflection
@@ -545,9 +545,9 @@ derive.
 ### Rationale
 
 **Listing everything is the option whose failure the user can see.** Measured on
-one placeholder that has been clicked: 14 components, of which `Transform` and
+one placeholder that has been clicked: 16 components, of which `Transform` and
 `Sprite` are the two anybody came for and `TransformTreeChanged`,
-`ViewVisibility` and `SyncToRenderWorld` are among the twelve they did not. That is noisy, and
+`ViewVisibility` and `Mesh2d` are among the fourteen they did not. That is noisy, and
 noise is row 4 of `CLAUDE.md`'s failure list: wrong on screen, and visible.
 Hiding components is row 4 as an absence, which is the same row and cannot be
 seen at all. Between two failures on one row, the one the user can point at
@@ -572,9 +572,9 @@ reader and it moves when a plugin is added.
 
 ### Rejected options
 
-**Only the components the registry names.** Thirteen rows rather than fourteen.
-It differs from the chosen option by exactly the one row that says something is
-there and unnamed, so it buys tidiness by deleting the honest part.
+**Only the components the registry names.** Fourteen rows rather than sixteen.
+It differs from the chosen option by the two rows that say something is there
+and unnamed, so it buys tidiness by deleting the honest part.
 
 **A hand-written list of components to hide.** The Unity-shaped picture, three
 rows. It is a list nobody can check against anything, written before the schema
@@ -608,7 +608,7 @@ map or list to decide about. What editing a number wanted arrived; the general
 descent this paragraph rejected is still rejected.
 
 **Opening only named-field structs and saying `<shape not shown>` for the rest.**
-The least code. Measured, it would be 7 of the 13 readable rows on a
+The least code. Measured, it would be 9 of the 14 readable rows on a
 placeholder, `Visibility`, `Anchor` and `GlobalTransform` among them. It is the
 rejected "only the components the registry names" above in a new place: it buys
 tidiness by deleting the honest part, and its failure is an absence nobody can
@@ -640,14 +640,14 @@ unreadable without it, which is already visible in
 
 ### Accepted risk
 
-**The panel is noisy, and will stay noisy until phase 3.** Twelve of the
-fourteen rows on a placeholder are the engine's, one is the editor's own
+**The panel is noisy, and will stay noisy until phase 3.** Fourteen of the
+sixteen rows on a placeholder are the engine's, one is the editor's own
 `Selectable` and one is the `Sprite` the user put there. Nobody can edit any of them yet, so what
 it costs today is reading past them; what it would cost to fix today is a list
 of type names that phase 3 deletes.
 
-**Collapsing is not here.** Fourteen component names fit a 512-pixel pane; the
-22 value lines under them do not. **Measured before the pane was bounded**, in
+**Collapsing is not here.** Sixteen component names fit a 512-pixel pane; the
+25 value lines under them do not. **Measured before the pane was bounded**, in
 the default 1280 by 720 window: the row of panes grew to 882 pixels, the menu
 bar and the bottom panel were left one pixel each where §1 asks for 28 and 180,
 and the viewport moved out from under the pointer, which is row 4 and row 5 at
