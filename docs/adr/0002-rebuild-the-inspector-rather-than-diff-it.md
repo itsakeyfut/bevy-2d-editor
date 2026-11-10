@@ -151,7 +151,7 @@ a reader checking the claim against the engine, which is what happened.
   in the list.
 * Bad, because it adds state whose bug is a stale row: row 4, arriving quietly,
   in a panel whose whole job is to say what is true.
-* Bad, because it is more code than the thing it optimises is worth at fourteen
+* Bad, because it is more code than the thing it optimises is worth at sixteen
   rows.
 
 ### Rebuild every frame, no comparison
