@@ -1897,4 +1897,114 @@ mod tests {
         assert_near(scale_of(&app, middle), Vec3::new(1.0 / 64.0, 1.0, 1.0));
         assert_eq!(transform_bits(&app, thin), before);
     }
+
+    /// With Shift held, a corner dragged past the opposite one stops at one
+    /// pixel too, on both axes, and the sign never turns over.
+    ///
+    /// Mutation: drop the `max` with the floor in proportion in
+    /// `moving::factor`, and this fails reading a negative scale.
+    #[test]
+    fn shift_past_the_opposite_corner_stops_at_one_pixel() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        hold_key(&mut app, KeyCode::ShiftLeft);
+        drag_through(&mut app, &line(TOP_RIGHT, Vec2::new(-100.0, -100.0), 6));
+        release_key(&mut app, KeyCode::ShiftLeft);
+
+        assert_near(
+            scale_of(&app, middle),
+            Vec3::new(1.0 / 64.0, 1.0 / 64.0, 1.0),
+        );
+    }
+
+    /// The right Shift keeps proportion as the left one does.
+    ///
+    /// Mutation: read only `ShiftLeft` in `follow`, and this fails.
+    #[test]
+    fn the_right_shift_keeps_a_corner_drag_in_proportion() {
+        let mut app = moving_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        hold_key(&mut app, KeyCode::ShiftRight);
+        drag_through(&mut app, &line(TOP_RIGHT, Vec2::new(64.0, 40.0), 4));
+        release_key(&mut app, KeyCode::ShiftRight);
+
+        assert_near(scale_of(&app, middle), Vec3::new(1.3125, 1.3125, 1.0));
+    }
+
+    /// An entity whose rotation is all zeros scales as an unturned one does,
+    /// which is how the engine draws it.
+    ///
+    /// Mutation: drop the identity for a rotation of zeros in
+    /// `moving::local_factor`, and this fails: each local axis then points
+    /// nowhere and is left alone.
+    #[test]
+    fn a_rotation_of_zeros_scales_as_no_rotation() {
+        let mut app = moving_editor();
+        let entity = sprite(
+            &mut app,
+            Transform::from_xyz(0.0, -150.0, 0.0)
+                .with_rotation(Quat::from_xyzw(0.0, 0.0, 0.0, 0.0)),
+        );
+        click_at(
+            &mut app,
+            in_window(Vec2::new(0.0, -150.0)),
+            PointerButton::Primary,
+        );
+
+        // The right edge is at 32; pressed three pixels outside it.
+        drag_through(
+            &mut app,
+            &line(Vec2::new(35.0, -150.0), Vec2::new(67.0, -150.0), 4),
+        );
+
+        assert_near(scale_of(&app, entity), Vec3::new(1.5, 1.0, 1.0));
+    }
+
+    /// A local axis that points along the view axis is not scaled, and the
+    /// other one is.
+    ///
+    /// Read off `local_factor` itself rather than through a drag: an entity
+    /// tilted that far has a frame with no width, which cannot be clicked or
+    /// boxed. `(0, s, 0, s)` sends local `x` to exactly `(0, 0, -1)` in
+    /// glam's arithmetic, since `w * w - b . b` is `s * s - s * s`.
+    ///
+    /// Mutation: drop the return of one for an axis of no length in
+    /// `moving::local_factor`, and this fails reading `NaN`.
+    #[test]
+    fn an_axis_along_the_view_axis_is_not_scaled() {
+        let s = core::f32::consts::FRAC_1_SQRT_2;
+        let tilted = Quat::from_xyzw(0.0, s, 0.0, s);
+        assert_eq!((tilted * Vec3::X).truncate(), Vec2::ZERO, "the fixture");
+
+        let local = super::local_factor(tilted, Vec2::new(1.5, 2.0));
+
+        assert_eq!(local, Vec2::new(1.0, 2.0));
+    }
+
+    /// One factor on both axes is that factor, bit for bit, at any angle, so
+    /// a scale with Shift is exact however the entity is turned.
+    ///
+    /// Read off `local_factor` itself, because a drag's factor has gone
+    /// through the camera and the comparison would have to be near, which
+    /// cannot see a last bit.
+    ///
+    /// Mutation: drop the return for one factor in `moving::local_factor`,
+    /// and this fails at one of these angles.
+    #[test]
+    fn one_factor_on_both_axes_is_exact_at_any_angle() {
+        for degrees in [17.0_f32, 30.0, 41.0, 73.0, 133.0] {
+            for factor in [1.3_f32, 0.7, 2.9] {
+                let turned = Quat::from_rotation_z(degrees.to_radians());
+                assert_eq!(
+                    super::local_factor(turned, Vec2::splat(factor)),
+                    Vec2::splat(factor),
+                    "at {degrees} degrees, by {factor}"
+                );
+            }
+        }
+    }
 }

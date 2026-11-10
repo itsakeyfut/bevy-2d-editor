@@ -804,4 +804,67 @@ mod tests {
         assert_eq!(selected(&app), [middle]);
         assert_eq!(transform(&app, middle).scale, Vec3::ONE);
     }
+
+    /// Zoomed out, the floor is still one pixel on screen: the middle
+    /// placeholder is 32 pixels across at a camera scale of two, so its
+    /// right edge dragged past its left stops at a scale of `1 / 32`.
+    ///
+    /// Mutation: take the floor from the frame's size in world units in
+    /// `handles::framed`, and this fails reading `1 / 64`.
+    #[test]
+    fn the_floor_is_one_pixel_on_screen_at_every_zoom() {
+        let mut app = knob_editor();
+        let middle = entity_at(&mut app, MIDDLE);
+        zoom_to(&mut app, 2.0);
+        click_at(&mut app, in_window(MIDDLE), PointerButton::Primary);
+
+        // The world at half size, since `in_window` assumes a scale of one.
+        let path: Vec<Vec2> = (0_u8..=6)
+            .map(|step: u8| {
+                let world =
+                    Vec2::new(32.0, 0.0).lerp(Vec2::new(-100.0, 0.0), f32::from(step) / 6.0);
+                in_window(world / 2.0)
+            })
+            .collect();
+        drag_through(&mut app, &path);
+
+        assert_near(
+            transform(&app, middle).scale.truncate(),
+            Vec2::new(1.0 / 32.0, 1.0),
+        );
+    }
+
+    /// Where two handles are within reach, the nearer one takes the press.
+    ///
+    /// On an 8 pixel square, a press 3 pixels right of the right edge's
+    /// handle is 5 from the bottom right corner's, which comes first in
+    /// `AROUND`. Dragged up and to the right, the edge leaves `y` alone and
+    /// the corner would not.
+    ///
+    /// Mutation: take the first handle within reach rather than the nearest
+    /// in `Handles::scale_under`, and this fails.
+    #[test]
+    fn the_nearest_handle_within_reach_takes_the_press() {
+        let mut app = knob_editor();
+        let at = Vec2::new(0.0, -150.0);
+        let small = app
+            .world_mut()
+            .spawn((
+                Sprite::from_color(Color::WHITE, Vec2::splat(8.0)),
+                Transform::from_translation(at.extend(0.0)),
+                Selectable,
+            ))
+            .id();
+        app.update();
+        click_at(&mut app, in_window(at), PointerButton::Primary);
+
+        drag_through(
+            &mut app,
+            &line(Vec2::new(7.0, -150.0), Vec2::new(20.0, -140.0), 4),
+        );
+
+        let scale = transform(&app, small).scale;
+        assert_ne!(scale.x, 1.0, "nothing scaled");
+        assert_eq!(scale.y, 1.0);
+    }
 }
