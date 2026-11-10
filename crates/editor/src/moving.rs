@@ -2045,4 +2045,122 @@ mod tests {
 
         assert_eq!(transform_bits(&app, thin), before);
     }
+
+    /// A scale leaves each entity's depth where it was.
+    ///
+    /// Read while the scale stands, not after an undo, which writes the
+    /// whole transform back whatever the scale did to `z`.
+    ///
+    /// Mutation: scale `translation.z` by the factor in `moving::scale`, and
+    /// this fails.
+    #[test]
+    fn a_scale_keeps_each_depth() {
+        let mut app = moving_editor();
+        let at = Vec3::new(0.0, -150.0, 0.7);
+        let entity = sprite(&mut app, Transform::from_translation(at));
+        click_at(&mut app, in_window(at.truncate()), PointerButton::Primary);
+
+        // The right edge is at 32; pressed three pixels outside it.
+        drag_through(
+            &mut app,
+            &line(Vec2::new(35.0, -150.0), Vec2::new(67.0, -150.0), 4),
+        );
+
+        assert_near(scale_of(&app, entity), Vec3::new(1.5, 1.0, 1.0));
+        assert_eq!(translation(&app, entity).z.to_bits(), at.z.to_bits());
+    }
+
+    /// With Shift, past the opposite corner of a frame that is not square,
+    /// the one factor stops where the shorter side is a pixel, so that
+    /// neither side goes below one.
+    ///
+    /// The sprite is 64 by 32, so the floors are `1 / 64` and `1 / 32`.
+    ///
+    /// Mutation: take the smaller floor in proportion in `moving::factor`, and
+    /// this fails reading `1 / 64`.
+    #[test]
+    fn shift_past_the_opposite_corner_keeps_the_shorter_side_a_pixel() {
+        let mut app = moving_editor();
+        let at = Vec2::new(0.0, -150.0);
+        let entity = app
+            .world_mut()
+            .spawn((
+                Sprite::from_color(Color::WHITE, Vec2::new(64.0, 32.0)),
+                Transform::from_translation(at.extend(0.0)),
+                Selectable,
+            ))
+            .id();
+        app.update();
+        click_at(&mut app, in_window(at), PointerButton::Primary);
+
+        // The top right corner is at `(32, -134)`; pressed three pixels out.
+        hold_key(&mut app, KeyCode::ShiftLeft);
+        drag_through(
+            &mut app,
+            &line(Vec2::new(35.0, -131.0), Vec2::new(-100.0, -250.0), 6),
+        );
+        release_key(&mut app, KeyCode::ShiftLeft);
+
+        assert_near(
+            scale_of(&app, entity),
+            Vec3::new(1.0 / 32.0, 1.0 / 32.0, 1.0),
+        );
+    }
+
+    /// Between quarter turns, each local axis takes
+    /// `sqrt((fx * ux)^2 + (fy * uy)^2)` for where it points: at an eighth of
+    /// a turn, both point half along each screen axis, and a factor of two
+    /// across and one up gives each `sqrt(2.5)`.
+    ///
+    /// Read off `local_factor` itself, because no gesture can tell this
+    /// formula from another that is also exact at every quarter turn.
+    ///
+    /// Mutation: weight the factors by the absolute components rather than
+    /// their squares in `moving::local_factor`, and this fails reading `1.5`.
+    #[test]
+    fn between_quarter_turns_each_axis_takes_the_factor_of_where_it_points() {
+        let turned = Quat::from_rotation_z(FRAC_PI_4);
+
+        let local = super::local_factor(turned, Vec2::new(2.0, 1.0));
+
+        assert!(
+            local.abs_diff_eq(Vec2::splat(2.5_f32.sqrt()), 1e-5),
+            "{local}"
+        );
+    }
+
+    /// An axis whose factor is exactly one leaves that coordinate's bits as
+    /// they were, while the other axis scales.
+    ///
+    /// Read off `scale` itself, as `a_turn_by_nothing_changes_no_bit` reads
+    /// `turn`, so that the pivot can be one where `pivot + 1 * (at - pivot)`
+    /// does not come back to `at`; a drag only offers pivots on the frame.
+    /// Measured: of these pivots, only `y = 100.1` brings `-150.3` back as
+    /// `-150.29999`.
+    ///
+    /// Mutation: write `translation.y` whatever its factor in
+    /// `moving::scale`, and this fails. The same for `x`.
+    #[test]
+    fn an_axis_scaled_by_one_keeps_its_bits() {
+        let at = Transform::from_xyz(0.1, -150.3, 0.7);
+        for pivot in [
+            Vec2::new(60.5, -150.0),
+            Vec2::new(60.512_344, -150.01),
+            Vec2::new(33.3, 7.7),
+            Vec2::new(-200.7, 100.1),
+        ] {
+            let across = super::scale(pivot, Vec2::new(1.5, 1.0))(&at);
+            assert_eq!(
+                across.translation.y.to_bits(),
+                at.translation.y.to_bits(),
+                "y about {pivot}"
+            );
+            let up = super::scale(pivot, Vec2::new(1.0, 1.5))(&at);
+            assert_eq!(
+                up.translation.x.to_bits(),
+                at.translation.x.to_bits(),
+                "x about {pivot}"
+            );
+        }
+    }
 }
