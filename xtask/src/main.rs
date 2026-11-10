@@ -46,9 +46,9 @@ fn workspace_root() -> &'static Path {
 
 /// A failed check, said again in the syntax the Checks page reads.
 ///
-/// `cargo xtask all` is one step of one job, so without this the only way to
-/// find out which check failed is to open the log of the job that failed.
-/// One line per failed check puts the name on the summary page instead.
+/// The job is named for its check, so which check failed is already on the
+/// Checks page. What this adds is what it found, as one line on the run's
+/// summary, without the log being opened.
 ///
 /// Whether this is a runner is a parameter rather than a call to
 /// [`std::env::var_os`] inside, so that both answers have a test and neither
@@ -71,7 +71,7 @@ pub(crate) fn on_github() -> bool {
 }
 
 /// A task: the name it is typed as, and what running it reports.
-type Task = (&'static str, fn() -> bool);
+pub(crate) type Task = (&'static str, fn() -> bool);
 
 /// Every task `cargo xtask` runs, in the order `all` runs them.
 ///
@@ -89,6 +89,31 @@ pub(crate) const TASKS: [Task; 3] = [
     ("commands", commands::run),
 ];
 
+/// Every task `cargo xtask <name>` runs: the table above, then each row of
+/// the gate on its own.
+///
+/// A row is a task so that CI can run it as a job named for it. It is not in
+/// [`TASKS`] because `all` runs that table, and the gate already runs its rows.
+pub(crate) fn every_task() -> impl Iterator<Item = &'static Task> {
+    TASKS.iter().chain(gate::ROWS.iter())
+}
+
+/// Every check CI runs as a job of its own: the gate's rows, then every task
+/// besides the gate.
+///
+/// Derived rather than written out, so that a task added to [`TASKS`] or a row
+/// added to [`gate::ROWS`] is a check the workflow is then required to run.
+/// Only the tests need it, because CI reads its own copy of the list and
+/// `the_workflow_runs_every_check_xtask_lists` holds the two equal.
+#[cfg(test)]
+pub(crate) fn checks() -> Vec<&'static str> {
+    gate::ROWS
+        .iter()
+        .chain(TASKS.iter().filter(|(task, _)| *task != "gate"))
+        .map(|(task, _)| *task)
+        .collect()
+}
+
 fn main() -> ExitCode {
     ExitCode::from(dispatch(std::env::args().nth(1).as_deref()))
 }
@@ -102,7 +127,7 @@ fn main() -> ExitCode {
 fn dispatch(task: Option<&str>) -> u8 {
     let passed = match task {
         Some("all") => all(&TASKS),
-        Some(name) => match TASKS.iter().find(|(task, _)| *task == name) {
+        Some(name) => match every_task().find(|(task, _)| *task == name) {
             Some((_, run)) => run(),
             None => {
                 eprintln!("xtask: `{name}` is not a task");
@@ -116,10 +141,10 @@ fn dispatch(task: Option<&str>) -> u8 {
 
 /// Say what the tasks are, and report that none of them ran.
 ///
-/// Built from [`TASKS`] rather than written out, so a task added to the table
-/// is a task the usage line already knows about.
+/// Built from [`every_task`] rather than written out, so a task added to the
+/// table is a task the usage line already knows about.
 fn usage() -> u8 {
-    let tasks: Vec<&str> = TASKS.iter().map(|(task, _)| *task).collect();
+    let tasks: Vec<&str> = every_task().map(|(task, _)| *task).collect();
     eprintln!("usage: cargo xtask <all|{}>", tasks.join("|"));
     2
 }
@@ -133,8 +158,8 @@ fn usage() -> u8 {
 /// fold is `&` rather than `&&`: the right-hand side of `&&` would not be
 /// evaluated once something had failed.
 ///
-/// This is what the workflow names, so that the list of tasks is written down
-/// once. Taking the table as an argument is what makes it testable: `dispatch`
+/// This is what somebody at a terminal runs to see everything CI would. Taking
+/// the table as an argument is what makes it testable: `dispatch`
 /// cannot be called with `all` from a test, because `gate` runs `cargo test`,
 /// which runs the test.
 ///
@@ -164,14 +189,37 @@ mod tests {
         TASKS, all, annotation, commands, dispatch, docs, exit_code, gate, workspace_root,
     };
     use regex::Regex;
+    use yaml_rust2::{Yaml, YamlLoader};
 
-    /// The workflow, read once for the tests that assert what it runs.
-    fn workflow() -> String {
+    /// The workflow, parsed.
+    ///
+    /// Through a parser rather than as text, because a text scrape is what
+    /// RK-001 records being defeated by comments three ways. A commented-out
+    /// step or matrix entry is not in the tree this returns, which is the
+    /// right answer: it does not run.
+    fn workflow() -> Yaml {
         let path = workspace_root()
             .join(".github")
             .join("workflows")
             .join("ci.yml");
-        std::fs::read_to_string(&path).expect("the workflow is in the repository")
+        let text = std::fs::read_to_string(&path).expect("the workflow is in the repository");
+        YamlLoader::load_from_str(&text)
+            .expect("the workflow is YAML")
+            .into_iter()
+            .next()
+            .expect("the workflow is one document")
+    }
+
+    /// A YAML list of strings, as strings.
+    fn strings(list: &Yaml) -> Vec<&str> {
+        list.as_vec()
+            .map(|items| items.iter().filter_map(Yaml::as_str).collect())
+            .unwrap_or_default()
+    }
+
+    /// The position of the first step of `job` that `matches`.
+    fn step(job: &Yaml, matches: impl Fn(&Yaml) -> bool) -> Option<usize> {
+        job["steps"].as_vec()?.iter().position(matches)
     }
 
     /// Whether the second task of `a_failed_task_does_not_silence_the_next_one`
@@ -283,51 +331,85 @@ mod tests {
         );
     }
 
-    /// The workflow runs the one command, on the three platforms the
-    /// specification names.
+    /// The workflow runs every check xtask lists, and nothing else.
     ///
-    /// `docs/specs/dev-environment.md` §3 decided both, and nothing else here
-    /// can tell when a platform quietly leaves the matrix: the remaining legs
-    /// stay green and the run still reports a pass. The development platform is
-    /// the one that matters, which is why the rows are named rather than
-    /// counted.
+    /// The workflow's matrix is a second copy of the list of checks, which is
+    /// what `docs/specs/dev-environment.md` §3 once rejected a job per check
+    /// for. This is what makes the copy safe: the two are read independently,
+    /// xtask's from [`crate::checks`] and the workflow's through a parser, and
+    /// held equal in both directions.
     ///
-    /// Mutation: remove `windows-latest` from the matrix, change the step to
-    /// `cargo xtask gate`, or pin `runs-on` to one platform, and this fails
-    /// naming what went missing.
+    /// Mutation: delete `clippy` from the matrix, and this fails naming it.
+    /// Add a task to `TASKS` or a row to `ROWS` without a job, and this fails
+    /// naming it. Commenting a matrix entry out is a deletion, not a disguise.
     #[test]
-    fn the_workflow_runs_every_task_on_every_platform() {
+    fn the_workflow_runs_every_check_xtask_lists() {
         let workflow = workflow();
-        assert!(
-            workflow.contains("cargo xtask all"),
-            "the workflow does not run every task"
-        );
-        for os in ["ubuntu-latest", "macos-latest", "windows-latest"] {
-            assert!(workflow.contains(os), "the matrix does not name {os}");
+        let listed = strings(&workflow["jobs"]["check"]["strategy"]["matrix"]["check"]);
+        let checks = crate::checks();
+        for check in &checks {
+            assert!(
+                listed.contains(check),
+                "xtask lists `{check}` and the workflow runs no job for it"
+            );
         }
-        // The names above are the matrix list, and a list is not a platform
-        // until something runs on it. Pinning `runs-on` to one runner leaves
-        // all three names in the file and every leg on the same machine, which
-        // is the one failure this whole workflow exists to prevent.
-        assert!(
-            workflow.contains("runs-on: ${{ matrix.os }}"),
-            "the legs are not wired to the matrix, so they all run on one platform"
+        for check in &listed {
+            assert!(
+                checks.contains(check),
+                "the workflow runs `{check}` and xtask does not list it, so `cargo xtask all` skips it"
+            );
+        }
+        assert_eq!(
+            listed.len(),
+            checks.len(),
+            "a check is listed twice: {listed:?}"
         );
     }
 
-    /// The step a workflow runs, as a line rather than as a substring.
+    /// The workflow runs every check on the three platforms the specification
+    /// names, each as a job named for both.
     ///
-    /// A commented-out step still contains every substring the live one did,
-    /// and disabling a step is the ordinary way somebody turns it off while
-    /// debugging. Matching the list item is what tells the two apart: a
-    /// comment trims to `# - uses:` and fails the prefix.
+    /// `docs/specs/dev-environment.md` §3 decided the platforms, and nothing
+    /// else here can tell when one quietly leaves the matrix: the remaining
+    /// legs stay green. The development platform is the one that matters,
+    /// which is why the rows are named rather than counted.
     ///
-    /// Mutation: use `contains` on the action instead, and
-    /// `a_commented_out_step_is_not_a_step` fails.
-    fn step_using(workflow: &str, action: &str) -> Option<usize> {
-        workflow
-            .lines()
-            .position(|line| line.trim_start().starts_with(&format!("- uses: {action}")))
+    /// The names are a list, and a list is not a platform until something runs
+    /// on it, so `runs-on` is held to the matrix too: pinning it to one runner
+    /// leaves all three names in place and every leg on one machine, the way
+    /// RK-001 first arrived in this test.
+    ///
+    /// Mutation: remove `windows-latest` from the matrix, pin `runs-on` to
+    /// `ubuntu-latest`, name the job without `matrix.check`, or run
+    /// `cargo xtask all` in place of the matrix's check, and this fails naming
+    /// what went missing.
+    #[test]
+    fn the_workflow_runs_every_check_on_every_platform() {
+        let workflow = workflow();
+        let job = &workflow["jobs"]["check"];
+        assert_eq!(
+            strings(&job["strategy"]["matrix"]["os"]),
+            ["ubuntu-latest", "macos-latest", "windows-latest"],
+            "the matrix's platforms"
+        );
+        assert_eq!(
+            job["runs-on"].as_str(),
+            Some("${{ matrix.os }}"),
+            "the legs are not wired to the matrix, so they all run on one platform"
+        );
+        let name = job["name"].as_str().unwrap_or_default();
+        for part in ["${{ matrix.check }}", "${{ matrix.os }}"] {
+            assert!(
+                name.contains(part),
+                "the job is named `{name}`, so the Checks page does not say {part}"
+            );
+        }
+        assert!(
+            step(job, |step| step["run"].as_str()
+                == Some("cargo xtask ${{ matrix.check }}"))
+            .is_some(),
+            "no step runs the check its job is named for"
+        );
     }
 
     /// The workflow caches what an engine costs to build.
@@ -348,28 +430,12 @@ mod tests {
     fn the_workflow_caches_what_an_engine_costs_to_build() {
         let workflow = workflow();
         assert!(
-            step_using(&workflow, "Swatinem/rust-cache@v2.9.2").is_some(),
+            step(&workflow["jobs"]["check"], |step| {
+                step["uses"].as_str() == Some("Swatinem/rust-cache@v2.9.2")
+            })
+            .is_some(),
             "the workflow does not cache the build, or does not pin the action"
         );
-    }
-
-    /// A commented-out step is not a step.
-    ///
-    /// The cheapest way to disable a workflow step is to comment it out, and
-    /// it leaves every substring a `contains` check was looking for. This is
-    /// the guard on the matcher itself rather than on the workflow.
-    ///
-    /// Mutation: match with `contains` in `step_using`, and this fails.
-    #[test]
-    fn a_commented_out_step_is_not_a_step() {
-        let live = "    steps:
-      - uses: some/action@v1
-";
-        let disabled = "    steps:
-      # - uses: some/action@v1
-";
-        assert_eq!(step_using(live, "some/action@v1"), Some(1));
-        assert_eq!(step_using(disabled, "some/action@v1"), None);
     }
 
     /// The engine features a file asks for, as that file writes them.
@@ -540,15 +606,24 @@ mod tests {
     /// `needs.<job>.result` has four values, so a condition that enumerates
     /// the ones somebody thought of is a condition that lets the rest through.
     /// A skipped leg passing here is a required check going green over a
-    /// commit nothing built.
+    /// commit nothing built. The matrix job's result is one result over every
+    /// leg, so naming that job is naming all of them.
     ///
-    /// Mutation: enumerate the failing results instead, or drop the condition,
-    /// and this fails.
+    /// Mutation: enumerate the failing results instead, drop the condition,
+    /// or drop `check` from `needs`, and this fails.
     #[test]
     fn a_leg_that_did_not_succeed_fails_the_required_check() {
         let workflow = workflow();
+        let required = &workflow["jobs"]["ci"];
         assert!(
-            workflow.contains("if: needs.gate.result != 'success'"),
+            strings(&required["needs"]).contains(&"check"),
+            "the required check does not wait for the checks"
+        );
+        assert!(
+            step(required, |step| {
+                step["if"].as_str() == Some("needs.check.result != 'success'")
+            })
+            .is_some(),
             "the required check does not insist that every leg succeeded"
         );
     }
@@ -561,19 +636,22 @@ mod tests {
     /// the cache quietly stops matching, which is the whole of what the step
     /// was added for.
     ///
-    /// Both positions are line numbers of live steps, so the prose above
-    /// either of them cannot be mistaken for the step itself.
+    /// Both positions are indices into the parsed list of steps, so the prose
+    /// above either of them cannot be mistaken for the step itself.
     ///
     /// Mutation: move the cache step above the toolchain step, and this fails.
     #[test]
     fn the_cache_runs_after_the_toolchain_it_is_keyed_on() {
         let workflow = workflow();
-        let toolchain = workflow
-            .lines()
-            .position(|line| line.trim_start() == "run: rustup show")
+        let job = &workflow["jobs"]["check"];
+        let toolchain = step(job, |step| step["run"].as_str() == Some("rustup show"))
             .expect("the workflow installs the toolchain it pins");
-        let cache =
-            step_using(&workflow, "Swatinem/rust-cache@").expect("the workflow caches the build");
+        let cache = step(job, |step| {
+            step["uses"]
+                .as_str()
+                .is_some_and(|uses| uses.starts_with("Swatinem/rust-cache@"))
+        })
+        .expect("the workflow caches the build");
         assert!(
             cache > toolchain,
             "the cache step runs before the toolchain is installed, so its key is the runner's"

@@ -3,9 +3,17 @@
 //! **Every row runs.** The rows are collected into an array before a verdict is
 //! taken, so one invocation reports everything that is wrong rather than the
 //! first thing. The order therefore decides only what a reader sees first, not
-//! how long a failing run takes: the five cargo rows come in rising cost, and
-//! `no-unsafe`, which spawns no process at all, sits after them because it is
-//! the workspace's own policy rather than something cargo can be asked.
+//! how long a failing run takes: the rows come in rising cost.
+//!
+//! **Each row is also a task of its own**, `cargo xtask clippy` and so on, so
+//! that CI can run each as a job named for it and the Checks page says which
+//! check failed on which platform. `docs/specs/dev-environment.md` §3 says why
+//! the rows are listed in the workflow as well, and what holds the two lists
+//! equal.
+//!
+//! There is no `no-unsafe` row. `unsafe_code = "forbid"` in the root manifest
+//! makes the compiler refuse it in every crate, which is a guard that cannot
+//! examine the wrong set of files, the way the scan it replaced once did.
 //!
 //! Each row's command is built by its own named function, so that what the row
 //! actually runs is a thing a test can read. A row whose arguments drift is a
@@ -22,14 +30,9 @@
 //! `cannot update the lock file ... because --locked was passed to prevent
 //! this` until `cargo fetch` has run.
 
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use regex::Regex;
-
-use crate::{annotation, on_github, workspace_root};
+use crate::{Task, annotation, on_github, workspace_root};
 
 /// Run every row, and report whether all of them passed.
 ///
@@ -39,14 +42,7 @@ use crate::{annotation, on_github, workspace_root};
 /// pins the channel instead, which is the claim that can actually be kept.
 pub fn run() -> bool {
     println!("gate:");
-    let rows: [bool; ROW_COUNT] = [
-        row("fmt", &mut fmt_command()),
-        game(),
-        row("clippy", &mut clippy_command()),
-        row("doc", &mut doc_command()),
-        row("test", &mut test_command()),
-        no_unsafe(),
-    ];
+    let rows: [bool; ROW_COUNT] = ROWS.map(|(_, run)| run());
     let passed = verdict(&rows);
     if passed {
         println!("gate: passed");
@@ -58,12 +54,46 @@ pub fn run() -> bool {
 
 /// How many rows `run` takes a verdict over.
 ///
-/// Written rather than inferred, so that dropping a row from the array is a
+/// Written rather than inferred, so that dropping a row from [`ROWS`] is a
 /// type error rather than a gate that goes on printing `gate: passed` about one
 /// thing fewer. Changing this to agree with a dropped row fails
 /// `one_failing_row_fails_the_gate`, which is the second half of the same
 /// guard.
-const ROW_COUNT: usize = 6;
+const ROW_COUNT: usize = 5;
+
+/// The rows, in the order `run` runs them, each under the name it is typed as.
+///
+/// Mutation: remove a row, and `the_workflow_runs_every_check_xtask_lists` in
+/// `main.rs` fails naming it, because the workflow still runs it and xtask no
+/// longer does. Swap two functions, and
+/// `each_row_task_runs_the_row_its_name_promises` fails.
+pub(crate) const ROWS: [Task; ROW_COUNT] = [
+    ("fmt", fmt),
+    ("game", game),
+    ("clippy", clippy),
+    ("doc", doc),
+    ("test", test),
+];
+
+/// The `fmt` row, as a task.
+fn fmt() -> bool {
+    row("fmt", &mut fmt_command())
+}
+
+/// The `clippy` row, as a task.
+fn clippy() -> bool {
+    row("clippy", &mut clippy_command())
+}
+
+/// The `doc` row, as a task.
+fn doc() -> bool {
+    row("doc", &mut doc_command())
+}
+
+/// The `test` row, as a task.
+fn test() -> bool {
+    row("test", &mut test_command())
+}
 
 /// The gate passes only when every row did.
 ///
@@ -172,15 +202,12 @@ fn game_row_name(pkg: &str) -> String {
 
 /// The `game` row's verdict over a given list of entry points.
 ///
-/// What each entry point costs is passed in rather than called here, the way
-/// `hits_for` takes the result of reading a file. Both arms are then claims a
-/// test can make without spawning a cargo process per assertion, and the
-/// empty-list arm has no cheap mutation from outside, the way `no_unsafe`'s
-/// does not either.
+/// What each entry point costs is passed in rather than called here. Both
+/// arms are then claims a test can make without spawning a cargo process per
+/// assertion, and the empty-list arm has no cheap mutation from outside.
 ///
-/// **A row that examined no entry points is a failure**, for the reason
-/// `no_unsafe` gives about a scan that examined no files: a list that quietly
-/// emptied would print nothing and pass.
+/// **A row that examined no entry points is a failure**, the RK-001 shape: a
+/// list that quietly emptied would print nothing and pass.
 ///
 /// `&` rather than `&&`, so a second entry point still runs after the first has
 /// failed. That is the rule `verdict` here and `all` in `main.rs` already keep:
@@ -309,9 +336,8 @@ fn row(name: &str, cmd: &mut Command) -> bool {
 
 /// Report a failed row, with everything it said.
 ///
-/// Every failing row goes through here, `no-unsafe` included, which is what
-/// makes one annotation in [`failure_report`] enough to name any of them on
-/// the Checks page.
+/// Every failing row goes through here, which is what makes one annotation in
+/// [`failure_report`] enough to name any of them on the Checks page.
 ///
 /// All of it, not a tail. A tail of the last lines of a cargo log is the
 /// `could not compile, 8 previous errors` summary and none of the errors, and
@@ -342,250 +368,22 @@ fn failure_report(name: &str, log: &str, on_github: bool) -> String {
     report
 }
 
-/// No source file in the workspace's crates contains `unsafe`.
-///
-/// Nothing here needs it: Bevy's API is safe, and `TilemapChunk`, reflection
-/// and the asset system are all reachable without it. A block that appears is a
-/// sign that something the engine already does is being done again by hand, so
-/// the gate asks rather than assuming.
-///
-/// `xtask/` is not scanned. It is the tooling rather than the editor, none of
-/// it reaches a user's game, and the tests for [`unsafe_lines`] have to spell
-/// the keyword out to have anything to match.
-///
-/// **A file this cannot read is a failure, and a scan that examined nothing is
-/// a failure.** Neither is caution for its own sake. The check this crate
-/// replaces spent its last weeks printing `ok` about a workspace it was no
-/// longer looking at, and "I skipped that one" is the same sentence said more
-/// quietly: a stray source file saved in the wrong encoding is enough to hide a
-/// live `unsafe` block behind a green row.
-fn no_unsafe() -> bool {
-    let sources = scanned_sources();
-    if sources.is_empty() {
-        fail(
-            "no-unsafe",
-            "examined no source files, so this row is about nothing",
-        );
-        return false;
-    }
-
-    let root = workspace_root();
-    let mut hits = Vec::new();
-    for path in &sources {
-        let shown = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .display()
-            .to_string()
-            .replace('\\', "/");
-        hits.extend(hits_for(&shown, fs::read_to_string(path)));
-    }
-
-    if hits.is_empty() {
-        println!("  ok    no-unsafe");
-        return true;
-    }
-    fail("no-unsafe", &hits.join("\n"));
-    false
-}
-
-/// What one source file contributes to the row, given what reading it produced.
-///
-/// Mutation: return `Vec::new()` for the `Err` arm, and
-/// `a_file_that_cannot_be_read_is_a_hit` fails. That arm is the one that
-/// matters: a file that will not decode is a file nothing in the workspace
-/// examines, and skipping it quietly is how a green row comes to mean nothing.
-fn hits_for(shown: &str, read: io::Result<String>) -> Vec<String> {
-    match read {
-        Ok(text) => unsafe_lines(&text)
-            .into_iter()
-            .map(|line| format!("{shown}:{line}"))
-            .collect(),
-        Err(err) => vec![format!(
-            "{shown}: could not be read, so it was not checked: {err}"
-        )],
-    }
-}
-
-/// Every `.rs` file the `no-unsafe` row examines.
-///
-/// Split out so that "it examined something" is a claim with a test behind it.
-fn scanned_sources() -> Vec<PathBuf> {
-    let root = workspace_root();
-    let mut sources = Vec::new();
-    for dir in ["crates", "src"] {
-        collect_rust_files(&root.join(dir), &mut sources);
-    }
-    sources.sort();
-    sources
-}
-
-/// The 1-based lines of `text` that open an `unsafe` block or declare one.
-///
-/// Every shape the keyword takes, not the three that come to mind. Edition 2024
-/// is what makes that worth spelling out: `unsafe extern` blocks are how FFI is
-/// declared in it, `unsafe static` goes with them, and `#[unsafe(no_mangle)]`
-/// spells an attribute. A pattern that knew only `fn`, `impl` and a block would
-/// let an `unsafe trait` through while claiming the workspace had none.
-///
-/// The `[^_[:alnum:]]` guard is what keeps `get_unsafe(` and `unsafely` out.
-///
-/// Mutation: drop that guard, and
-/// `a_word_that_merely_contains_the_keyword_is_not_a_hit` fails. Drop `trait`
-/// or `extern` from the alternation, and `every_shape_of_the_keyword_is_a_hit`
-/// fails. Neither fails anything else.
-fn unsafe_lines(text: &str) -> Vec<usize> {
-    let pattern =
-        Regex::new(r"(^|[^_[:alnum:]])unsafe(\s*[{(]|\s+(fn|impl|trait|extern|static|async))")
-            .expect("the pattern is a literal and compiles");
-    text.lines()
-        .enumerate()
-        .filter(|(_, line)| pattern.is_match(line))
-        .map(|(i, _)| i + 1)
-        .collect()
-}
-
-/// Every `.rs` file under `dir`, recursively. A missing directory is not an
-/// error: `src/` stops existing the moment a workspace becomes virtual.
-fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rust_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
-    use std::io;
+    use std::fs;
     use std::process::Command;
 
     use super::{
-        GAME_ENTRY_POINTS, ROW_COUNT, clippy_command, doc_command, failure_report, fmt_command, fs,
-        game_command, game_row_name, game_rows, hits_for, scanned_sources, test_command,
-        unsafe_lines, verdict, workspace_root,
+        GAME_ENTRY_POINTS, ROW_COUNT, ROWS, clippy, clippy_command, doc, doc_command,
+        failure_report, fmt, fmt_command, game, game_command, game_row_name, game_rows, test,
+        test_command, verdict, workspace_root,
     };
 
     fn args(cmd: &Command) -> Vec<String> {
         cmd.get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
-    }
-
-    /// A block and a declaration are both hits, and the line number is 1-based.
-    ///
-    /// Mutation: return `i` instead of `i + 1` in `unsafe_lines`, and this
-    /// fails.
-    #[test]
-    fn a_declaration_is_a_hit() {
-        let src = "fn a() {}\nunsafe fn b() {}\nunsafe impl Send for A {}\n";
-        assert_eq!(unsafe_lines(src), vec![2, 3]);
-    }
-
-    /// An opened block is a hit whether or not anything precedes it.
-    #[test]
-    fn an_opened_block_is_a_hit() {
-        let src = "unsafe { ptr.read() }\n    let x = unsafe { ptr.read() };\n";
-        assert_eq!(unsafe_lines(src), vec![1, 2]);
-    }
-
-    /// Every shape the keyword takes is a hit, not the three that come to mind.
-    ///
-    /// `unsafe trait` has always been Rust, and edition 2024 made
-    /// `unsafe extern` the way FFI is declared. A pattern that knew only `fn`,
-    /// `impl` and a block passed both straight through while the row above it
-    /// claimed the workspace had no `unsafe` in it.
-    ///
-    /// Mutation: remove `trait`, `extern`, `static` or `async` from the
-    /// alternation, and this fails naming the line that got through.
-    #[test]
-    fn every_shape_of_the_keyword_is_a_hit() {
-        let src = concat!(
-            "pub unsafe trait Sync {}\n",
-            "unsafe extern \"C\" {\n",
-            "    unsafe static COUNT: u32;\n",
-            "}\n",
-            "pub unsafe async fn f() {}\n",
-            "#[unsafe(no_mangle)]\n",
-        );
-        assert_eq!(unsafe_lines(src), vec![1, 2, 3, 5, 6]);
-    }
-
-    /// A word that merely contains the keyword is not a hit.
-    ///
-    /// Mutation: drop the `[^_[:alnum:]]` guard from the pattern, and this
-    /// fails on the first line.
-    #[test]
-    fn a_word_that_merely_contains_the_keyword_is_not_a_hit() {
-        let src = "fn get_unsafe() {}\nlet unsafely = 1;\nfn safe() {}\n";
-        assert_eq!(unsafe_lines(src), Vec::<usize>::new());
-    }
-
-    /// A file with nothing to find reports nothing.
-    #[test]
-    fn an_ordinary_file_has_no_hits() {
-        assert_eq!(
-            unsafe_lines("//! A crate.\n\npub fn f() -> u32 {\n    1\n}\n"),
-            Vec::<usize>::new()
-        );
-    }
-
-    /// A file that cannot be read is a hit, not a file to skip.
-    ///
-    /// A stray source file saved as UTF-16, which one wrong choice in an editor
-    /// on this project's own development platform produces, is not read by
-    /// `fmt`, `clippy`, `doc` or `test` either. Skipping it here is the one
-    /// place a live `unsafe` block can sit behind five green rows.
-    ///
-    /// Mutation: return `Vec::new()` for the `Err` arm of `hits_for`, and this
-    /// fails. Nothing else does.
-    #[test]
-    fn a_file_that_cannot_be_read_is_a_hit() {
-        let err = io::Error::new(
-            io::ErrorKind::InvalidData,
-            "stream did not contain valid UTF-8",
-        );
-        let hits = hits_for("crates/core/src/stray.rs", Err(err));
-        assert_eq!(hits.len(), 1, "got {hits:?}");
-        assert!(hits[0].starts_with("crates/core/src/stray.rs: could not be read"));
-    }
-
-    /// A file that reads is reported by line.
-    #[test]
-    fn a_file_that_reads_is_reported_by_line() {
-        let hits = hits_for(
-            "crates/core/src/lib.rs",
-            Ok("fn a() {}\nunsafe fn b() {}\n".into()),
-        );
-        assert_eq!(hits, vec!["crates/core/src/lib.rs:2".to_owned()]);
-    }
-
-    /// The `no-unsafe` row examines the crates that are actually there.
-    ///
-    /// Without this the row is free to look at nothing and print `ok`, which is
-    /// how the dependency-graph check it sits beside died: written against
-    /// names that had since been changed, it went on passing.
-    ///
-    /// Mutation: misspell either directory in `scanned_sources`, and this
-    /// fails. Nothing else does.
-    #[test]
-    fn the_unsafe_scan_reads_the_crates_that_are_there() {
-        let sources = scanned_sources();
-        assert!(
-            !sources.is_empty(),
-            "the no-unsafe row examined no files at all"
-        );
-        assert!(
-            sources.iter().any(|p| p.ends_with("lib.rs")),
-            "the no-unsafe row found no crate root: {sources:?}"
-        );
     }
 
     /// A `game` row with no entry points fails rather than passing quietly.
@@ -726,7 +524,7 @@ const GAME_ENTRY_POINTS";
     #[test]
     fn one_failing_row_fails_the_gate() {
         assert_eq!(
-            ROW_COUNT, 6,
+            ROW_COUNT, 5,
             "a row was added to or taken from `run` without this test being told,              so the position it occupies is asserted by nothing"
         );
         assert!(verdict(&[true; ROW_COUNT]));
@@ -936,5 +734,102 @@ const GAME_ENTRY_POINTS";
             .get_envs()
             .find(|(key, _)| *key == OsStr::new("BEVY2D_BLESS"));
         assert_eq!(entry, Some((OsStr::new("BEVY2D_BLESS"), None)));
+    }
+
+    /// Each row's task runs the row its name promises.
+    ///
+    /// The names alone are not the table: swapping two functions behind them
+    /// leaves `cargo xtask clippy` running the tests and the job named
+    /// `clippy` green about the wrong thing. No test can run a row to find out,
+    /// because the `test` row runs this test, so the wiring is asserted by
+    /// address, the way `each_task_runs_the_check_its_name_promises` in
+    /// `main.rs` does for the tasks.
+    ///
+    /// Mutation: swap two functions in `ROWS`, and this fails naming the row.
+    #[test]
+    fn each_row_task_runs_the_row_its_name_promises() {
+        let expected: [super::Task; ROW_COUNT] = [
+            ("fmt", fmt),
+            ("game", game),
+            ("clippy", clippy),
+            ("doc", doc),
+            ("test", test),
+        ];
+        for ((name, run), (wanted, wanted_run)) in ROWS.iter().zip(expected) {
+            assert_eq!(*name, wanted);
+            assert!(
+                std::ptr::fn_addr_eq(*run, wanted_run),
+                "the `{name}` task does not run the {name} row"
+            );
+        }
+    }
+
+    /// `unsafe` is forbidden in every crate, by the compiler.
+    ///
+    /// The lint is set once in the root manifest and reaches a member only if
+    /// that member says `[lints] workspace = true`, so both halves are held:
+    /// the level, and every member inheriting it. Members are taken from
+    /// `cargo metadata` rather than from a directory listing, so a member
+    /// outside `crates/` is not missed, and the count is asserted so a
+    /// metadata call that listed nothing does not pass. Both files are read
+    /// through a TOML parser, so a comment quoting either line is not read as
+    /// it.
+    ///
+    /// Mutation: set `unsafe_code` to `"deny"` or `"warn"`, or remove `[lints]`
+    /// from `crates/data/Cargo.toml`, and this fails naming what changed.
+    #[test]
+    fn unsafe_code_is_forbidden_in_every_crate() {
+        let read = |path: &std::path::Path| -> toml::Table {
+            fs::read_to_string(path)
+                .unwrap_or_else(|err| panic!("{}: {err}", path.display()))
+                .parse()
+                .unwrap_or_else(|err| panic!("{}: {err}", path.display()))
+        };
+        let root = read(&workspace_root().join("Cargo.toml"));
+        let level = root
+            .get("workspace")
+            .and_then(|w| w.get("lints"))
+            .and_then(|l| l.get("rust"))
+            .and_then(|r| r.get("unsafe_code"))
+            .and_then(toml::Value::as_str);
+        assert_eq!(
+            level,
+            Some("forbid"),
+            "the root manifest's unsafe_code level"
+        );
+
+        let out = Command::new(env!("CARGO"))
+            .args(["metadata", "--format-version", "1", "--no-deps"])
+            .current_dir(workspace_root())
+            .output()
+            .expect("cargo metadata runs");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("cargo metadata prints JSON");
+        let manifests: Vec<&str> = metadata["packages"]
+            .as_array()
+            .expect("a package list")
+            .iter()
+            .map(|package| package["manifest_path"].as_str().expect("a manifest path"))
+            .collect();
+        assert!(
+            manifests.len() >= 6,
+            "only {manifests:?} were read, so this holds less than it reads as"
+        );
+        for manifest in manifests {
+            let inherits = read(std::path::Path::new(manifest))
+                .get("lints")
+                .and_then(|l| l.get("workspace"))
+                .and_then(toml::Value::as_bool);
+            assert_eq!(
+                inherits,
+                Some(true),
+                "{manifest} does not inherit the workspace lints, so unsafe_code = \"forbid\" does not reach it"
+            );
+        }
     }
 }
