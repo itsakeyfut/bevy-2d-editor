@@ -18,15 +18,23 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # The whole gate, on every platform. docs/specs/dev-environment.md §3 says
-  # why all three run all of it rather than the cheaper split.
-  gate:
-    name: Gate (${{ matrix.os }})
+  # Every check, on every platform, each a job of its own, so a failure reads
+  # on the Checks page as the check and the platform: `clippy (windows-latest)`.
+  # docs/specs/dev-environment.md §3 says why all three platforms run all of it
+  # rather than the cheaper split, and why the checks are listed here at all.
+  #
+  # Each check is a task of `cargo xtask`, which is where its flags live. The
+  # list below is a second copy of the list in xtask, held equal to it by
+  # `the_workflow_runs_every_check_xtask_lists` in xtask/src/main.rs, which
+  # parses this file rather than reading it as text.
+  check:
+    name: ${{ matrix.check }} (${{ matrix.os }})
     strategy:
       # Windows failing must not hide whether macOS passed. Knowing it is one
       # platform rather than all three is most of the diagnosis.
       fail-fast: false
       matrix:
+        check: [fmt, game, clippy, doc, test, docs, commands]
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -44,7 +52,17 @@ jobs:
       # three-platform matrix, on every push.
       #
       # After `rustup show`, because the cache key includes the toolchain.
+      #
+      # Two caches per platform rather than one per check, which would come to
+      # more than the repository's 10 GiB and evict at random. `game`, `clippy`
+      # and `doc` all compile dependencies in check mode, so they share one,
+      # saved by `clippy`, which compiles the most of it. `test` builds and
+      # keeps its own. The other three build only xtask and take no cache.
       - uses: Swatinem/rust-cache@v2.9.2
+        if: contains(fromJSON('["game", "clippy", "doc", "test"]'), matrix.check)
+        with:
+          shared-key: ${{ matrix.check == 'test' && 'test' || 'check' }}
+          save-if: ${{ matrix.check == 'test' || matrix.check == 'clippy' }}
       # Linux only, and derived from Cargo.lock rather than copied: wayland-sys
       # probes wayland-client, wayland-cursor and wayland-egl through
       # pkg-config and unwraps, and libudev-sys does the same for libudev. Both
@@ -63,14 +81,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libwayland-dev libudev-dev
-      # One command, because xtask is where the checks are defined. A row added
-      # there runs here without this file being touched, which is the split
-      # that putting the gate in the repository was for. A failed check names
-      # itself as an annotation, so the Checks page says which one it was.
-      - run: cargo xtask all
+      - run: cargo xtask ${{ matrix.check }}
 
   # The one check name branch protection requires. It stays correct when the
-  # matrix gains or loses a platform, and it is what stops a leg that did not
+  # matrix gains or loses a check or a platform, because `needs.check.result`
+  # is one result over every leg, and it is what stops a leg that did not
   # succeed reading as a pass.
   #
   # The condition is a total one rather than a list of the results somebody
@@ -81,9 +96,9 @@ jobs:
   ci:
     name: All platforms
     if: always()
-    needs: [gate]
+    needs: [check]
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every leg succeeded
-        if: needs.gate.result != 'success'
+        if: needs.check.result != 'success'
         run: exit 1

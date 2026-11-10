@@ -74,8 +74,11 @@ particularly well written, and are the template this structure follows.
 
 ### Decision
 
-**The whole gate runs on Linux, macOS and Windows**, on every push to `main`
-and every pull request, as one command: `cargo xtask all`.
+**Every check runs on Linux, macOS and Windows**, on every push to `main`
+and every pull request, **each as a job of its own**: `cargo xtask <check>`,
+named on the Checks page as the check and the platform, `clippy
+(windows-latest)`. The checks are the gate's rows (`fmt`, `game`, `clippy`,
+`doc`, `test`) and the two tasks beside it (`docs`, `commands`).
 
 Section 1 claims the product is not Windows-only. This is what makes that claim
 checkable rather than said. Running everything everywhere, rather than putting
@@ -84,10 +87,33 @@ worth designing against is a check that examines nothing on one platform while
 passing on another, which has already happened here and was invisible from
 Linux.
 
-**The workflow names one command and no checks.** What is checked lives in
-`xtask/`, so a check added there runs on all three platforms without the
-workflow being touched. Putting the gate in the repository was for exactly
-that, and a workflow that enumerated the rows would undo it.
+~~**The workflow names one command and no checks.**~~ **Withdrawn** by
+[#70](https://github.com/itsakeyfut/bevy-2d-editor/issues/70). It read: what
+is checked lives in `xtask/`, so a check added there runs on all three
+platforms without the workflow being touched, and a workflow that enumerated
+the rows would undo that. What it cost was a Checks page that named a
+platform and not a check: a failed `clippy` and a failed `test` both read as a
+red `Gate (windows-latest)`, and which one was a log away.
+
+**The workflow lists the checks, and a test holds the list equal to xtask's.**
+The matrix in `.github/workflows/ci.yml` is a second copy of the list, which
+is what the withdrawn paragraph above was avoiding. What makes the copy safe
+is `the_workflow_runs_every_check_xtask_lists`, which reads the workflow
+through a YAML parser and xtask's list from its task tables, and fails naming
+a check that is in one and not the other. A parser rather than a text scrape
+because a scrape here has already been defeated by comments, three ways,
+each reporting `ok` while the two lists disagreed. The flags of each check stay
+in `xtask/src/gate.rs`, held by the tests beside them.
+
+**The required check is one job over all of them.** `All platforms` fails
+unless `needs.check.result` is `success`, which is one result over every leg
+of the matrix and a total condition over its four values, so a leg that is
+skipped does not pass it.
+
+**`unsafe` is refused by the compiler**, through `unsafe_code = "forbid"` in
+the root manifest, rather than by a gate row that scanned the sources as
+text. The scan was a check that could examine the wrong set of files; the
+lint cannot.
 
 **The Linux leg installs what the engine links against.** Bevy's `2d` feature
 pulls `default_platform`, which names x11, wayland and gamepad support, so
@@ -112,6 +138,15 @@ action to keep current costs more than the seconds it saves.
 > remembers ([open-questions.md §1](./open-questions.md) on why a deferral
 > carries one).
 
+**Two caches per platform, not one per check.** `game`, `clippy` and `doc`
+compile dependencies in check mode and share one, saved by `clippy`; `test`
+builds and keeps its own; `fmt`, `docs` and `commands` build only xtask and
+take none. Before this split the three platform caches measured 1.40, 1.67
+and 1.84 GiB against the repository's default limit of 10 GiB, and a cache per
+check was estimated at about 11 GiB, which evicts at random into cold builds.
+After it the six caches measured 0.29 to 0.39 GiB for check mode and 0.74 to
+0.93 GiB for the test build, 3.6 GiB in all.
+
 ### Rejected
 
 * **`fmt`, `clippy` and `doc` on one runner**, with only `test` on three. Saves
@@ -119,11 +154,45 @@ action to keep current costs more than the seconds it saves.
 * **The other two platforms only on pushes to `main`.** A Windows-only failure
   would then be found after the merge, which is not what a pull request check
   is for.
-* **A job per check**, crossed with the platforms. It reads best of all on the
+* ~~**A job per check**, crossed with the platforms. It reads best of all on the
   Checks page and costs a second copy of the list of checks, in YAML, beside
-  the one in `xtask/`.
+  the one in `xtask/`.~~ **Reversed** by
+  [#70](https://github.com/itsakeyfut/bevy-2d-editor/issues/70). The second
+  copy is kept and held equal to the first by a test that parses both, which
+  is what made the objection answerable: a copy that cannot drift silently is
+  not the cost the objection priced.
+* **Each check as a cargo alias** in `.cargo/config.toml`, run as
+  `cargo <check>`, with xtask keeping only what cargo cannot express. An alias
+  cannot take a built-in's name (cargo ignores it with a warning and runs the
+  built-in without the flags), so the checks would have been `tests`,
+  `fmt-check` and `docs-api` beside `test`, `fmt` and `doc`: `cargo test`
+  passing locally while the job named `tests` fails on `--locked` is a trap,
+  and three names that differ by a suffix cannot be read. It also split the
+  entry point in two. One prefix, `cargo xtask`, which prints the list when
+  typed alone, is the thing nobody has to be told.
+* **The matrix generated by a job that runs xtask** and hands the list over
+  through `fromJSON`. No second copy at all, at the cost of a serial job before
+  every other and a Checks page with no check names until it finishes.
+* **A cache per check.** Simplest, and over the repository's limit; see above.
 
 ### Accepted risk
 
 Three full builds per push, which is cheap now and will not be once Bevy is a
 dependency. That cost is revisited with the cache, on the same trigger.
+
+Twenty-one check jobs per push rather than three. Every job pays its own checkout,
+toolchain and cache restore, and the engine is compiled in check mode and in
+build mode separately on each platform, so runner minutes go up. Measured on
+warm caches, per push:
+
+| | wall time | job time, summed |
+|---|---|---|
+| one job per platform | 7m10s to 10m18s, three pushes | 14m17s, on the 8m06s push |
+| one job per check and platform | 6m52s | 25m24s |
+
+Wall time did not go up, because the Windows `test` job, 6m43s, is now the
+whole critical path where it used to follow the other rows. Job time nearly
+doubled. The first run on empty caches took 15m31s of wall time and 50m13s of
+job time. The repository is public, so the minutes are not billed; what is
+spent is the concurrency, five macOS jobs at a time on the free plan, so two
+of the seven macOS jobs wait for a runner.

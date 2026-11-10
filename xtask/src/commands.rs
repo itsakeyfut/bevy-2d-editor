@@ -384,7 +384,7 @@ impl Prose {
             }
             let problem = match claim {
                 Claim::Task(task) => (task != "all"
-                    && !crate::TASKS.iter().any(|(name, _)| *name == task))
+                    && !crate::every_task().any(|(name, _)| *name == task))
                 .then(|| format!("{file} names `{command}`, and {task} is not a task")),
                 // A relative path is resolved from the workspace root and
                 // from the directory of the file that names it, because both
@@ -701,9 +701,9 @@ mod tests {
         );
     }
 
-    /// Every task in the table is accepted, and so is `all`.
+    /// Every task, a row of the gate included, is accepted, and so is `all`.
     ///
-    /// Read from `crate::TASKS` rather than written out here. Writing the
+    /// Read from `crate::every_task` rather than written out here. Writing the
     /// names out would make this pass while a document naming a newly added
     /// task failed, which is the check telling the truth about the wrong set.
     ///
@@ -711,8 +711,11 @@ mod tests {
     /// `problems`, and adding a task makes this fail.
     #[test]
     fn every_task_in_the_table_is_accepted() {
-        let names: Vec<&str> = crate::TASKS.iter().map(|(name, _)| *name).collect();
-        assert!(!names.is_empty(), "there are no tasks to check against");
+        let names: Vec<&str> = crate::every_task().map(|(name, _)| *name).collect();
+        assert!(
+            names.contains(&"clippy"),
+            "the gate's rows are not tasks: {names:?}"
+        );
         for name in names.iter().chain(["all"].iter()) {
             let text = format!("# UI\n\nRun `cargo xtask {name}`.\n");
             let files = [

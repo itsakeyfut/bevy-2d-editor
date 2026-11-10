@@ -32,11 +32,19 @@ bevy = { version = "0.20.1", default-features = false, features = [
 ] }
 regex = "1.13.1"
 serde_json = "1.0.151"
+toml = "1.2.1"
+yaml-rust2 = "0.13.0"
 
 [workspace.lints.rust]
 # The gate runs clippy with `-D warnings`, so a crate that does not say what it
 # is for fails the build rather than drifting.
 missing_docs = "warn"
+# Nothing here needs it: Bevy's API is safe, and `TilemapChunk`, reflection and
+# the asset system are all reachable without it. A block that appears is a sign
+# that something the engine already does is being done again by hand. `forbid`
+# rather than `deny`, so that an `#[allow]` inside a crate cannot lower it.
+# xtask's `unsafe_code_is_forbidden_in_every_crate` holds every member to this.
+unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 doc_markdown = "warn"
