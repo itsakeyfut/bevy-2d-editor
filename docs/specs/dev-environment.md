@@ -144,6 +144,8 @@ builds and keeps its own; `fmt`, `docs` and `commands` build only xtask and
 take none. Before this split the three platform caches measured 1.40, 1.67
 and 1.84 GiB against the repository's default limit of 10 GiB, and a cache per
 check was estimated at about 11 GiB, which evicts at random into cold builds.
+After it the six caches measured 0.29 to 0.39 GiB for check mode and 0.74 to
+0.93 GiB for the test build, 3.6 GiB in all.
 
 ### Rejected
 
@@ -180,8 +182,17 @@ dependency. That cost is revisited with the cache, on the same trigger.
 
 Twenty-one check jobs per push rather than three. Every job pays its own checkout,
 toolchain and cache restore, and the engine is compiled in check mode and in
-build mode separately on each platform, so runner minutes go up. Before the
-split, three pushes measured 8m06s, 10m18s and 7m10s of wall time, with the
-Windows leg alone 6 to 10 minutes of it. The repository is public, so the
-minutes are not billed; what is spent is the concurrency, five macOS jobs at a
-time on the free plan, so two of the seven macOS jobs wait for a runner.
+build mode separately on each platform, so runner minutes go up. Measured on
+warm caches, per push:
+
+| | wall time | job time, summed |
+|---|---|---|
+| one job per platform | 7m10s to 10m18s, three pushes | 14m17s, on the 8m06s push |
+| one job per check and platform | 6m52s | 25m24s |
+
+Wall time did not go up, because the Windows `test` job, 6m43s, is now the
+whole critical path where it used to follow the other rows. Job time nearly
+doubled. The first run on empty caches took 15m31s of wall time and 50m13s of
+job time. The repository is public, so the minutes are not billed; what is
+spent is the concurrency, five macOS jobs at a time on the free plan, so two
+of the seven macOS jobs wait for a runner.
