@@ -99,6 +99,16 @@ impl Plugin for SelectionOutlinePlugin {
 /// `clearing_the_selection_takes_the_outline_away` fails. Mutation: drop the
 /// `after(VisibilitySystems::CalculateBounds)` above, and
 /// `the_outline_follows_the_entity_in_the_frame_it_moves` fails.
+///
+/// **An angle that is not finite is drawn as none.** A scale of zero, or one
+/// too small to decompose, reads back as a `NaN` rotation, and `Rot2` asserts
+/// on it in a debug build. The inspector and the drags refuse to write such a
+/// scale, but another writer could still leave one, and an unturned line or
+/// point keeps the selection visible:
+/// [`docs/specs/ui.md` §5](../../../docs/specs/ui.md).
+///
+/// Mutation: drop the fallback to zero, and
+/// `an_entity_whose_rotation_cannot_be_read_is_outlined_unturned` fails.
 fn outline(
     selection: Res<Selection>,
     bounds: Query<(&GlobalTransform, &Aabb)>,
@@ -111,6 +121,7 @@ fn outline(
         let centre = at.transform_point(Vec3::from(aabb.center)).truncate();
         let size = aabb.half_extents.xy() * 2.0 * at.scale().truncate();
         let angle = at.rotation().to_euler(EulerRot::ZYX).0;
+        let angle = if angle.is_finite() { angle } else { 0.0 };
         gizmos.rect_2d(Isometry2d::new(centre, Rot2::radians(angle)), size, OUTLINE);
     }
 }
@@ -560,5 +571,41 @@ mod tests {
                 "nothing was drawn on {wanted:?}, only {drawn:?}"
             );
         }
+    }
+
+    /// An entity whose rotation the engine cannot read back is outlined as if
+    /// unturned, rather than panicking a debug build.
+    ///
+    /// Its scale is set to zero on `x` after it is selected, which is the way
+    /// such a value reaches a selected entity: the inspector and the drags
+    /// refuse to write one, and an entity that already has one cannot be
+    /// clicked. The outline is then a vertical line 64 high where the
+    /// placeholder stands.
+    ///
+    /// Mutation: drop the fallback to zero in `outline`, and this fails: the
+    /// `Rot2` the outline builds asserts on the `NaN` angle.
+    #[test]
+    fn an_entity_whose_rotation_cannot_be_read_is_outlined_unturned() {
+        let mut app = outline_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut()
+            .get_mut::<Transform>(middle)
+            .expect("a placeholder has a transform")
+            .scale
+            .x = 0.0;
+        app.update();
+        app.update();
+
+        let drawn = outlined(&app).expect("the selection is still outlined");
+
+        let line = Rect::from_corners(Vec2::new(0.0, -32.0), Vec2::new(0.0, 32.0));
+        assert!(
+            (drawn.min - line.min)
+                .abs()
+                .max((drawn.max - line.max).abs())
+                .max_element()
+                < 1e-3,
+            "{drawn:?} is not {line:?}"
+        );
     }
 }

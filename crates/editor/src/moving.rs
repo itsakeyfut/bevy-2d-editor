@@ -495,7 +495,11 @@ fn scale(pivot: Vec2, factor: Vec2) -> impl Fn(&Transform) -> Transform {
 /// divides out comes back `NaN`. Asked of the decomposition itself rather
 /// than of a threshold, so that this agrees with the engine wherever its
 /// arithmetic draws the line.
-fn readable(at: &Transform) -> bool {
+///
+/// The inspector asks it too, before a typed number lands on a `Transform`,
+/// so that the box and the drag refuse the same values:
+/// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md).
+pub(crate) fn readable(at: &Transform) -> bool {
     let (scale, rotation, _) = at.compute_affine().to_scale_rotation_translation();
     scale.is_finite() && scale.cmpne(Vec3::ZERO).all() && rotation.is_finite()
 }
