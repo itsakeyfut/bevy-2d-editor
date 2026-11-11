@@ -12,6 +12,7 @@
 use core::any::TypeId;
 
 use b2d_editor_ui::{field_line, field_row};
+use bevy::camera::primitives::Aabb;
 use bevy::clipboard::Clipboard;
 use bevy::feathers::containers::{pane_body, pane_header};
 use bevy::feathers::controls::{FeathersNumberInput, NumberInputValue};
@@ -25,6 +26,7 @@ use bevy::ui_widgets::ValueChange;
 
 use crate::history::{EditorCommand, History};
 use crate::moving::readable;
+use crate::selection::world_bounds;
 use crate::{Region, Selection};
 
 /// How far a field row sits in from the component name above it.
@@ -1057,14 +1059,20 @@ fn apply_leaf(component: &mut dyn Reflect, writes: &Writes, value: f32) {
     let _ = leaf.try_apply(&value);
 }
 
-/// Whether `new` leaves the component something the engine can read back.
+/// Whether `new` leaves the component something the editor can still hold.
 ///
-/// Only `Transform` is asked: the leaf is applied to a copy, and
-/// [`readable`] is asked of the copy, **where it was asked of the transform as
-/// it stands and said yes**, so that one which arrived unreadable from
-/// elsewhere can still be typed back into shape.
+/// Only `Transform` is asked. The leaf is applied to a copy, and the copy has
+/// to pass two tests: the engine can read a scale and a rotation back out of
+/// it ([`readable`]), and its world bounds, measured as the box drag measures
+/// them ([`world_bounds`]), still have a width and a height, without which
+/// the entity can be neither clicked nor boxed again. **Only a write that
+/// turns a transform that passes into one that fails is refused**, so one
+/// that arrived failing from elsewhere can still be typed back into shape.
 /// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md) has why this is refused
 /// rather than drawn around.
+///
+/// The bounds are measured from the transform alone, as if it had no parent,
+/// which is what the drags assume too.
 ///
 /// **The `TypeId` check is not a shortcut.** Without it, a component of any
 /// other type whose field and leaf have `Transform`'s names, a user's own
@@ -1073,9 +1081,10 @@ fn apply_leaf(component: &mut dyn Reflect, writes: &Writes, value: f32) {
 ///
 /// Mutation: drop the `TypeId` check, and
 /// `a_component_of_another_type_with_a_scale_field_accepts_zero` fails.
-/// Mutation: drop the condition that the transform was readable, and
+/// Mutation: refuse whatever the transform was before, and
 /// `a_transform_that_could_not_be_read_back_can_be_typed_back_into_shape`
-/// fails.
+/// fails. Mutation: drop the bounds test, and
+/// `a_scale_that_would_leave_no_bounds_is_never_written` fails.
 fn holds(world: &World, target: &Writes, new: f32) -> bool {
     if target.component != TypeId::of::<Transform>() {
         return true;
@@ -1085,7 +1094,12 @@ fn holds(world: &World, target: &Writes, new: f32) -> bool {
     };
     let mut then = *now;
     apply_leaf(&mut then, target, new);
-    !readable(now) || readable(&then)
+    let aabb = world.get::<Aabb>(target.of);
+    let passes = |at: &Transform| {
+        readable(at)
+            && aabb.is_none_or(|aabb| !world_bounds(&GlobalTransform::from(*at), aabb).is_empty())
+    };
+    !passes(now) || passes(&then)
 }
 
 #[cfg(test)]
@@ -4767,9 +4781,9 @@ mod tests {
     /// `1e-30`, whose square is zero. The box comes back to the real value,
     /// and nothing is recorded.
     ///
-    /// Fails on the component and not on a panic, because the outline no
-    /// longer panics on such a scale; that is what makes this a test of the
-    /// inspector.
+    /// It asserts on the component: the outline cannot panic on such a scale
+    /// (`outline::outline` draws a non-finite angle as none), so a failure
+    /// here is the inspector's.
     ///
     /// Mutation: drop `holds` from `SetLeaf::read`, and this fails.
     #[test]
@@ -4796,7 +4810,7 @@ mod tests {
     /// A transform that arrived unreadable can still be typed back into
     /// shape, one number at a time.
     ///
-    /// Both of its scale's axes are zero, so typing `2` into `x` leaves it
+    /// Its scale's `x` and `y` are zero, so typing `2` into `x` leaves it
     /// still unreadable, on `y`; refused, the user could never repair it.
     ///
     /// Mutation: drop the condition that the transform was readable in
@@ -4880,5 +4894,32 @@ mod tests {
                 "{text} reached the component"
             );
         }
+    }
+
+    /// A scale the engine can still read back, but that leaves the entity's
+    /// world bounds with no width, is never written: the entity could be
+    /// neither clicked nor boxed again.
+    ///
+    /// On the left placeholder, at `x = -200`, where an `f32` step is about
+    /// `1.5e-5`, so `1e-8` collapses the bounds to a line while its square is
+    /// still far from zero. The middle placeholder, at the origin, would not
+    /// show it.
+    ///
+    /// Mutation: drop the bounds test in `holds`, and this fails.
+    #[test]
+    fn a_scale_that_would_leave_no_bounds_is_never_written() {
+        let mut app = inspector_editor();
+        click_at(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+        let left = app.world().resource::<Selection>().entities()[0];
+
+        let line = line_of(&mut app, "Transform", 2);
+        let cell = boxes_on(&mut app, line)[0];
+        type_and_commit(&mut app, cell, "1e-8");
+
+        assert_eq!(scale_of(&app, left), Vec3::ONE);
     }
 }

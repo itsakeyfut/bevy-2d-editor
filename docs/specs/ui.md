@@ -741,7 +741,7 @@ the panel is editable.
 | The name beside it | the leaf's own name through reflection, `x`, `y`, `z`, `w`, dimmed, drawn by this project rather than by the widget |
 | What commits | **Enter, the box losing focus, or letting go of a drag across the box**, which the widget turns into a scrub. Typing moves nothing, and neither do the steps of a scrub |
 | A value that does not parse | **nothing is written.** The box keeps the typed text until it loses focus, and the real value comes back with the rebuild that follows |
-| A value that parses and cannot be held | **nothing is written, as for one that does not parse**: a value that is not finite, and on `Transform` a value that leaves a transform the engine cannot read a scale and a rotation back out of, where it could before. Decided on issue #82 |
+| A value that parses and cannot be held | **nothing is written, as for one that does not parse**: a value that is not finite, and on `Transform` a value that turns a transform the editor can hold into one it cannot, which is one the engine cannot read a scale and a rotation back out of, or one whose world bounds have no width or no height. Decided on issue #82 |
 | Where the write lands | one `f32` leaf, of one field, of one component, on the active entity, through `World::get_reflect_mut`, as a command the history holds ([data-model.md §1](./data-model.md)) |
 | While a box has focus | **the panel is not rebuilt**, so the box survives the value it just changed, and for one frame after the focus leaves, so that it survives its own commit. [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) |
 | More than one entity selected | only the active entity, which is the one the header names and, since §4, the front-most of the group |
@@ -780,9 +780,15 @@ as numbers, so the row above never sees them. Measured on 0.20.1: each of
 those, and `0`, typed into `scale` panics the outline in a debug build, in the
 `Rot2` it builds from the rotation `GlobalTransform` reads back. A zero scale
 is also a sprite that cannot be clicked or boxed again once it is deselected,
-saved that way. The test for "can be held" is the one the scale handles of
-[§13](#13-the-scale-handles) already ask, so a value the drag refuses is the
-value the box refuses.
+saved that way. The test for "can be held" starts from the one the scale
+handles of [§13](#13-the-scale-handles) already ask, so a value the drag
+refuses is a value the box refuses, and adds the bounds the box drag of
+[§4](#4-what-the-mouse-does-in-the-viewport) tests against: a scale the engine
+can still decompose can be small enough that an `f32` far from the origin
+rounds the bounds to a line, measured at `1e-8` on the placeholder at
+`x = -200`, and that entity cannot be clicked or boxed again either. Only a
+transform that passes becoming one that fails is refused, so one that arrived
+failing from elsewhere can be typed back into shape.
 
 ### Rejected options
 
