@@ -765,7 +765,9 @@ impl SetLeaf {
     /// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md).
     ///
     /// Mutation: drop the `is_finite` check, and
-    /// `a_value_that_is_not_finite_is_never_written` fails. Mutation: drop
+    /// `a_value_that_is_not_finite_is_never_written` fails; ask it only of
+    /// `Transform`, and `a_value_that_is_not_finite_is_refused_on_any_component`
+    /// fails. Mutation: drop
     /// `holds`, and `a_scale_the_engine_could_not_read_back_is_never_written`
     /// fails. Mutation: drop the bits comparison, and
     /// `a_commit_that_changes_nothing_is_not_an_entry` fails. Mutation: read
@@ -4845,5 +4847,38 @@ mod tests {
                 .scale,
             Vec3::new(0.0, 1.0, 1.0)
         );
+    }
+
+    /// A value that is not finite is refused on a component of any type, not
+    /// only on `Transform`: the check is the inspector's, and a user's own
+    /// component saved with a `NaN` in it is as lost as a transform.
+    ///
+    /// Mutation: ask `is_finite` only inside `holds`, after its `TypeId`
+    /// check, and this fails.
+    #[test]
+    fn a_value_that_is_not_finite_is_refused_on_any_component() {
+        for text in ["inf", "NaN"] {
+            let mut app = inspector_editor();
+            let middle = select_the_middle(&mut app);
+            app.world_mut()
+                .entity_mut(middle)
+                .insert(Stretch { scale: Vec3::ONE });
+            app.update();
+            app.update();
+
+            let line = line_of(&mut app, "Stretch", 0);
+            let cell = boxes_on(&mut app, line)[0];
+            type_and_commit(&mut app, cell, text);
+
+            assert_eq!(
+                app.world()
+                    .entity(middle)
+                    .get::<Stretch>()
+                    .expect("it was inserted")
+                    .scale,
+                Vec3::ONE,
+                "{text} reached the component"
+            );
+        }
     }
 }
