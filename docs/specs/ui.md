@@ -741,7 +741,7 @@ the panel is editable.
 | The name beside it | the leaf's own name through reflection, `x`, `y`, `z`, `w`, dimmed, drawn by this project rather than by the widget |
 | What commits | **Enter, the box losing focus, or letting go of a drag across the box**, which the widget turns into a scrub. Typing moves nothing, and neither do the steps of a scrub |
 | A value that does not parse | **nothing is written.** The box keeps the typed text until it loses focus, and the real value comes back with the rebuild that follows |
-| A value that parses and cannot be held | **nothing is written, as for one that does not parse**: a value that is not finite, and on `Transform` a value that turns a transform the editor can hold into one it cannot, which is one the engine cannot read a scale and a rotation back out of, or one whose world bounds have no width or no height. Decided on issue #82 |
+| A value that parses and cannot be held | **nothing is written, as for one that does not parse**, and the box keeps the typed text: a value that is not finite, and on `Transform` a value that turns a transform the editor can hold into one it cannot, which is one the engine cannot read a scale and a rotation back out of, or one whose world bounds have no width or no height. Decided on issue #82 |
 | Where the write lands | one `f32` leaf, of one field, of one component, on the active entity, through `World::get_reflect_mut`, as a command the history holds ([data-model.md §1](./data-model.md)) |
 | While a box has focus | **the panel is not rebuilt**, so the box survives the value it just changed, and for one frame after the focus leaves, so that it survives its own commit. [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) |
 | More than one entity selected | only the active entity, which is the one the header names and, since §4, the front-most of the group |
@@ -789,6 +789,11 @@ rounds the bounds to a line, measured at `1e-8` on the placeholder at
 `x = -200`, and that entity cannot be clicked or boxed again either. Only a
 transform that passes becoming one that fails is refused, so one that arrived
 failing from elsewhere can be typed back into shape.
+
+**The box keeps what was typed**, as it does for text that does not parse,
+so that the next Ctrl+Z takes back the typing ([§8](#8-what-ctrlz-takes-back))
+rather than the commit before it. Giving the box its real value back on a
+refusal, which this did first, sent that Ctrl+Z to the history instead.
 
 ### Rejected options
 

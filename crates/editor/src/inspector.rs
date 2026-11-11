@@ -709,6 +709,21 @@ fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
 /// The write goes through [`History::record`], and only when [`SetLeaf::read`]
 /// finds the value different from what is there.
 ///
+/// **A value that parses and cannot be held is refused before any of that,
+/// and the box keeps what was typed**, exactly as for text that does not
+/// parse: `NaN` and `inf`, which `str::parse` reads as numbers, and whatever
+/// [`holds`] says no to. Leaving the box alone is what keeps the next Ctrl+Z
+/// on the typing, as [`typing_in_focus`] decides it, rather than on the commit
+/// before it. [`docs/specs/ui.md` §7](../../../docs/specs/ui.md).
+///
+/// Mutation: drop the `is_finite` check, and
+/// `a_value_that_is_not_finite_is_never_written` fails; ask it only of
+/// `Transform`, inside `holds`, and
+/// `a_value_that_is_not_finite_is_refused_on_any_component` fails. Mutation:
+/// drop `holds`, and `a_scale_the_engine_could_not_read_back_is_never_written`
+/// fails. Mutation: give the box the leaf's value on a refusal too, and
+/// `ctrl_z_after_a_refused_value_takes_back_the_typing` fails.
+///
 /// Mutation: drop the `is_final` check, and
 /// `a_scrub_on_a_box_is_one_entry` fails. Mutation: drop the `show_in_box`
 /// after recording, and `letting_go_of_a_box_after_a_scrub_keeps_the_scrub`
@@ -727,6 +742,9 @@ fn commit(change: On<ValueChange<f32>>, writes: Query<&Writes>, mut commands: Co
     let value = change.value;
     let cell = change.source;
     commands.queue(move |world: &mut World| {
+        if !value.is_finite() || !holds(world, &target, value) {
+            return;
+        }
         if let Some(set) = SetLeaf::read(world, target.clone(), value) {
             History::record(world, set);
         }
@@ -761,25 +779,12 @@ impl SetLeaf {
     ///
     /// **The old value is read here, before anything is written.**
     ///
-    /// **A value that parses and cannot be held is refused**, as one that does
-    /// not parse is: `NaN` and `inf`, which `str::parse` reads as numbers, and
-    /// whatever [`holds`] says no to.
-    /// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md).
-    ///
-    /// Mutation: drop the `is_finite` check, and
-    /// `a_value_that_is_not_finite_is_never_written` fails; ask it only of
-    /// `Transform`, and `a_value_that_is_not_finite_is_refused_on_any_component`
-    /// fails. Mutation: drop
-    /// `holds`, and `a_scale_the_engine_could_not_read_back_is_never_written`
-    /// fails. Mutation: drop the bits comparison, and
+    /// Mutation: drop the bits comparison, and
     /// `a_commit_that_changes_nothing_is_not_an_entry` fails. Mutation: read
     /// `old` after writing `new`, and
     /// `undoing_a_commit_puts_the_component_back_bit_for_bit` fails, because
     /// the undo writes back the committed value.
     fn read(world: &World, target: Writes, new: f32) -> Option<SetLeaf> {
-        if !new.is_finite() || !holds(world, &target, new) {
-            return None;
-        }
         let old = read_leaf(world, &target)?;
         (old.to_bits() != new.to_bits()).then_some(SetLeaf { target, old, new })
     }
@@ -4921,5 +4926,36 @@ mod tests {
         type_and_commit(&mut app, cell, "1e-8");
 
         assert_eq!(scale_of(&app, left), Vec3::ONE);
+    }
+
+    /// Ctrl+Z right after a refused value takes back the typing, as it does
+    /// after text that does not parse, and not the commit before it.
+    ///
+    /// `2` is committed, then `0` is typed and refused, then Ctrl+Z: the box
+    /// goes back to `2`, and the scale stays `2`.
+    ///
+    /// Mutation: give the box the leaf's value on a refusal in `commit`, and
+    /// this fails with the scale back at `1`: the box no longer counts as
+    /// typed, so Ctrl+Z reaches the history.
+    #[test]
+    fn ctrl_z_after_a_refused_value_takes_back_the_typing() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        let line = line_of(&mut app, "Transform", 2);
+        let cell = boxes_on(&mut app, line)[0];
+        type_into(&mut app, cell, "2");
+        focus(&mut app, cell);
+        enter(&mut app);
+        assert_eq!(
+            scale_of(&app, middle).x,
+            2.0,
+            "the first commit did not land"
+        );
+
+        type_into(&mut app, cell, "0");
+        enter(&mut app);
+        undo(&mut app);
+
+        assert_eq!(scale_of(&app, middle).x, 2.0, "Ctrl+Z took back the commit");
     }
 }
