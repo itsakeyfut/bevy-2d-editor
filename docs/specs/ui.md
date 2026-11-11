@@ -401,6 +401,14 @@ a mark that looks grabbable and is not is worse than no mark. *Superseded by
 [§13](#13-the-scale-handles), which put the scale handles there once they
 could be dragged; the outline itself still draws nothing on its corners.*
 
+**An entity whose rotation the engine cannot read back is outlined as if
+unturned.** Its scale is zero or too small to decompose, which the inspector
+and the drags refuse to write ([§7](#7-what-the-inspector-can-edit),
+[§13](#13-the-scale-handles)) but which another writer could still leave. The
+outline draws it as a line or a point where it is, so the selection is still
+visible, rather than panicking a debug build on the `NaN` angle. Decided on
+issue #82.
+
 **While a box drag is happening, the viewport draws the box**: an outline in the
 same colour, on the same render layer, in a gizmo group of its own, with nothing
 filled in. It is gone the moment the button is let go.
@@ -733,6 +741,7 @@ the panel is editable.
 | The name beside it | the leaf's own name through reflection, `x`, `y`, `z`, `w`, dimmed, drawn by this project rather than by the widget |
 | What commits | **Enter, the box losing focus, or letting go of a drag across the box**, which the widget turns into a scrub. Typing moves nothing, and neither do the steps of a scrub |
 | A value that does not parse | **nothing is written.** The box keeps the typed text until it loses focus, and the real value comes back with the rebuild that follows |
+| A value that parses and cannot be held | **nothing is written, as for one that does not parse**: a value that is not finite, and on `Transform` a value that leaves a transform the engine cannot read a scale and a rotation back out of, where it could before. Decided on issue #82 |
 | Where the write lands | one `f32` leaf, of one field, of one component, on the active entity, through `World::get_reflect_mut`, as a command the history holds ([data-model.md §1](./data-model.md)) |
 | While a box has focus | **the panel is not rebuilt**, so the box survives the value it just changed, and for one frame after the focus leaves, so that it survives its own commit. [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) |
 | More than one entity selected | only the active entity, which is the one the header names and, since §4, the front-most of the group |
@@ -765,7 +774,28 @@ stays one line, carrying three boxes, which is how Unity draws a vector and is
 what `FeathersNumberInputProps` is shaped for. Three separate lines would say
 that `x` is a sibling of `rotation`.
 
+**`NaN`, `inf` and a scale of zero are refused because they parse.** The box
+hands `str::parse::<f32>` what was typed, which reads `NaN`, `inf` and `1e-30`
+as numbers, so the row above never sees them. Measured on 0.20.1: each of
+those, and `0`, typed into `scale` panics the outline in a debug build, in the
+`Rot2` it builds from the rotation `GlobalTransform` reads back. A zero scale
+is also a sprite that cannot be clicked or boxed again once it is deselected,
+saved that way. The test for "can be held" is the one the scale handles of
+[§13](#13-the-scale-handles) already ask, so a value the drag refuses is the
+value the box refuses.
+
 ### Rejected options
+
+**Accepting a zero scale, as Unity does**, and only keeping the outline from
+panicking on it. The entity is then saved in a state nothing in the editor can
+select again, which is row 6 even though the user typed it.
+
+**Guarding the outline alone.** `NaN` and `inf` would still be written and
+saved.
+
+**Refusing non-finite values only**, which keeps the inspector from naming
+`Transform`. It leaves the zero scale above, and the inspector names
+`Transform` once, for one question the engine's own arithmetic decides.
 
 **Writing on every keystroke.** It is what the widget offers first, and with
 two-way sync it is what feathers documents. Without undo it makes every
