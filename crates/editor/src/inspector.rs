@@ -12,6 +12,7 @@
 use core::any::TypeId;
 
 use b2d_editor_ui::{field_line, field_row};
+use bevy::camera::primitives::Aabb;
 use bevy::clipboard::Clipboard;
 use bevy::feathers::containers::{pane_body, pane_header};
 use bevy::feathers::controls::{FeathersNumberInput, NumberInputValue};
@@ -24,6 +25,8 @@ use bevy::ui::ScrollPosition;
 use bevy::ui_widgets::ValueChange;
 
 use crate::history::{EditorCommand, History};
+use crate::moving::readable;
+use crate::selection::world_bounds;
 use crate::{Region, Selection};
 
 /// How far a field row sits in from the component name above it.
@@ -706,6 +709,21 @@ fn leaves_of(value: &dyn PartialReflect) -> Option<Vec<Leaf>> {
 /// The write goes through [`History::record`], and only when [`SetLeaf::read`]
 /// finds the value different from what is there.
 ///
+/// **A value that parses and cannot be held is refused before any of that,
+/// and the box keeps what was typed**, exactly as for text that does not
+/// parse: `NaN` and `inf`, which `str::parse` reads as numbers, and whatever
+/// [`holds`] says no to. Leaving the box alone is what keeps the next Ctrl+Z
+/// on the typing, as [`typing_in_focus`] decides it, rather than on the commit
+/// before it. [`docs/specs/ui.md` §7](../../../docs/specs/ui.md).
+///
+/// Mutation: drop the `is_finite` check, and
+/// `a_value_that_is_not_finite_is_never_written` fails; ask it only of
+/// `Transform`, inside `holds`, and
+/// `a_value_that_is_not_finite_is_refused_on_any_component` fails. Mutation:
+/// drop `holds`, and `a_scale_the_engine_could_not_read_back_is_never_written`
+/// fails. Mutation: give the box the leaf's value on a refusal too, and
+/// `ctrl_z_after_a_refused_value_takes_back_the_typing` fails.
+///
 /// Mutation: drop the `is_final` check, and
 /// `a_scrub_on_a_box_is_one_entry` fails. Mutation: drop the `show_in_box`
 /// after recording, and `letting_go_of_a_box_after_a_scrub_keeps_the_scrub`
@@ -724,6 +742,9 @@ fn commit(change: On<ValueChange<f32>>, writes: Query<&Writes>, mut commands: Co
     let value = change.value;
     let cell = change.source;
     commands.queue(move |world: &mut World| {
+        if !value.is_finite() || !holds(world, &target, value) {
+            return;
+        }
         if let Some(set) = SetLeaf::read(world, target.clone(), value) {
             History::record(world, set);
         }
@@ -1009,7 +1030,8 @@ fn read_leaf(world: &World, writes: &Writes) -> Option<f32> {
 ///   `an_edit_touches_one_field_of_one_entity`
 /// * nothing is written that could not be parsed, so no zero goes over a
 ///   number: `an_unparseable_value_is_never_written`, which pins
-///   `bevy_feathers` rather than this file and says so
+///   `bevy_feathers` rather than this file and says so; nor anything that
+///   parsed and cannot be held, which [`SetLeaf::read`] refuses
 ///
 /// The fourth thing, that the box and the component agree afterwards, is
 /// `the_row_shows_what_the_component_holds_after_a_commit`. A read path and a
@@ -1021,6 +1043,12 @@ fn write_leaf(world: &mut World, writes: &Writes, value: f32) {
     let Ok(mut component) = world.get_reflect_mut(writes.of, writes.component) else {
         return;
     };
+    apply_leaf(component.as_reflect_mut(), writes, value);
+}
+
+/// Set one leaf of `component` to `value`, through reflection: the walk
+/// [`write_leaf`] does on the world, and [`holds`] on a copy.
+fn apply_leaf(component: &mut dyn Reflect, writes: &Writes, value: f32) {
     let ReflectMut::Struct(shape) = component.reflect_mut() else {
         return;
     };
@@ -1034,6 +1062,49 @@ fn write_leaf(world: &mut World, writes: &Writes, value: f32) {
         return;
     };
     let _ = leaf.try_apply(&value);
+}
+
+/// Whether `new` leaves the component something the editor can still hold.
+///
+/// Only `Transform` is asked. The leaf is applied to a copy, and the copy has
+/// to pass two tests: the engine can read a scale and a rotation back out of
+/// it ([`readable`]), and its world bounds, measured as the box drag measures
+/// them ([`world_bounds`]), still have a width and a height, without which
+/// the entity can be neither clicked nor boxed again. **Only a write that
+/// turns a transform that passes into one that fails is refused**, so one
+/// that arrived failing from elsewhere can still be typed back into shape.
+/// [`docs/specs/ui.md` §7](../../../docs/specs/ui.md) has why this is refused
+/// rather than drawn around.
+///
+/// The bounds are measured from the transform alone, as if it had no parent,
+/// which is what the drags assume too.
+///
+/// **The `TypeId` check is not a shortcut.** Without it, a component of any
+/// other type whose field and leaf have `Transform`'s names, a user's own
+/// `scale: Vec3`, would have its leaf applied to the copy by name and be
+/// refused for something its own value says nothing about.
+///
+/// Mutation: drop the `TypeId` check, and
+/// `a_component_of_another_type_with_a_scale_field_accepts_zero` fails.
+/// Mutation: refuse whatever the transform was before, and
+/// `a_transform_that_could_not_be_read_back_can_be_typed_back_into_shape`
+/// fails. Mutation: drop the bounds test, and
+/// `a_scale_that_would_leave_no_bounds_is_never_written` fails.
+fn holds(world: &World, target: &Writes, new: f32) -> bool {
+    if target.component != TypeId::of::<Transform>() {
+        return true;
+    }
+    let Some(now) = world.get::<Transform>(target.of) else {
+        return true;
+    };
+    let mut then = *now;
+    apply_leaf(&mut then, target, new);
+    let aabb = world.get::<Aabb>(target.of);
+    let passes = |at: &Transform| {
+        readable(at)
+            && aabb.is_none_or(|aabb| !world_bounds(&GlobalTransform::from(*at), aabb).is_empty())
+    };
+    !passes(now) || passes(&then)
 }
 
 #[cfg(test)]
@@ -4658,5 +4729,233 @@ mod tests {
             5.0,
             "clicking into the box and letting it go wrote over the undo"
         );
+    }
+
+    /// A component with a field that has `Transform`'s name and shape, as a
+    /// user's own component could, to show that only `Transform` is asked
+    /// whether the engine can read it back.
+    #[derive(Component, Reflect)]
+    struct Stretch {
+        scale: Vec3,
+    }
+
+    /// The middle placeholder's scale.
+    fn scale_of(app: &App, entity: Entity) -> Vec3 {
+        app.world()
+            .entity(entity)
+            .get::<Transform>()
+            .expect("a placeholder has a transform")
+            .scale
+    }
+
+    /// A value that is not finite is never written, though it parses:
+    /// `str::parse` reads `inf` and `NaN` as numbers, which is how they got
+    /// past the rule for text that does not parse.
+    ///
+    /// Typed into `translation`, which the engine decomposes without, so that
+    /// the only thing standing in the way is the finiteness check. The Ctrl+Z
+    /// afterwards reaches the click that selected the placeholder, which is
+    /// how "nothing was recorded" is read.
+    ///
+    /// Mutation: drop the `is_finite` check in `SetLeaf::read`, and this
+    /// fails.
+    #[test]
+    fn a_value_that_is_not_finite_is_never_written() {
+        for text in ["inf", "NaN"] {
+            let mut app = inspector_editor();
+            let middle = select_the_middle(&mut app);
+
+            let line = line_of(&mut app, "Transform", 0);
+            let cell = boxes_on(&mut app, line)[0];
+            type_and_commit(&mut app, cell, text);
+
+            assert_eq!(
+                translation(&app, middle).to_array().map(f32::to_bits),
+                Vec3::ZERO.to_array().map(f32::to_bits),
+                "{text} reached the component"
+            );
+            undo(&mut app);
+            assert!(
+                app.world().resource::<Selection>().entities().is_empty(),
+                "{text} was recorded: Ctrl+Z did not reach the click"
+            );
+        }
+    }
+
+    /// A scale the engine could not read back is never written: `0`, and
+    /// `1e-30`, whose square is zero. The box comes back to the real value,
+    /// and nothing is recorded.
+    ///
+    /// It asserts on the component: the outline cannot panic on such a scale
+    /// (`outline::outline` draws a non-finite angle as none), so a failure
+    /// here is the inspector's.
+    ///
+    /// Mutation: drop `holds` from `SetLeaf::read`, and this fails.
+    #[test]
+    fn a_scale_the_engine_could_not_read_back_is_never_written() {
+        for text in ["0", "1e-30"] {
+            let mut app = inspector_editor();
+            let middle = select_the_middle(&mut app);
+
+            let line = line_of(&mut app, "Transform", 2);
+            let cell = boxes_on(&mut app, line)[0];
+            type_and_commit(&mut app, cell, text);
+
+            assert_eq!(scale_of(&app, middle), Vec3::ONE, "{text} was written");
+            let line = line_of(&mut app, "Transform", 2);
+            assert_eq!(numbers_on(&mut app, line), ["1", "1", "1"], "after {text}");
+            undo(&mut app);
+            assert!(
+                app.world().resource::<Selection>().entities().is_empty(),
+                "{text} was recorded: Ctrl+Z did not reach the click"
+            );
+        }
+    }
+
+    /// A transform that arrived unreadable can still be typed back into
+    /// shape, one number at a time.
+    ///
+    /// Its scale's `x` and `y` are zero, so typing `2` into `x` leaves it
+    /// still unreadable, on `y`; refused, the user could never repair it.
+    ///
+    /// Mutation: drop the condition that the transform was readable in
+    /// `holds`, and this fails.
+    #[test]
+    fn a_transform_that_could_not_be_read_back_can_be_typed_back_into_shape() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut()
+            .entity_mut(middle)
+            .insert(Transform::from_scale(Vec3::new(0.0, 0.0, 1.0)));
+        // Twice, for the reason `an_unparseable_value_is_never_written` gives.
+        app.update();
+        app.update();
+
+        let line = line_of(&mut app, "Transform", 2);
+        let cell = boxes_on(&mut app, line)[0];
+        type_and_commit(&mut app, cell, "2");
+
+        assert_eq!(scale_of(&app, middle), Vec3::new(2.0, 0.0, 1.0));
+    }
+
+    /// A component of another type, with a field named `scale`, takes a zero
+    /// into it: only `Transform` is asked whether the engine can read it back.
+    ///
+    /// Mutation: drop the `TypeId` check in `holds`, and this fails: the zero
+    /// is then applied to a copy of the placeholder's `Transform` by name, and
+    /// refused.
+    #[test]
+    fn a_component_of_another_type_with_a_scale_field_accepts_zero() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut()
+            .entity_mut(middle)
+            .insert(Stretch { scale: Vec3::ONE });
+        app.update();
+        app.update();
+
+        let line = line_of(&mut app, "Stretch", 0);
+        let cell = boxes_on(&mut app, line)[0];
+        type_and_commit(&mut app, cell, "0");
+
+        assert_eq!(
+            app.world()
+                .entity(middle)
+                .get::<Stretch>()
+                .expect("it was inserted")
+                .scale,
+            Vec3::new(0.0, 1.0, 1.0)
+        );
+    }
+
+    /// A value that is not finite is refused on a component of any type, not
+    /// only on `Transform`: the check is the inspector's, and a user's own
+    /// component saved with a `NaN` in it is as lost as a transform.
+    ///
+    /// Mutation: ask `is_finite` only inside `holds`, after its `TypeId`
+    /// check, and this fails.
+    #[test]
+    fn a_value_that_is_not_finite_is_refused_on_any_component() {
+        for text in ["inf", "NaN"] {
+            let mut app = inspector_editor();
+            let middle = select_the_middle(&mut app);
+            app.world_mut()
+                .entity_mut(middle)
+                .insert(Stretch { scale: Vec3::ONE });
+            app.update();
+            app.update();
+
+            let line = line_of(&mut app, "Stretch", 0);
+            let cell = boxes_on(&mut app, line)[0];
+            type_and_commit(&mut app, cell, text);
+
+            assert_eq!(
+                app.world()
+                    .entity(middle)
+                    .get::<Stretch>()
+                    .expect("it was inserted")
+                    .scale,
+                Vec3::ONE,
+                "{text} reached the component"
+            );
+        }
+    }
+
+    /// A scale the engine can still read back, but that leaves the entity's
+    /// world bounds with no width, is never written: the entity could be
+    /// neither clicked nor boxed again.
+    ///
+    /// On the left placeholder, at `x = -200`, where an `f32` step is about
+    /// `1.5e-5`, so `1e-8` collapses the bounds to a line while its square is
+    /// still far from zero. The middle placeholder, at the origin, would not
+    /// show it.
+    ///
+    /// Mutation: drop the bounds test in `holds`, and this fails.
+    #[test]
+    fn a_scale_that_would_leave_no_bounds_is_never_written() {
+        let mut app = inspector_editor();
+        click_at(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+        let left = app.world().resource::<Selection>().entities()[0];
+
+        let line = line_of(&mut app, "Transform", 2);
+        let cell = boxes_on(&mut app, line)[0];
+        type_and_commit(&mut app, cell, "1e-8");
+
+        assert_eq!(scale_of(&app, left), Vec3::ONE);
+    }
+
+    /// Ctrl+Z right after a refused value takes back the typing, as it does
+    /// after text that does not parse, and not the commit before it.
+    ///
+    /// `2` is committed, then `0` is typed and refused, then Ctrl+Z: the box
+    /// goes back to `2`, and the scale stays `2`.
+    ///
+    /// Mutation: give the box the leaf's value on a refusal in `commit`, and
+    /// this fails with the scale back at `1`: the box no longer counts as
+    /// typed, so Ctrl+Z reaches the history.
+    #[test]
+    fn ctrl_z_after_a_refused_value_takes_back_the_typing() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        let line = line_of(&mut app, "Transform", 2);
+        let cell = boxes_on(&mut app, line)[0];
+        type_into(&mut app, cell, "2");
+        focus(&mut app, cell);
+        enter(&mut app);
+        assert_eq!(
+            scale_of(&app, middle).x,
+            2.0,
+            "the first commit did not land"
+        );
+
+        type_into(&mut app, cell, "0");
+        enter(&mut app);
+        undo(&mut app);
+
+        assert_eq!(scale_of(&app, middle).x, 2.0, "Ctrl+Z took back the commit");
     }
 }
