@@ -234,6 +234,21 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// The check job's legs, as `(check, platform)` pairs, read from the
+    /// matrix's `include` list in the order it writes them.
+    ///
+    /// Through the parser, so a commented-out leg is not a leg.
+    fn legs(workflow: &Yaml) -> Vec<(&str, &str)> {
+        workflow["jobs"]["check"]["strategy"]["matrix"]["include"]
+            .as_vec()
+            .map(|legs| {
+                legs.iter()
+                    .filter_map(|leg| Some((leg["check"].as_str()?, leg["os"].as_str()?)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The position of the first step of `job` that `matches`.
     fn step(job: &Yaml, matches: impl Fn(&Yaml) -> bool) -> Option<usize> {
         job["steps"].as_vec()?.iter().position(matches)
@@ -366,7 +381,8 @@ mod tests {
         );
     }
 
-    /// The workflow runs every check xtask lists, and nothing else.
+    /// The workflow runs every check xtask lists, and nothing else, each leg
+    /// once.
     ///
     /// The workflow's matrix is a second copy of the list of checks, which is
     /// what `docs/specs/dev-environment.md` §3 once rejected a job per check
@@ -374,13 +390,15 @@ mod tests {
     /// xtask's from [`crate::checks`] and the workflow's through a parser, and
     /// held equal in both directions.
     ///
-    /// Mutation: delete `clippy` from the matrix, and this fails naming it.
-    /// Add a task to `TASKS` or a row to `ROWS` without a job, and this fails
-    /// naming it. Commenting a matrix entry out is a deletion, not a disguise.
+    /// Mutation: delete the `clippy` leg, and this fails naming it. List the
+    /// `fmt` leg twice, and this fails. Add a task to `TASKS` or a row to
+    /// `ROWS` without a leg, and this fails naming it. Commenting a leg out is
+    /// a deletion, not a disguise.
     #[test]
     fn the_workflow_runs_every_check_xtask_lists() {
         let workflow = workflow();
-        let listed = strings(&workflow["jobs"]["check"]["strategy"]["matrix"]["check"]);
+        let legs = legs(&workflow);
+        let listed: Vec<&str> = legs.iter().map(|(check, _)| *check).collect();
         let checks = crate::checks();
         for check in &checks {
             assert!(
@@ -394,39 +412,53 @@ mod tests {
                 "the workflow runs `{check}` and xtask does not list it, so `cargo xtask all` skips it"
             );
         }
+        let mut distinct = legs.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
         assert_eq!(
-            listed.len(),
-            checks.len(),
-            "a check is listed twice: {listed:?}"
+            distinct.len(),
+            legs.len(),
+            "a leg is listed twice: {legs:?}"
         );
     }
 
-    /// The workflow runs every check on the three platforms the specification
-    /// names, each as a job named for both.
+    /// The workflow runs the tests on the three platforms the specification
+    /// names and every other check on Linux, each as a job named for both.
     ///
-    /// `docs/specs/dev-environment.md` §3 decided the platforms, and nothing
-    /// else here can tell when one quietly leaves the matrix: the remaining
-    /// legs stay green. The development platform is the one that matters,
-    /// which is why the rows are named rather than counted.
+    /// `docs/specs/dev-environment.md` §3 decided which check runs where, and
+    /// nothing else here can tell when a leg quietly leaves the matrix or
+    /// lands on the wrong runner: the remaining legs stay green. The legs are
+    /// compared as a set with the one §3 implies, built from xtask's own list
+    /// of checks, so a check added there is expected on Linux without this
+    /// test being edited, and an empty `include` cannot pass.
     ///
-    /// The names are a list, and a list is not a platform until something runs
+    /// The names are data, and a name is not a platform until something runs
     /// on it, so `runs-on` is held to the matrix too: pinning it to one runner
-    /// leaves all three names in place and every leg on one machine, which is
+    /// leaves every leg's name in place and every leg on one machine, which is
     /// how an earlier version of this test passed while checking nothing.
     ///
-    /// Mutation: remove `windows-latest` from the matrix, pin `runs-on` to
-    /// `ubuntu-latest`, name the job without `matrix.check`, or run
-    /// `cargo xtask all` in place of the matrix's check, and this fails naming
-    /// what went missing.
+    /// Mutation: drop the `windows-latest` `test` leg, add a `clippy` leg on
+    /// `macos-latest`, pin `runs-on` to `ubuntu-latest`, name the job without
+    /// `matrix.check`, or run `cargo xtask all` in place of the matrix's check,
+    /// and this fails naming what went wrong.
     #[test]
-    fn the_workflow_runs_every_check_on_every_platform() {
+    fn the_workflow_runs_the_tests_on_every_platform_and_the_rest_on_linux() {
         let workflow = workflow();
         let job = &workflow["jobs"]["check"];
-        assert_eq!(
-            strings(&job["strategy"]["matrix"]["os"]),
-            ["ubuntu-latest", "macos-latest", "windows-latest"],
-            "the matrix's platforms"
-        );
+        let mut wanted: Vec<(&str, &str)> = crate::checks()
+            .into_iter()
+            .filter(|check| *check != "test")
+            .map(|check| (check, "ubuntu-latest"))
+            .chain(
+                ["ubuntu-latest", "macos-latest", "windows-latest"]
+                    .into_iter()
+                    .map(|os| ("test", os)),
+            )
+            .collect();
+        wanted.sort_unstable();
+        let mut legs = legs(&workflow);
+        legs.sort_unstable();
+        assert_eq!(legs, wanted, "the matrix's legs");
         assert_eq!(
             job["runs-on"].as_str(),
             Some("${{ matrix.os }}"),

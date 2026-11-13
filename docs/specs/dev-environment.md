@@ -74,18 +74,35 @@ particularly well written, and are the template this structure follows.
 
 ### Decision
 
-**Every check runs on Linux, macOS and Windows**, on every push to `main`
-and every pull request, **each as a job of its own**: `cargo xtask <check>`,
-named on the Checks page as the check and the platform, `clippy
-(windows-latest)`. The checks are the gate's rows (`fmt`, `game`, `clippy`,
-`doc`, `test`) and the two tasks beside it (`docs`, `commands`).
+~~**Every check runs on Linux, macOS and Windows**, on every push to `main`
+and every pull request, **each as a job of its own**.~~ **Reversed** by
+[#91](https://github.com/itsakeyfut/bevy-2d-editor/issues/91), for what is
+below. It read: running everything everywhere, rather than putting the
+platform-independent checks on one runner, is the decision, because the
+failure worth designing against is a check that examines nothing on one
+platform while passing on another, which had happened here and was invisible
+from Linux.
 
-Section 1 claims the product is not Windows-only. This is what makes that claim
-checkable rather than said. Running everything everywhere, rather than putting
-the platform-independent checks on one runner, is the decision: the failure
-worth designing against is a check that examines nothing on one platform while
-passing on another, which has already happened here and was invisible from
-Linux.
+**`test` runs on Linux, macOS and Windows; every other check runs on Linux
+only.** Each is a job of its own, on every push to `main` and every pull
+request: `cargo xtask <check>`, named on the Checks page as the check and the
+platform, `test (windows-latest)`, `clippy (ubuntu-latest)`. The checks are the
+gate's rows (`fmt`, `game`, `clippy`, `doc`, `test`) and the two tasks beside
+it (`docs`, `commands`).
+
+Section 1 claims the product is not Windows-only, and `test` is what makes that
+claim checkable: it is the one check that builds the editor and runs it. The
+others read the same sources on every platform and found nothing on one that
+they did not find on the others: nothing in the workspace is compiled only on
+one platform, measured by a search for `cfg(windows)`, `cfg(unix)` and
+`target_os` that found two, both in a test's comments. What a check that
+examines nothing on one platform looks like is now held where it can happen,
+in `test`. Linux rather than Windows for the rest is not a matter of speed:
+on `main`'s last run before this, warm, the six took 339 s on Linux and 376 s
+on Windows in all, Linux faster at `clippy` (29 s against 86 s) and `game`
+(36 s against 59 s), Windows at the other four. It is that a Linux runner is
+the cheapest kind GitHub offers, and that the Linux leg of `test` needs the
+libraries the engine links against installed anyway.
 
 ~~**The workflow names one command and no checks.**~~ **Withdrawn** by
 [#70](https://github.com/itsakeyfut/bevy-2d-editor/issues/70). It read: what
@@ -138,19 +155,30 @@ action to keep current costs more than the seconds it saves.
 > remembers ([open-questions.md §1](./open-questions.md) on why a deferral
 > carries one).
 
-**Two caches per platform, not one per check.** `game`, `clippy` and `doc`
-compile dependencies in check mode and share one, saved by `clippy`; `test`
-builds and keeps its own; `fmt`, `docs` and `commands` build only xtask and
-take none. Before this split the three platform caches measured 1.40, 1.67
-and 1.84 GiB against the repository's default limit of 10 GiB, and a cache per
-check was estimated at about 11 GiB, which evicts at random into cold builds.
-After it the six caches measured 0.29 to 0.39 GiB for check mode and 0.74 to
-0.93 GiB for the test build, 3.6 GiB in all.
+**Caches per platform and kind of build, not one per check.** `game`,
+`clippy` and `doc` compile dependencies in check mode and share one, saved by
+`clippy`; `test` builds and keeps its own; `fmt`, `docs` and `commands` build
+only xtask and take none. Since
+[#91](https://github.com/itsakeyfut/bevy-2d-editor/issues/91) the check-mode
+cache exists on Linux only, so four caches rather than six; the sizes below
+are from before it. Before this split the three platform caches measured
+1.40, 1.67 and 1.84 GiB against the repository's default limit of 10 GiB, and
+a cache per check was estimated at about 11 GiB, which evicts at random into
+cold builds. After it the six caches measured 0.29 to 0.39 GiB for check mode
+and 0.74 to 0.93 GiB for the test build, 3.6 GiB in all.
 
 ### Rejected
 
-* **`fmt`, `clippy` and `doc` on one runner**, with only `test` on three. Saves
-  little today and leaves `cfg(windows)` code unlinted once there is any.
+* ~~**`fmt`, `clippy` and `doc` on one runner**, with only `test` on three.
+  Saves little today and leaves `cfg(windows)` code unlinted once there is
+  any.~~ **Reversed** by
+  [#91](https://github.com/itsakeyfut/bevy-2d-editor/issues/91). There is no
+  such code, and when there is, [open-questions.md](./open-questions.md) says
+  `clippy` goes back to three platforms.
+* **The other checks on Windows, the development machine, rather than
+  Linux.** About as fast in all, measured above, on a runner that costs more,
+  and the development machine already runs every check locally through the
+  gate.
 * **The other two platforms only on pushes to `main`.** A Windows-only failure
   would then be found after the merge, which is not what a pull request check
   is for.
