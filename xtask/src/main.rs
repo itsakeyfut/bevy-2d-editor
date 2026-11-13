@@ -800,9 +800,16 @@ mod tests {
     /// Read from the root manifest, through a parser, because profiles are
     /// only honoured there: cargo warns about a member's and ignores it.
     ///
+    /// **The test profile is held to being absent**, not to some subset of
+    /// keys: it inherits `dev` only while nothing is written there, and an
+    /// `inherits = "release"` is accepted by cargo, measured, and would
+    /// optimize the workspace's own crates in tests.
+    ///
     /// Mutation: remove the `[profile.dev.package."*"]` entry, and this fails.
     /// Mutation: add `[profile.dev] opt-level = 1`, and this fails. Mutation:
-    /// add `[profile.test.package."*"] opt-level = 0`, and this fails.
+    /// add `[profile.dev.package.b2d_editor] opt-level = 3`, and this fails.
+    /// Mutation: add `[profile.test.package."*"] opt-level = 0`, or
+    /// `[profile.test] inherits = "release"`, and this fails.
     #[test]
     fn a_development_build_optimizes_the_dependencies_and_not_the_workspace() {
         let path = workspace_root().join("Cargo.toml");
@@ -826,11 +833,16 @@ mod tests {
             "the workspace's own opt-level in dev: {:?}",
             level(profile("dev"))
         );
-        let test = profile("test");
-        assert_eq!(level(test), None, "the test profile sets an opt-level");
+        let packages: Vec<&String> = profile("dev")
+            .and_then(|dev| dev.get("package"))
+            .and_then(toml::Value::as_table)
+            .map(|package| package.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(packages, ["*"], "dev overrides packages other than \"*\"");
         assert!(
-            test.and_then(|t| t.get("package")).is_none(),
-            "the test profile overrides packages"
+            profile("test").is_none(),
+            "the test profile is written to: {:?}",
+            profile("test")
         );
     }
 }
