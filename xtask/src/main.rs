@@ -791,4 +791,46 @@ mod tests {
         assert_eq!(exit_code(true), 0);
         assert_eq!(exit_code(false), 1);
     }
+
+    /// A development build optimizes every dependency and leaves the
+    /// workspace's own crates alone, and the test profile does not undo it:
+    /// `docs/specs/dev-environment.md` §4. Without it a drag in the editor ran
+    /// at six to nine frames a second from `cargo run`, measured there.
+    ///
+    /// Read from the root manifest, through a parser, because profiles are
+    /// only honoured there: cargo warns about a member's and ignores it.
+    ///
+    /// Mutation: remove the `[profile.dev.package."*"]` entry, and this fails.
+    /// Mutation: add `[profile.dev] opt-level = 1`, and this fails. Mutation:
+    /// add `[profile.test.package."*"] opt-level = 0`, and this fails.
+    #[test]
+    fn a_development_build_optimizes_the_dependencies_and_not_the_workspace() {
+        let path = workspace_root().join("Cargo.toml");
+        let root: toml::Table = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("{}: {err}", path.display()))
+            .parse()
+            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let profile = |name: &str| root.get("profile").and_then(|p| p.get(name));
+        let level = |table: Option<&toml::Value>| {
+            table
+                .and_then(|t| t.get("opt-level"))
+                .and_then(toml::Value::as_integer)
+        };
+
+        let dependencies = profile("dev")
+            .and_then(|dev| dev.get("package"))
+            .and_then(|package| package.get("*"));
+        assert_eq!(level(dependencies), Some(3), "the dependencies' opt-level");
+        assert!(
+            matches!(level(profile("dev")), None | Some(0)),
+            "the workspace's own opt-level in dev: {:?}",
+            level(profile("dev"))
+        );
+        let test = profile("test");
+        assert_eq!(level(test), None, "the test profile sets an opt-level");
+        assert!(
+            test.and_then(|t| t.get("package")).is_none(),
+            "the test profile overrides packages"
+        );
+    }
 }

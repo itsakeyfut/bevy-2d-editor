@@ -55,3 +55,8 @@ match_same_arms = "warn"
 redundant_closure_for_method_calls = "warn"
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
+
+# Every dependency optimized in a development build, tests included, the
+# workspace's own crates left at 0: docs/specs/dev-environment.md §4.
+[profile.dev.package."*"]
+opt-level = 3
