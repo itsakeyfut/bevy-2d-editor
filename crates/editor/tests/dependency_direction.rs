@@ -85,7 +85,7 @@ struct Dep {
 /// One entry of a `SHIPPED` row: a dependency the crate may carry, and the
 /// weight it may carry it with.
 ///
-/// Named because the gate runs clippy with `-D warnings` and
+/// Named because CI's clippy leg runs with `-D warnings` and
 /// `clippy::type_complexity` refuses the nested tuple written out in place.
 /// The rows below stay tuples: two enums of different types cannot be written
 /// in the wrong order without a compile error, which a pair of `bool`s or a

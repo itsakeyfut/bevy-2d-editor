@@ -161,7 +161,13 @@ the author's decision, and neither was moved. What that costs is the class of
 defect `docs` was written for: a link or a section number that has gone stale
 and still reads as correct, which splitting one document into sixteen
 produced. A reader who follows a link and finds nothing is where that now
-surfaces, which is row 4 of `CLAUDE.md`'s list.
+surfaces, if anywhere.
+
+**`BEVY2D_BLESS` is no longer taken out of the test run's environment.** The
+gate removed it so that a shell where a snapshot corpus had been told to
+rewrite its expectations could not turn the test row into a rewrite. Nothing
+in the workspace reads it today, so nothing changes now; whoever adds a
+snapshot corpus that does decides how CI and a local run keep it unset.
 
 **The required check is one job over all of them.** `All platforms` fails
 unless `needs.check.result` is `success`, which is one result over every leg

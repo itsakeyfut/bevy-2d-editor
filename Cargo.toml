@@ -32,7 +32,7 @@ bevy = { version = "0.20.1", default-features = false, features = [
 serde_json = "1.0.151"
 
 [workspace.lints.rust]
-# The gate runs clippy with `-D warnings`, so a crate that does not say what it
+# CI's clippy leg runs with `-D warnings`, so a crate that does not say what it
 # is for fails the build rather than drifting.
 missing_docs = "warn"
 # Nothing here needs it: Bevy's API is safe, and `TilemapChunk`, reflection and
