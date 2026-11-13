@@ -196,3 +196,80 @@ doubled. The first run on empty caches took 15m31s of wall time and 50m13s of
 job time. The repository is public, so the minutes are not billed; what is
 spent is the concurrency, five macOS jobs at a time on the free plan, so two
 of the seven macOS jobs wait for a runner.
+
+---
+
+## 4. A development build optimizes its dependencies
+
+Decided on issue #87, under #86.
+
+### Decision
+
+| | |
+| --- | --- |
+| What is optimized | **every dependency, at `opt-level = 3`, in the `dev` profile**, through `[profile.dev.package."*"]` in the root `Cargo.toml`. The workspace's own crates stay at `opt-level = 0` |
+| Tests | **take it too.** The `test` profile inherits `dev`, and nothing overrides it |
+| `clippy` and `doc` | unaffected: they generate no code |
+
+### Rationale
+
+**A drag ran at six to nine frames a second from `cargo run`, and at sixty
+with the dependencies optimized.** Measured on the machine in §1, the middle
+placeholder dragged 90 pixels and back eight times, the average and the
+longest frame printed each second:
+
+| Profile | While dragging |
+| --- | --- |
+| everything at 0, as before | 120 to 160 ms a frame |
+| dependencies at 3 | 16.7 ms, longest 20.5 ms |
+| dependencies at 3, the workspace at 1 | 16.7 ms, longest 19.0 ms |
+
+What was slow is the inspector rebuilding its panel on every frame of a drag,
+#88's subject; unoptimized, that rebuild is the whole frame. Optimizing the
+dependencies does not remove it, it makes it fit.
+
+**It costs a first build once and pays on every build after.** Each profile
+built cold into a target directory of its own:
+
+| | at 0 | dependencies at 3 | and the workspace at 1 |
+| --- | --- | --- | --- |
+| cold build of `b2d_editor` | 151 s | 337 s | 330 s |
+| rebuild after touching `inspector.rs` | 20 s | 12 s | 17 s |
+| test rebuild after the same touch | 38 s | 26 s | 27 s |
+| `b2d_editor`'s 238 tests, run | 21.9 s | 5.6 s | 4.8 s |
+
+Physical memory reached the machine's 16 GiB under every profile, as §1
+already records for the gate, so this measurement does not tell them apart
+by memory.
+
+**Tests take it because they share the build.** With the test profile left at
+0, the dependencies would be built twice, once for the editor and once for the
+tests, and the gate's test row would keep its slower run for nothing.
+
+### Rejected options
+
+**The workspace at `opt-level = 1` as well.** No faster where it was
+measured, and a rebuild of the workspace's own crates went from 12 to 17
+seconds. It comes back when the workspace's own code is what a frame spends
+its time in.
+
+**A named profile for running the editor**, `cargo run --profile editor`,
+leaving `dev` alone. The command everybody types would stay slow, and the
+dependencies would be built in two profiles.
+
+**Leaving tests at 0**, with `[profile.test.package."*"] opt-level = 0`. Two
+builds of every dependency, and the slower test run kept.
+
+**`bevy/dynamic_linking`**, which [architecture.md §7](./architecture.md)
+allows for link time. It is about link time, not about how fast the result
+runs, and it is not what made the drag slow.
+
+### Accepted risk
+
+**A cold build takes about three minutes longer**, once per target directory:
+a fresh clone, a `cargo clean`, a toolchain update. On CI that is a cache miss
+on the `test` job, which §3's cache already keys by itself.
+
+**A debugger steps through optimized engine code.** Stepping into Bevy shows
+less than it did; stepping through this workspace's own code is unchanged,
+because it stays at 0.

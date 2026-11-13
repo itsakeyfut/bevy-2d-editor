@@ -69,6 +69,7 @@ Quotations are left in the language of their source.
 | `.aseprite` files are read directly | [assets.md §1](./assets.md) |
 | Documentation is mdBook | [dev-environment.md §2](./dev-environment.md) |
 | CI runs every check on all three platforms, each as a job of its own | [dev-environment.md §3](./dev-environment.md) |
+| A development build optimizes its dependencies, tests included | [dev-environment.md §4](./dev-environment.md) |
 | The database: user-defined types, scaffolded from templates | [database-editor.md §1](./database-editor.md) |
 | Scenarios are written in a manuscript UI | [scenario-editor.md §2](./scenario-editor.md) |
 | The scenario graph's boundary **(withdrawn)** | [scenario-editor.md §3](./scenario-editor.md) |
