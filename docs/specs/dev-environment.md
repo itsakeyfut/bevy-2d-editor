@@ -155,16 +155,17 @@ action to keep current costs more than the seconds it saves.
 > remembers ([open-questions.md §1](./open-questions.md) on why a deferral
 > carries one).
 
-**Two caches per platform, not one per check.** `game`, `clippy` and `doc`
-compile dependencies in check mode and share one, saved by `clippy`; `test`
-builds and keeps its own; `fmt`, `docs` and `commands` build only xtask and
-take none. Since [#91](https://github.com/itsakeyfut/bevy-2d-editor/issues/91)
-the check-mode cache exists on Linux only, so four caches rather than six; the
-sizes below are from before it. Before this split the three platform caches measured 1.40, 1.67
-and 1.84 GiB against the repository's default limit of 10 GiB, and a cache per
-check was estimated at about 11 GiB, which evicts at random into cold builds.
-After it the six caches measured 0.29 to 0.39 GiB for check mode and 0.74 to
-0.93 GiB for the test build, 3.6 GiB in all.
+**Caches per platform and kind of build, not one per check.** `game`,
+`clippy` and `doc` compile dependencies in check mode and share one, saved by
+`clippy`; `test` builds and keeps its own; `fmt`, `docs` and `commands` build
+only xtask and take none. Since
+[#91](https://github.com/itsakeyfut/bevy-2d-editor/issues/91) the check-mode
+cache exists on Linux only, so four caches rather than six; the sizes below
+are from before it. Before this split the three platform caches measured
+1.40, 1.67 and 1.84 GiB against the repository's default limit of 10 GiB, and
+a cache per check was estimated at about 11 GiB, which evicts at random into
+cold builds. After it the six caches measured 0.29 to 0.39 GiB for check mode
+and 0.74 to 0.93 GiB for the test build, 3.6 GiB in all.
 
 ### Rejected
 

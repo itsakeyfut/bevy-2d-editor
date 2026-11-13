@@ -398,8 +398,7 @@ mod tests {
     fn the_workflow_runs_every_check_xtask_lists() {
         let workflow = workflow();
         let legs = legs(&workflow);
-        let mut listed: Vec<&str> = legs.iter().map(|(check, _)| *check).collect();
-        listed.dedup();
+        let listed: Vec<&str> = legs.iter().map(|(check, _)| *check).collect();
         let checks = crate::checks();
         for check in &checks {
             assert!(
