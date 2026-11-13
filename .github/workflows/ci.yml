@@ -18,10 +18,13 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Every check, on every platform, each a job of its own, so a failure reads
-  # on the Checks page as the check and the platform: `clippy (windows-latest)`.
-  # docs/specs/dev-environment.md §3 says why all three platforms run all of it
-  # rather than the cheaper split, and why the checks are listed here at all.
+  # `test` on every platform and every other check on Linux, each a job of its
+  # own, so a failure reads on the Checks page as the check and the platform:
+  # `test (windows-latest)`. docs/specs/dev-environment.md §3 says why only
+  # `test` crosses the platforms, and why the checks are listed here at all.
+  #
+  # The legs are listed with `include` rather than crossed from two lists, so
+  # that every step and the required check below stay one job's.
   #
   # Each check is a task of `cargo xtask`, which is where its flags live. The
   # list below is a second copy of the list in xtask, held equal to it by
@@ -34,8 +37,16 @@ jobs:
       # platform rather than all three is most of the diagnosis.
       fail-fast: false
       matrix:
-        check: [fmt, game, clippy, doc, test, docs, commands]
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - { check: fmt, os: ubuntu-latest }
+          - { check: game, os: ubuntu-latest }
+          - { check: clippy, os: ubuntu-latest }
+          - { check: doc, os: ubuntu-latest }
+          - { check: docs, os: ubuntu-latest }
+          - { check: commands, os: ubuntu-latest }
+          - { check: test, os: ubuntu-latest }
+          - { check: test, os: macos-latest }
+          - { check: test, os: windows-latest }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
@@ -53,11 +64,12 @@ jobs:
       #
       # After `rustup show`, because the cache key includes the toolchain.
       #
-      # Two caches per platform rather than one per check, which would come to
-      # more than the repository's 10 GiB and evict at random. `game`, `clippy`
-      # and `doc` all compile dependencies in check mode, so they share one,
-      # saved by `clippy`, which compiles the most of it. `test` builds and
-      # keeps its own. The other three build only xtask and take no cache.
+      # Caches per platform rather than per check, which would come to more
+      # than the repository's 10 GiB and evict at random. `game`, `clippy` and
+      # `doc` all compile dependencies in check mode, so they share one, saved
+      # by `clippy`, which compiles the most of it; they run on Linux only, so
+      # that cache is Linux's alone. `test` builds and keeps its own on each
+      # platform. The other three build only xtask and take no cache.
       - uses: Swatinem/rust-cache@v2.9.2
         if: contains(fromJSON('["game", "clippy", "doc", "test"]'), matrix.check)
         with:
