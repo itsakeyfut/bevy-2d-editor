@@ -157,11 +157,11 @@ const SHIPPED: &[(&str, &[Allowed])] = &[
 /// rather than through `runtime`, so the closure below starts from every entry
 /// point in this list. Adding one here is what pulls its crates into `SHIPPED`.
 ///
-/// `xtask/src/gate.rs` writes this list out a second time, for the `game` row
-/// that compiles each entry point the way a game resolves it. The two are held
-/// equal by `the_gates_entry_point_list_agrees_with_the_dependency_graphs` there, so
-/// adding a name here without adding it there fails that test rather than
-/// leaving the new crate compiled by nothing.
+/// The workflow writes this list out a second time, as one `game` leg per
+/// entry point that compiles it the way a game resolves it. **Nothing holds
+/// the two equal**: a name added here needs a leg added there by hand, or the
+/// new crate is never compiled without the editor's features unified in.
+/// `docs/specs/dev-environment.md` §3 records that this guard was dropped.
 const GAME_ENTRY_POINTS: &[&str] = &["b2d_runtime"];
 
 /// One `SHIPPED` row's entries, in the shape `deps_of` produces.
@@ -274,14 +274,12 @@ fn is_under_crates(manifest_path: &str) -> bool {
 ///
 /// "In this workspace" is decided by what `cargo metadata` calls a member, not
 /// by the `b2d_` prefix. `docs/specs/crates.md` §4 is a naming rule and §3 is a
-/// dependency rule, and a workspace member that does not carry the prefix,
-/// `xtask` being the one that exists, would be invisible to a check keyed on
-/// spelling.
+/// dependency rule, and a workspace member that does not carry the prefix
+/// would be invisible to a check keyed on spelling.
 ///
 /// Mutation: add `b2d_data.workspace = true` to `crates/editor_ui/Cargo.toml`,
-/// remove `b2d_core` from `crates/data/Cargo.toml`, or add
-/// `xtask = { path = "../../xtask" }` to `crates/runtime/Cargo.toml`. Each
-/// fails this test and nothing else.
+/// or remove `b2d_core` from `crates/data/Cargo.toml`. Each fails this test
+/// and nothing else.
 #[test]
 fn the_internal_dependency_graph_is_what_the_specification_says() {
     let meta = metadata();
@@ -418,7 +416,7 @@ fn a_manifest_path_is_read_the_same_way_on_every_platform() {
 /// test would stay green, and so would the clippy row, which passes
 /// `--all-features`, and the test row, which builds the workspace, where
 /// `b2d_editor` turns the feature on and cargo unifies it onto `data`. The
-/// other half is the `game` row of `cargo xtask gate`: it runs
+/// other half is the workflow's `game` legs: each runs
 /// `cargo check -p <entry point>`, which resolves `data` the way a game does
 /// and refuses it.
 ///
