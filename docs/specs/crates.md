@@ -217,9 +217,10 @@ Why:
   crates are split at all; when in doubt, follow the graph.
 * Adding a crate starts by deciding where in this graph it goes. **Anything with
   no place in it is not a crate yet** (§2).
-* **The graph is about `crates/`.** A package outside it, such as `xtask/`, is a
-  tool the workspace builds itself with rather than part of what is built, and
-  it has no place in the graph on purpose. That is not an exception to the rule
+* **The graph is about `crates/`.** A package outside it would be a tool the
+  workspace builds itself with rather than part of what is built, and it would
+  have no place in the graph on purpose; there is none today, since `xtask/`
+  was retired ([dev-environment.md §3](./dev-environment.md)). That is not an exception to the rule
   above, it is the rule's boundary, and
   `crates/editor/tests/dependency_direction.rs` is where the boundary is drawn:
   `is_under_crates` decides which packages the graph governs.
@@ -231,8 +232,8 @@ Why:
   `default` is on. **Internal edges count**: `runtime -> data` is where a game's
   copy of the feature split above is decided, and a list that skipped internal
   edges could not see it turned back on. What the list holds is the **declared**
-  edge; the configuration a game compiles is a different failure, and the `game`
-  row of `cargo xtask gate` is what catches it, by running `cargo check` on each
+  edge; the configuration a game compiles is a different failure, and the
+  workflow's `game` legs are what catch it, by running `cargo check` on each
   of those entry points so that `data`'s editor-only code being reachable from
   `runtime` fails here rather than in somebody's project. What neither holds is
   what a crate's own `default` feature
