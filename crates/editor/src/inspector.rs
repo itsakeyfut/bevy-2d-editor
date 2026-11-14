@@ -374,8 +374,61 @@ impl Plugin for InspectorPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Shown>()
             .init_resource::<FocusWasInside>()
-            .add_systems(Update, show)
+            .add_systems(Update, (show, ignore_chevron_picks.after(show)))
             .add_observer(commit);
+    }
+}
+
+/// Keep the chevrons drawn over a number box from taking the presses its
+/// scrubber needs.
+///
+/// **What it works around, in `bevy_feathers` 0.20.1.** Enter and a focus
+/// loss leave a box's text in `TextReadWriteMode::Static`, and only the
+/// scrubber, the invisible node over the text, puts it back to `Editable`
+/// when it is pressed and let go. Hovering the box shows its decrement and
+/// increment chevrons, which are spawned after the scrubber and so sit over
+/// it, and in the inspector's boxes, about 20 px wide, their icons cover the
+/// box. The press went to a chevron and never to the scrubber, so after its
+/// first commit a box refused every character typed into it, while Ctrl+A,
+/// which is not destructive, still selected. Measured in the window on #84.
+/// The chevrons do nothing when pressed: `NumberInputDecrement` and
+/// `NumberInputIncrement` have no observers in that version, so nothing is
+/// lost by letting presses fall through them. They still draw.
+///
+/// The text's children are `[scrubber, decrement, increment]` in that
+/// version's scene, so everything under the text after its first child is
+/// made to ignore picks. Every frame rather than once, because a box's scene
+/// children exist only once its spawn has applied, and the pass is idempotent
+/// over a few dozen entities.
+///
+/// **Remove this** when `bevy_feathers` stops its chevrons taking picks, or
+/// gives them something to do; `the_chevrons_over_a_box_take_no_picks_and_its_scrubber_does`
+/// fails first if the scene's order changes.
+///
+/// Mutation: do not add this system, and
+/// `a_box_takes_typing_again_after_a_commit_with_its_chevrons_showing` fails.
+fn ignore_chevron_picks(
+    boxes: Query<&Children, With<Writes>>,
+    texts: Query<&Children, With<EditableText>>,
+    children: Query<&Children>,
+    pickable: Query<(), With<Pickable>>,
+    mut commands: Commands,
+) {
+    for cell in &boxes {
+        for text in cell.iter() {
+            let Ok(over) = texts.get(text) else {
+                continue;
+            };
+            let mut stack: Vec<Entity> = over.iter().skip(1).collect();
+            while let Some(next) = stack.pop() {
+                if !pickable.contains(next) {
+                    commands.entity(next).insert(Pickable::IGNORE);
+                }
+                if let Ok(under) = children.get(next) {
+                    stack.extend(under.iter());
+                }
+            }
+        }
     }
 }
 
@@ -1354,6 +1407,8 @@ mod tests {
     };
     use crate::{Region, Selection, editor, headless};
     use bevy::feathers::controls::FeathersNumberInput;
+    use bevy::input::ButtonState;
+    use bevy::input::keyboard::{Key, KeyboardInput, NativeKeyCode};
     use bevy::input_focus::{FocusCause, InputFocus};
     use bevy::picking::pointer::{PointerAction, PointerButton};
     use bevy::prelude::*;
@@ -5407,5 +5462,197 @@ mod tests {
             "the edit landed on an entity that is not selected"
         );
         assert_eq!(translation(&app, middle).y, -42.5, "the selected one");
+    }
+
+    /// Write one keyboard input for the primary window and run a frame.
+    fn key(app: &mut App, key_code: KeyCode, logical_key: Key, text: Option<&str>, down: bool) {
+        let window = app
+            .world_mut()
+            .query_filtered::<Entity, With<bevy::window::PrimaryWindow>>()
+            .single(app.world())
+            .expect("one primary window");
+        app.world_mut().write_message(KeyboardInput {
+            key_code,
+            logical_key,
+            state: if down {
+                ButtonState::Pressed
+            } else {
+                ButtonState::Released
+            },
+            text: text.map(Into::into),
+            repeat: false,
+            window,
+        });
+        app.update();
+    }
+
+    /// Replace what the focused box holds by typing, the way a keyboard does:
+    /// select all, then one `KeyboardInput` per character carrying it as
+    /// `text`.
+    ///
+    /// Select all is Cmd+A on macOS and Ctrl+A elsewhere, chosen as
+    /// `bevy_ui_widgets` 0.20.1 chooses it on a native build,
+    /// `cfg!(target_os = "macos")`: Ctrl+A on macOS selected nothing, and the
+    /// typed `5` joined the `0` already there as `50`, measured on CI.
+    ///
+    /// Not `type_into`, which writes `EditableText` directly and so skips the
+    /// check the engine makes before inserting a character, that the text is
+    /// `TextReadWriteMode::Editable`; #84 lived in that check. Not
+    /// `pointer::hold_letter` either, which sends `text: None`, and a key with
+    /// no text inserts nothing.
+    fn type_keys(app: &mut App, text: &str) {
+        let (command, command_key) = if cfg!(target_os = "macos") {
+            (KeyCode::SuperLeft, Key::Super)
+        } else {
+            (KeyCode::ControlLeft, Key::Control)
+        };
+        key(app, command, command_key.clone(), None, true);
+        key(app, KeyCode::KeyA, Key::Character("a".into()), None, true);
+        key(app, KeyCode::KeyA, Key::Character("a".into()), None, false);
+        key(app, command, command_key, None, false);
+        for letter in text.chars() {
+            let letter = letter.to_string();
+            for down in [true, false] {
+                key(
+                    app,
+                    KeyCode::Unidentified(NativeKeyCode::Unidentified),
+                    Key::Character(letter.as_str().into()),
+                    Some(&letter),
+                    down,
+                );
+            }
+        }
+    }
+
+    /// Click into a box, type a number on the keyboard, press Enter and click
+    /// away, each as a gesture.
+    fn commit_by_keys(app: &mut App, cell: Entity, text: &str) {
+        let inner = editable_under(app.world(), cell);
+        let at = app
+            .world()
+            .entity(inner)
+            .get::<UiGlobalTransform>()
+            .expect("a box is placed")
+            .translation;
+        click_at(app, at, PointerButton::Primary);
+        type_keys(app, text);
+        enter(app);
+        click_at(app, at - Vec2::new(130.0, -50.0), PointerButton::Primary);
+    }
+
+    /// Select the middle placeholder and scroll its `Transform` into the pane,
+    /// so that its boxes can be clicked; and say which box is
+    /// `translation.x`.
+    fn translation_x_on_screen(app: &mut App) -> (Entity, Entity) {
+        let middle = select_the_middle(app);
+        app.update();
+        app.update();
+        for _ in 0..6 {
+            scroll_at(app, in_inspector(), -5.0);
+        }
+        app.update();
+        let line = line_of(app, "Transform", 0);
+        (middle, boxes_on(app, line)[0])
+    }
+
+    /// A box takes typing again after a commit, with its chevrons showing
+    /// over it.
+    ///
+    /// In the window, hovering a box shows `bevy_feathers`' chevrons, whose
+    /// icons cover a box this narrow and took the press its scrubber needed
+    /// to put the text back to `Editable` after Enter, so a box took one
+    /// number and refused every character after it (#84). Headless no icon
+    /// image is loaded and the icons have no size, so the chevrons are given
+    /// the box's size here instead: that is the stand-in for the icons.
+    /// Typed with key events, for the reason [`type_keys`] gives.
+    ///
+    /// Mutation: do not add `ignore_chevron_picks`, and this fails with the
+    /// second number refused.
+    #[test]
+    fn a_box_takes_typing_again_after_a_commit_with_its_chevrons_showing() {
+        let mut app = inspector_editor();
+        let (middle, cell) = translation_x_on_screen(&mut app);
+        let inner = editable_under(app.world(), cell);
+        let over: Vec<Entity> = app
+            .world()
+            .entity(inner)
+            .get::<Children>()
+            .expect("the text has a scrubber and chevrons over it")
+            .iter()
+            .skip(1)
+            .collect();
+        assert_eq!(over.len(), 2, "the text does not hold two chevrons");
+        for chevron in over {
+            let mut node = app
+                .world_mut()
+                .get_mut::<Node>(chevron)
+                .expect("a chevron is a node");
+            node.left = Val::Px(0.0);
+            node.top = Val::Px(0.0);
+            node.width = Val::Percent(100.0);
+            node.height = Val::Percent(100.0);
+        }
+
+        commit_by_keys(&mut app, cell, "5");
+        assert_eq!(translation(&app, middle).x, 5.0, "the first number");
+        commit_by_keys(&mut app, cell, "9");
+
+        assert_eq!(
+            translation(&app, middle).x,
+            9.0,
+            "the box refused the number typed after its first commit"
+        );
+    }
+
+    /// Under every box, what is drawn over the text after the scrubber takes
+    /// no picks, and the scrubber does.
+    ///
+    /// Read through each text's direct children, because the claim is about
+    /// which entity carries `Pickable`, and a flattened read cannot see that.
+    /// This is also what fails first if `bevy_feathers` changes the order of
+    /// those children, which `ignore_chevron_picks` relies on.
+    ///
+    /// Mutation: make the scrubber ignore picks too, and this fails. Mutation:
+    /// leave the first chevron pickable, and this fails.
+    #[test]
+    fn the_chevrons_over_a_box_take_no_picks_and_its_scrubber_does() {
+        let mut app = inspector_editor();
+        translation_x_on_screen(&mut app);
+        let cells: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<Writes>>()
+            .iter(app.world())
+            .collect();
+        assert!(!cells.is_empty(), "no boxes were built");
+
+        for cell in cells {
+            let inner = editable_under(app.world(), cell);
+            let children: Vec<Entity> = app
+                .world()
+                .entity(inner)
+                .get::<Children>()
+                .expect("the text has children")
+                .iter()
+                .collect();
+            assert_eq!(children.len(), 3, "the text's children changed shape");
+            assert_ne!(
+                app.world().entity(children[0]).get::<Pickable>(),
+                Some(&Pickable::IGNORE),
+                "the scrubber ignores picks"
+            );
+            for chevron in &children[1..] {
+                let mut stack = vec![*chevron];
+                while let Some(next) = stack.pop() {
+                    assert_eq!(
+                        app.world().entity(next).get::<Pickable>(),
+                        Some(&Pickable::IGNORE),
+                        "{next} over the text takes picks"
+                    );
+                    if let Some(under) = app.world().entity(next).get::<Children>() {
+                        stack.extend(under.iter());
+                    }
+                }
+            }
+        }
     }
 }
