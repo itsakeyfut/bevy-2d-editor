@@ -3,9 +3,9 @@
 //! What it shows, what it calls an entity, and in what order are settled in
 //! [`docs/specs/ui.md` §6](../../../docs/specs/ui.md); what it lets the user
 //! edit, and what that rejected, is
-//! [§7](../../../docs/specs/ui.md). That the panel is rebuilt rather than
-//! reconciled is
-//! [ADR-0002](../../../docs/adr/0002-rebuild-the-inspector-rather-than-diff-it.md),
+//! [§7](../../../docs/specs/ui.md). That the panel is rebuilt when its layout
+//! changes, and has its values written in place otherwise, is
+//! [ADR-0004](../../../docs/adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md),
 //! and that it is left alone while the user is in it is
 //! [ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md).
 
@@ -139,17 +139,21 @@ impl Shape {
     /// component, the field names and kinds, and the leaves' names and count
     /// can each be ignored with the suite green. The row's name is its type's
     /// short path, so the component differs under the same name only for two
-    /// types sharing a short name, which no test builds. The fields cannot
+    /// types sharing a short name, which no test builds; ignoring it then
+    /// would leave the boxes writing to the type shown before. The fields cannot
     /// differ under the same component at all: [`fields_of`] and
     /// [`leaves_of`] choose a field's kind and leaves from the type's declared
     /// fields, never from a value. They are compared so that this stays the
     /// whole layout if a shape ever does come from a value.
     ///
-    /// **Comparing `of` is held by no test**, measured: ignoring it leaves the
-    /// suite green, because another entity also has another title, its own
-    /// `Name` or its id. It stays for the reason [`Shape::of`] gives: the
-    /// filters and collapsing `docs/specs/ui.md` §6 defers bring look-alikes
-    /// back, and a value-only write to the wrong entity's panel would be row 4.
+    /// **Comparing `of` is what keeps an edit on the entity selected.** Two
+    /// entities with one `Name` and the same components differ in nothing
+    /// else the layout carries, and the boxes left standing would keep
+    /// writing to the one shown before: a commit to an entity the user did
+    /// not choose, through the history but easily unseen. Mutation: ignore
+    /// `of`, and
+    /// `an_edit_after_moving_between_look_alikes_lands_on_the_one_selected`
+    /// fails.
     fn same_layout(&self, other: &Shape) -> bool {
         self.of == other.of
             && self.into == other.into
@@ -306,12 +310,18 @@ enum Field {
 /// **`PartialEq` is written by hand, and compares the bits.** A derived one
 /// would use `f32`'s, under which `NaN` is equal to nothing including itself,
 /// so a `Transform` holding a `NaN` would make [`Shape`] differ from itself
-/// every frame and the panel would be despawned and respawned every frame.
-/// That is row 5 of `CLAUDE.md`'s list, and it is the failure
+/// every frame. Under
 /// [ADR-0002](../../../docs/adr/0002-rebuild-the-inspector-rather-than-diff-it.md)
-/// rejected *rebuild every frame* over.
+/// that despawned and respawned the panel every frame, row 5 of `CLAUDE.md`'s
+/// list. Under
+/// [ADR-0004](../../../docs/adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md)
+/// the layout still compares equal, so it would cost a pass of
+/// [`write_values_in_place`] a frame that writes nothing, and the bits are
+/// what keeps the frame idle.
 ///
-/// Mutation: derive `PartialEq` instead, and
+/// **No test holds this alone any more**, measured: deriving `PartialEq`
+/// leaves the suite green, because the write in place keeps the panel
+/// standing. Break that as well, and
 /// `a_panel_holding_a_nan_is_not_rebuilt_every_frame` fails.
 struct Leaf {
     /// What the box is labelled with, from the type's own field name.
@@ -980,7 +990,9 @@ pub(crate) fn take_back_typing(world: &mut World) -> bool {
 ///
 /// A text line drawn by `field_row` keeps its value in its root's last child;
 /// one drawn by `label_dim` is the text itself. A text that would not change is
-/// not written, so a frame in which nothing moved marks nothing changed.
+/// not written, so a line whose value held still is not marked changed while
+/// the others move. That saves a relayout and is held by no test, measured:
+/// writing every line unconditionally leaves the suite green.
 ///
 /// **A box gets its text replaced now, as well as its value**, which is what
 /// [`put_in_box`] does for the focused box after an undo. Given only a
@@ -3233,13 +3245,17 @@ mod tests {
     /// A panel holding a `NaN` is not rebuilt every frame.
     ///
     /// `f32`'s own `PartialEq` says `NaN` is equal to nothing, itself
-    /// included, so a compared value holding one differs from itself and the
-    /// panel is despawned and respawned on every update. That is row 5 of
-    /// `CLAUDE.md`'s list, and it is the failure ADR-0002 rejected *rebuild
-    /// every frame* over. `Leaf` compares the bits for this reason.
+    /// included, so a compared value holding one differs from itself on every
+    /// update. That is row 5 of `CLAUDE.md`'s list if it rebuilds the panel,
+    /// and it is the failure ADR-0002 rejected *rebuild every frame* over.
     ///
-    /// Mutation: derive `PartialEq` on `Leaf` instead of writing it, and this
-    /// fails with none of the entities surviving.
+    /// **Two things keep the panel standing now, and either one alone holds
+    /// this green**: `Leaf` comparing the bits, so the shape equals itself,
+    /// and a value-only difference being written in place rather than
+    /// rebuilt (ADR-0004). Measured: deriving `PartialEq` on `Leaf` alone
+    /// leaves this green, and so does rebuilding on any difference alone.
+    ///
+    /// Mutation: do both, and this fails with none of the entities surviving.
     #[test]
     fn a_panel_holding_a_nan_is_not_rebuilt_every_frame() {
         let mut app = inspector_editor();
@@ -5292,5 +5308,104 @@ mod tests {
         app.update();
 
         assert_eq!(title(&mut app), Some("Enemy".to_owned()));
+    }
+
+    /// A field of text that changes while the layout holds is written into
+    /// the line already showing it, beside its name rather than over it.
+    ///
+    /// The drag test reads `GlobalTransform`, whose line has no name and is
+    /// its own text. A line with a name is drawn by `field_row`, which keeps
+    /// the value in the line's last child, and finds its value by a position
+    /// numbered in a different arm of `show`; neither was reached by any test.
+    ///
+    /// Mutation: take the line's first child rather than its last in
+    /// `write_values_in_place`, and this fails with the name overwritten.
+    /// Mutation: number every named line `TextValue(0)`, and this fails with
+    /// another line's text.
+    #[test]
+    fn a_named_text_field_changed_in_place_is_written_beside_its_name() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut().entity_mut(middle).insert(Titled {
+            title: "before".to_owned(),
+        });
+        app.update();
+        app.update();
+        let before = under_the_panel(&mut app);
+
+        app.world_mut()
+            .get_mut::<Titled>(middle)
+            .expect("inserted above")
+            .title = "after".to_owned();
+        app.update();
+        app.update();
+
+        assert_eq!(
+            under_the_panel(&mut app),
+            before,
+            "a value change rebuilt the panel, so this says nothing about the write"
+        );
+        let line = line_of(&mut app, "Titled", 0);
+        assert_eq!(
+            text_under(app.world(), line),
+            ["title", "\"after\""],
+            "the named line does not show its new value beside its name"
+        );
+    }
+
+    /// Moving the selection between two entities that look alike rebuilds
+    /// the panel, so an edit lands on the entity selected.
+    ///
+    /// Two placeholders named alike, with the same components, differ only in
+    /// which entity they are, and in their values. A layout comparison that
+    /// skipped the entity would call the move a value change, and the boxes
+    /// standing would keep writing to the entity shown before: the header
+    /// reads the same name, the boxes show the other entity's numbers, and a
+    /// commit moves it, which is a value the user did not choose landing
+    /// where they are not looking.
+    ///
+    /// Mutation: make `Shape::same_layout` ignore `of`, and this fails with
+    /// the edit on the left placeholder.
+    #[test]
+    fn an_edit_after_moving_between_look_alikes_lands_on_the_one_selected() {
+        let mut app = inspector_editor();
+        // Found by where they stand rather than by clicking, so that nothing
+        // has been shown before both carry the name.
+        let at = |app: &mut App, x: f32| -> Entity {
+            let mut query = app.world_mut().query::<(Entity, &Transform, &Sprite)>();
+            query
+                .iter(app.world())
+                .find(|(_, transform, _)| transform.translation.x == x)
+                .map(|(entity, _, _)| entity)
+                .expect("a placeholder stands there")
+        };
+        let (left, middle) = (at(&mut app, -200.0), at(&mut app, 0.0));
+        for entity in [left, middle] {
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(Name::new("Enemy"));
+        }
+        click_at(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+        app.update();
+        app.update();
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+        let left_before = translation(&app, left);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let y = boxes_on(&mut app, line)[1];
+        type_and_commit(&mut app, y, "-42.5");
+
+        assert_eq!(
+            translation(&app, left),
+            left_before,
+            "the edit landed on an entity that is not selected"
+        );
+        assert_eq!(translation(&app, middle).y, -42.5, "the selected one");
     }
 }
