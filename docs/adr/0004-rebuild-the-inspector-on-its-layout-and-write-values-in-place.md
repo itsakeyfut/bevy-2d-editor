@@ -55,9 +55,17 @@ Chosen option: **compare the layout, write the values in place.**
 compares it with what is shown. When the two differ only in values, with the
 same entity, region, title, components, field names, field kinds and leaf names,
 the panel is left standing and each changed value is written into the row
-already showing it: a number box through `NumberInputValue`, as an undo does,
-and a text value by replacing the text of the entity that draws it. Any other
-difference rebuilds the panel as before.
+already showing it. A number box is given its `NumberInputValue` and has its
+text replaced, and is skipped only when it both holds the value and shows it;
+a text value is written by replacing the text of the entity that draws it.
+Any other difference rebuilds the panel as before.
+
+The boxes are not written through `show_values_in_place`, the undo's path,
+because that path replaces the text only of the box holding the focus and
+gives every other box its value alone. That is right after an undo, which a
+rebuild used to follow; written in place with nothing after it, a value alone
+leaves a box showing text it does not hold, as the Confirmation below
+measured.
 
 A row's text value is found from a marker its row carries, naming its position
 among the panel's text values, which is fixed by the layout that was just
@@ -85,6 +93,10 @@ and watching the named test fail:
 * `renaming_the_selected_entity_changes_the_header` renames the selected
   entity, which changes only a value and the title. **Mutation: make
   `Shape::same_layout` ignore the title**, and it fails.
+* `a_named_text_field_changed_in_place_is_written_beside_its_name` changes a
+  text field that has a name while the layout holds. **Mutation: take the
+  line's first child rather than its last**, and it fails with the name
+  overwritten. Mutation: number every named line 0, and it fails.
 * Writing a box in place has to give the box what a rebuilt one would show,
   and two existing tests found where a value alone does not.
   `ctrl_z_in_a_box_left_empty_by_a_long_value_reaches_the_history` fails when
@@ -93,18 +105,28 @@ and watching the named test fail:
   `a_scale_the_engine_could_not_read_back_is_never_written` fails when a box is
   compared by its value alone: text a commit refused stayed in it after the
   focus left.
-* `the_inspector_does_not_rebuild_what_has_not_changed`,
-  `choosing_a_different_entity_changes_what_is_shown` and
-  `a_panel_holding_a_nan_is_not_rebuilt_every_frame` still hold what they held
+* `the_inspector_does_not_rebuild_what_has_not_changed` and
+  `choosing_a_different_entity_changes_what_is_shown` still hold what they held
   for ADR-0002.
+* `a_panel_holding_a_nan_is_not_rebuilt_every_frame` **no longer holds what it
+  held**, measured: `Leaf` comparing `f32`s rather than their bits leaves it
+  green, because the write in place now keeps that panel standing too. It
+  fails only when both are broken, and the bits now save an idle pass of the
+  write rather than a rebuild.
+* `an_edit_after_moving_between_look_alikes_lands_on_the_one_selected` moves
+  the selection between two entities with one `Name` and commits a value.
+  **Mutation: make `Shape::same_layout` ignore the entity**, and it fails with
+  the edit on the entity shown before, because boxes left standing keep what
+  they write to. A review found this; the first draft of this record called
+  the comparison unguarded and its failure a stale panel, both wrongly.
 
-**Comparing the entity in `same_layout` is held by no test**, measured: another
-entity also has another title, so ignoring `of` leaves the suite green. It is
-kept for the reason `Shape::of` gives in the code. Nor is anything compared
-inside a row, measured the same way: the component, the field names and kinds,
-and the leaves can each be ignored with the suite green, because a field's
-kind and leaves come from the component's type rather than from a value.
-`Shape::same_layout` says why each is still compared.
+**Nothing compared inside a row is held by a test**, measured by ignoring each
+in turn: the component, the field names and kinds, and the leaves. A field's
+kind and leaves come from the component's type rather than from a value, and a
+row's name is that type's short path, so the component alone could differ, for
+two types sharing a short name. Ignoring it then would leave boxes writing to
+the type shown before, the same failure as ignoring the entity; no test builds
+that pair. `Shape::same_layout` says why each is still compared.
 
 ### Consequences
 
