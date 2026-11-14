@@ -5487,7 +5487,13 @@ mod tests {
     }
 
     /// Replace what the focused box holds by typing, the way a keyboard does:
-    /// Ctrl+A, then one `KeyboardInput` per character carrying it as `text`.
+    /// select all, then one `KeyboardInput` per character carrying it as
+    /// `text`.
+    ///
+    /// Select all is Cmd+A on macOS and Ctrl+A elsewhere, chosen as
+    /// `bevy_ui_widgets` 0.20.1 chooses it on a native build,
+    /// `cfg!(target_os = "macos")`: Ctrl+A on macOS selected nothing, and the
+    /// typed `5` joined the `0` already there as `50`, measured on CI.
     ///
     /// Not `type_into`, which writes `EditableText` directly and so skips the
     /// check the engine makes before inserting a character, that the text is
@@ -5495,10 +5501,15 @@ mod tests {
     /// `pointer::hold_letter` either, which sends `text: None`, and a key with
     /// no text inserts nothing.
     fn type_keys(app: &mut App, text: &str) {
-        key(app, KeyCode::ControlLeft, Key::Control, None, true);
+        let (command, command_key) = if cfg!(target_os = "macos") {
+            (KeyCode::SuperLeft, Key::Super)
+        } else {
+            (KeyCode::ControlLeft, Key::Control)
+        };
+        key(app, command, command_key.clone(), None, true);
         key(app, KeyCode::KeyA, Key::Character("a".into()), None, true);
         key(app, KeyCode::KeyA, Key::Character("a".into()), None, false);
-        key(app, KeyCode::ControlLeft, Key::Control, None, false);
+        key(app, command, command_key, None, false);
         for letter in text.chars() {
             let letter = letter.to_string();
             for down in [true, false] {
