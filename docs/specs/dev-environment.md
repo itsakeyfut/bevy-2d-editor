@@ -31,7 +31,8 @@ WSL2
 this project keeps that property, with CI covering Linux and macOS.
 
 **What the gate costs on that machine, now that Bevy is in the workspace.**
-Sampled once a second through six `cargo xtask all` runs, each preceded by
+Sampled once a second through six `cargo xtask all` runs (the task runner
+retired in §3; the same five commands and the two document checks), each preceded by
 touching `core`, `editor_ui` and `editor`, which is enough for the two crates
 that take the engine to be rebuilt and relinked: physical memory
 in use peaked at 16307 MiB of 16309 MiB and stayed there for most of every run,
@@ -74,18 +75,37 @@ particularly well written, and are the template this structure follows.
 
 ### Decision
 
-**Every check runs on Linux, macOS and Windows**, on every push to `main`
-and every pull request, **each as a job of its own**: `cargo xtask <check>`,
-named on the Checks page as the check and the platform, `clippy
-(windows-latest)`. The checks are the gate's rows (`fmt`, `game`, `clippy`,
-`doc`, `test`) and the two tasks beside it (`docs`, `commands`).
+~~**Every check runs on Linux, macOS and Windows**, on every push to `main`
+and every pull request, **each as a job of its own**.~~ **Reversed** by
+[#91](https://github.com/itsakeyfut/bevy-2d-editor/issues/91), for what is
+below. It read: running everything everywhere, rather than putting the
+platform-independent checks on one runner, is the decision, because the
+failure worth designing against is a check that examines nothing on one
+platform while passing on another, which had happened here and was invisible
+from Linux.
 
-Section 1 claims the product is not Windows-only. This is what makes that claim
-checkable rather than said. Running everything everywhere, rather than putting
-the platform-independent checks on one runner, is the decision: the failure
-worth designing against is a check that examines nothing on one platform while
-passing on another, which has already happened here and was invisible from
-Linux.
+**`test` runs on Linux, macOS and Windows; every other check runs on Linux
+only.** Each is a job of its own, on every push to `main` and every pull
+request, named on the Checks page as the check and the platform,
+`test (windows-latest)`, `clippy (ubuntu-latest)`. The checks are `fmt`,
+`game`, `clippy`, `doc` and `test`. ~~They ran as `cargo xtask <check>`, and
+two tasks beside them, `docs` and `commands`, ran too.~~ **Reversed** by
+[#92](https://github.com/itsakeyfut/bevy-2d-editor/issues/92); the next three
+paragraphs say what replaced each.
+
+Section 1 claims the product is not Windows-only, and `test` is what makes that
+claim checkable: it is the one check that builds the editor and runs it. The
+others read the same sources on every platform and found nothing on one that
+they did not find on the others: nothing in the workspace is compiled only on
+one platform, measured by a search for `cfg(windows)`, `cfg(unix)` and
+`target_os` that found two, both in a test's comments. What a check that
+examines nothing on one platform looks like is now held where it can happen,
+in `test`. Linux rather than Windows for the rest is not a matter of speed:
+on `main`'s last run before this, warm, the six took 339 s on Linux and 376 s
+on Windows in all, Linux faster at `clippy` (29 s against 86 s) and `game`
+(36 s against 59 s), Windows at the other four. It is that a Linux runner is
+the cheapest kind GitHub offers, and that the Linux leg of `test` needs the
+libraries the engine links against installed anyway.
 
 ~~**The workflow names one command and no checks.**~~ **Withdrawn** by
 [#70](https://github.com/itsakeyfut/bevy-2d-editor/issues/70). It read: what
@@ -95,15 +115,59 @@ the rows would undo that. What it cost was a Checks page that named a
 platform and not a check: a failed `clippy` and a failed `test` both read as a
 red `Gate (windows-latest)`, and which one was a log away.
 
-**The workflow lists the checks, and a test holds the list equal to xtask's.**
-The matrix in `.github/workflows/ci.yml` is a second copy of the list, which
-is what the withdrawn paragraph above was avoiding. What makes the copy safe
-is `the_workflow_runs_every_check_xtask_lists`, which reads the workflow
-through a YAML parser and xtask's list from its task tables, and fails naming
-a check that is in one and not the other. A parser rather than a text scrape
-because a scrape here has already been defeated by comments, three ways,
-each reporting `ok` while the two lists disagreed. The flags of each check stay
-in `xtask/src/gate.rs`, held by the tests beside them.
+~~**The workflow lists the checks, and a test holds the list equal to
+xtask's.**~~ **Withdrawn** by
+[#92](https://github.com/itsakeyfut/bevy-2d-editor/issues/92), because there is
+no second list left to hold it equal to. It read: the matrix is a second copy
+of xtask's list, made safe by a test that parsed both and failed naming a check
+in one and not the other, and the flags of each check stayed in
+`xtask/src/gate.rs`.
+
+**Each leg runs a plain `cargo` command written in the workflow, and nothing
+else holds the list.** Every leg of the matrix carries its command and its
+flags (`--locked`, `-D warnings`, rustdoc's warnings as errors), so what a
+check runs is read in one place, the place that runs it. The cost is that the
+workflow is now the only definition: there is no task to type locally, and a
+reader runs what the workflow says.
+
+**Nothing guards the workflow, the lints or the engine's features by test.**
+xtask's tests held which check ran where and with which flags, that every
+crate inherits `unsafe_code = "forbid"`, that every crate takes the engine
+with the features [ui.md §3](./ui.md) settled and no defaults, and that every
+crate a game is built from has a `game` leg. They were first to move to
+`crates/editor/tests/`, and the author decided on
+[#92](https://github.com/itsakeyfut/bevy-2d-editor/issues/92), while it was
+being built, to have none. What that costs, each a change nobody is told
+about: a leg that loses `--locked` or `-D warnings` and stays green; a new
+crate without `[lints] workspace = true`, where `unsafe` is then allowed; a
+feature added to or dropped from the engine's entry, which only changes the
+minutes; a crate a game is built from that is never compiled without the
+editor's features unified in. Each surfaces, if at all, when somebody reads
+the file it lives in.
+
+**There is no local gate script.** "Before saying anything is done" in
+`CLAUDE.md` names the workflow's Linux commands to run, rather than a script
+that ran the same ones. It had been one script so that "the gate passed" was a
+claim about one exit code; that is given up, and the claim becomes the five
+commands' exit codes, read off the run. A script outside the repository, as
+it was, could not be held equal to the workflow by any test, and a copy that
+can drift silently is what this section has refused twice.
+
+**The documents are not checked against each other by a machine.** The
+`docs` task resolved cross-file links, section numbers and the decision index,
+and checked every record in `docs/adr/` against its row; the `commands` task
+checked that a command named in prose exists here. Both went with xtask, by
+the author's decision, and neither was moved. What that costs is the class of
+defect `docs` was written for: a link or a section number that has gone stale
+and still reads as correct, which splitting one document into sixteen
+produced. A reader who follows a link and finds nothing is where that now
+surfaces, if anywhere.
+
+**`BEVY2D_BLESS` is no longer taken out of the test run's environment.** The
+gate removed it so that a shell where a snapshot corpus had been told to
+rewrite its expectations could not turn the test row into a rewrite. Nothing
+in the workspace reads it today, so nothing changes now; whoever adds a
+snapshot corpus that does decides how CI and a local run keep it unset.
 
 **The required check is one job over all of them.** `All platforms` fails
 unless `needs.check.result` is `success`, which is one result over every leg
@@ -138,19 +202,31 @@ action to keep current costs more than the seconds it saves.
 > remembers ([open-questions.md §1](./open-questions.md) on why a deferral
 > carries one).
 
-**Two caches per platform, not one per check.** `game`, `clippy` and `doc`
-compile dependencies in check mode and share one, saved by `clippy`; `test`
-builds and keeps its own; `fmt`, `docs` and `commands` build only xtask and
-take none. Before this split the three platform caches measured 1.40, 1.67
-and 1.84 GiB against the repository's default limit of 10 GiB, and a cache per
-check was estimated at about 11 GiB, which evicts at random into cold builds.
-After it the six caches measured 0.29 to 0.39 GiB for check mode and 0.74 to
-0.93 GiB for the test build, 3.6 GiB in all.
+**Caches per platform and kind of build, not one per check.** `game`,
+`clippy` and `doc` compile dependencies in check mode and share one, saved by
+`clippy`; `test` builds and keeps its own; `fmt` builds nothing and takes
+none (before [#92](https://github.com/itsakeyfut/bevy-2d-editor/issues/92),
+`docs` and `commands` were beside it, building only xtask). Since
+[#91](https://github.com/itsakeyfut/bevy-2d-editor/issues/91) the check-mode
+cache exists on Linux only, so four caches rather than six; the sizes below
+are from before it. Before this split the three platform caches measured
+1.40, 1.67 and 1.84 GiB against the repository's default limit of 10 GiB, and
+a cache per check was estimated at about 11 GiB, which evicts at random into
+cold builds. After it the six caches measured 0.29 to 0.39 GiB for check mode
+and 0.74 to 0.93 GiB for the test build, 3.6 GiB in all.
 
 ### Rejected
 
-* **`fmt`, `clippy` and `doc` on one runner**, with only `test` on three. Saves
-  little today and leaves `cfg(windows)` code unlinted once there is any.
+* ~~**`fmt`, `clippy` and `doc` on one runner**, with only `test` on three.
+  Saves little today and leaves `cfg(windows)` code unlinted once there is
+  any.~~ **Reversed** by
+  [#91](https://github.com/itsakeyfut/bevy-2d-editor/issues/91). There is no
+  such code, and when there is, [open-questions.md](./open-questions.md) says
+  `clippy` goes back to three platforms.
+* **The other checks on Windows, the development machine, rather than
+  Linux.** About as fast in all, measured above, on a runner that costs more,
+  and the development machine already runs every check locally through the
+  gate.
 * **The other two platforms only on pushes to `main`.** A Windows-only failure
   would then be found after the merge, which is not what a pull request check
   is for.
@@ -169,7 +245,22 @@ After it the six caches measured 0.29 to 0.39 GiB for check mode and 0.74 to
   passing locally while the job named `tests` fails on `--locked` is a trap,
   and three names that differ by a suffix cannot be read. It also split the
   entry point in two. One prefix, `cargo xtask`, which prints the list when
-  typed alone, is the thing nobody has to be told.
+  typed alone, is the thing nobody has to be told. Still rejected after
+  [#92](https://github.com/itsakeyfut/bevy-2d-editor/issues/92): plain
+  commands in the workflow have none of the naming trouble.
+* **The guard tests moved to `crates/editor/tests/`**, as first designed on
+  [#92](https://github.com/itsakeyfut/bevy-2d-editor/issues/92), and written
+  before the author withdrew it. Withdrawn because the author wanted no test
+  of the workflow and the manifests.
+* **Keeping `docs`, `commands` and the guard tests in a test-only package**
+  outside `crates/`, run by `cargo test`, which would have kept every check
+  and dropped only the task runner. Not taken by the author's decision on
+  [#92](https://github.com/itsakeyfut/bevy-2d-editor/issues/92).
+* **Rewriting `docs` and `commands` as Python scripts** beside `knowledge.sh`.
+  About 2,300 lines rewritten and the 60 tests that hold them lost, and
+  `.claude/` is not in the repository, so CI could not run them.
+* **A local gate script that reads the workflow's commands and runs them**, or
+  one that holds a copy. The author chose to have none.
 * **The matrix generated by a job that runs xtask** and hands the list over
   through `fromJSON`. No second copy at all, at the cost of a serial job before
   every other and a Checks page with no check names until it finishes.
@@ -269,6 +360,12 @@ runs, and it is not what made the drag slow.
 **A cold build takes about three minutes longer**, once per target directory:
 a fresh clone, a `cargo clean`, a toolchain update. On CI that is a cache miss
 on the `test` job, which §3's cache already keys by itself.
+
+**Nothing holds the profile by test.** A test in `xtask` held it until
+[#92](https://github.com/itsakeyfut/bevy-2d-editor/issues/92) retired `xtask`
+and decided, in §3, to keep no tests over the manifests. An entry removed or
+changed stays green, and what it costs is the editor slowing to six frames a
+second again in `cargo run`, which somebody dragging something sees.
 
 **A debugger steps through optimized engine code.** Stepping into Bevy shows
 less than it did; stepping through this workspace's own code is unchanged,

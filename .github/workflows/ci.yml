@@ -18,15 +18,19 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Every check, on every platform, each a job of its own, so a failure reads
-  # on the Checks page as the check and the platform: `clippy (windows-latest)`.
-  # docs/specs/dev-environment.md §3 says why all three platforms run all of it
-  # rather than the cheaper split, and why the checks are listed here at all.
+  # `test` on every platform and every other check on Linux, each a job of its
+  # own, so a failure reads on the Checks page as the check and the platform:
+  # `test (windows-latest)`. docs/specs/dev-environment.md §3 says why only
+  # `test` crosses the platforms, and why the checks are listed here at all.
   #
-  # Each check is a task of `cargo xtask`, which is where its flags live. The
-  # list below is a second copy of the list in xtask, held equal to it by
-  # `the_workflow_runs_every_check_xtask_lists` in xtask/src/main.rs, which
-  # parses this file rather than reading it as text.
+  # The legs are listed with `include` rather than crossed from two lists, so
+  # that every step and the required check below stay one job's.
+  #
+  # Each leg carries the command it runs, flags and all, and this is the only
+  # place the list of checks is written: there is no task runner, no local
+  # gate script, and no test that reads this file. A flag dropped here, or a
+  # crate a game is built from with no `game` leg, is caught by nobody;
+  # docs/specs/dev-environment.md §3 records that.
   check:
     name: ${{ matrix.check }} (${{ matrix.os }})
     strategy:
@@ -34,8 +38,31 @@ jobs:
       # platform rather than all three is most of the diagnosis.
       fail-fast: false
       matrix:
-        check: [fmt, game, clippy, doc, test, docs, commands]
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - check: fmt
+            os: ubuntu-latest
+            run: cargo fmt --all -- --check
+          # One leg per crate a game is built from, each checked as a game
+          # resolves it, without the editor's features unified in.
+          - check: game
+            os: ubuntu-latest
+            run: cargo check -p b2d_runtime --locked
+          - check: clippy
+            os: ubuntu-latest
+            run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          # Linux only, so the assignment in front is bash's.
+          - check: doc
+            os: ubuntu-latest
+            run: RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps --document-private-items --locked
+          - check: test
+            os: ubuntu-latest
+            run: cargo test --workspace --locked --no-fail-fast
+          - check: test
+            os: macos-latest
+            run: cargo test --workspace --locked --no-fail-fast
+          - check: test
+            os: windows-latest
+            run: cargo test --workspace --locked --no-fail-fast
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
@@ -53,11 +80,12 @@ jobs:
       #
       # After `rustup show`, because the cache key includes the toolchain.
       #
-      # Two caches per platform rather than one per check, which would come to
-      # more than the repository's 10 GiB and evict at random. `game`, `clippy`
-      # and `doc` all compile dependencies in check mode, so they share one,
-      # saved by `clippy`, which compiles the most of it. `test` builds and
-      # keeps its own. The other three build only xtask and take no cache.
+      # Caches per platform rather than per check, which would come to more
+      # than the repository's 10 GiB and evict at random. `game`, `clippy` and
+      # `doc` all compile dependencies in check mode, so they share one, saved
+      # by `clippy`, which compiles the most of it; they run on Linux only, so
+      # that cache is Linux's alone. `test` builds and keeps its own on each
+      # platform. `fmt` builds nothing and takes no cache.
       - uses: Swatinem/rust-cache@v2.9.2
         if: contains(fromJSON('["game", "clippy", "doc", "test"]'), matrix.check)
         with:
@@ -81,7 +109,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libwayland-dev libudev-dev
-      - run: cargo xtask ${{ matrix.check }}
+      - run: ${{ matrix.run }}
 
   # The one check name branch protection requires. It stays correct when the
   # matrix gains or loses a check or a platform, because `needs.check.result`

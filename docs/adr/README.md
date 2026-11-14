@@ -147,9 +147,11 @@ slipped rather than a sign of progress.
   whose pointers are dead is a record nobody can check.
 * No em dashes.
 
-`cargo xtask docs` checks the parts of this that a machine can: the
-index and the records agreeing, the statuses matching, and Confirmation being
-filled in.
+Nothing checks this by machine any more. A check that the index and the
+records agree, that the statuses match and that Confirmation is filled in
+existed and was retired with the rest of `xtask`
+([dev-environment.md §3](../specs/dev-environment.md)), so keeping the index
+and the records in step is the author's, at the time a record is written.
 
 ## More information
 
