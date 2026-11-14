@@ -132,6 +132,18 @@ impl Shape {
     ///
     /// Mutation: make it ignore the rows, and
     /// `a_component_added_to_the_selected_entity_rebuilds_the_panel` fails.
+    /// Make it ignore the title, and
+    /// `renaming_the_selected_entity_changes_the_header` fails.
+    ///
+    /// **What it compares inside a row is held by no test**, measured: the
+    /// component, the field names and kinds, and the leaves' names and count
+    /// can each be ignored with the suite green. The row's name is its type's
+    /// short path, so the component differs under the same name only for two
+    /// types sharing a short name, which no test builds. The fields cannot
+    /// differ under the same component at all: [`fields_of`] and
+    /// [`leaves_of`] choose a field's kind and leaves from the type's declared
+    /// fields, never from a value. They are compared so that this stays the
+    /// whole layout if a shape ever does come from a value.
     ///
     /// **Comparing `of` is held by no test**, measured: ignoring it leaves the
     /// suite green, because another entity also has another title, its own
@@ -5252,5 +5264,33 @@ mod tests {
             text_under(app.world(), line),
             ["b2d_editor::inspector::tests::Weight(2.5)"]
         );
+    }
+
+    /// Renaming the selected entity puts the new name in the header.
+    ///
+    /// The rename is a value change, the `Name` row's text, and nothing else
+    /// about the layout moves, so only the title tells the two shapes apart.
+    /// The title is drawn when the panel is built and is not one of the values
+    /// written in place, so a header left standing keeps the old name.
+    ///
+    /// Mutation: make `Shape::same_layout` ignore the title, and this fails.
+    #[test]
+    fn renaming_the_selected_entity_changes_the_header() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut()
+            .entity_mut(middle)
+            .insert(Name::new("Player"));
+        app.update();
+        app.update();
+        assert_eq!(title(&mut app), Some("Player".to_owned()));
+
+        app.world_mut()
+            .entity_mut(middle)
+            .insert(Name::new("Enemy"));
+        app.update();
+        app.update();
+
+        assert_eq!(title(&mut app), Some("Enemy".to_owned()));
     }
 }

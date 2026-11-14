@@ -82,6 +82,9 @@ and watching the named test fail:
 * `a_component_added_to_the_selected_entity_rebuilds_the_panel` inserts a
   component on the selected entity and finds its row. **Mutation: make
   `Shape::same_layout` ignore the rows**, and it fails with nine others.
+* `renaming_the_selected_entity_changes_the_header` renames the selected
+  entity, which changes only a value and the title. **Mutation: make
+  `Shape::same_layout` ignore the title**, and it fails.
 * Writing a box in place has to give the box what a rebuilt one would show,
   and two existing tests found where a value alone does not.
   `ctrl_z_in_a_box_left_empty_by_a_long_value_reaches_the_history` fails when
@@ -97,7 +100,11 @@ and watching the named test fail:
 
 **Comparing the entity in `same_layout` is held by no test**, measured: another
 entity also has another title, so ignoring `of` leaves the suite green. It is
-kept for the reason `Shape::of` gives in the code.
+kept for the reason `Shape::of` gives in the code. Nor is anything compared
+inside a row, measured the same way: the component, the field names and kinds,
+and the leaves can each be ignored with the suite green, because a field's
+kind and leaves come from the component's type rather than from a value.
+`Shape::same_layout` says why each is still compared.
 
 ### Consequences
 
