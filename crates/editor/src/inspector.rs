@@ -3,9 +3,9 @@
 //! What it shows, what it calls an entity, and in what order are settled in
 //! [`docs/specs/ui.md` §6](../../../docs/specs/ui.md); what it lets the user
 //! edit, and what that rejected, is
-//! [§7](../../../docs/specs/ui.md). That the panel is rebuilt rather than
-//! reconciled is
-//! [ADR-0002](../../../docs/adr/0002-rebuild-the-inspector-rather-than-diff-it.md),
+//! [§7](../../../docs/specs/ui.md). That the panel is rebuilt when its layout
+//! changes, and has its values written in place otherwise, is
+//! [ADR-0004](../../../docs/adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md),
 //! and that it is left alone while the user is in it is
 //! [ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md).
 
@@ -120,6 +120,113 @@ struct Shape {
     rows: Vec<Row>,
 }
 
+impl Shape {
+    /// Whether `other` lays the panel out the same way, whatever its values.
+    ///
+    /// Everything `PartialEq` compares except the values: the entity, the
+    /// region, the title, and per row its kind, name and component, per line
+    /// its kind and name, and per box its leaf's name. When this holds and the
+    /// shapes still differ, only values moved, and [`show`] writes them into
+    /// the panel standing rather than rebuilding it:
+    /// [ADR-0004](../../../docs/adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md).
+    ///
+    /// Mutation: make it ignore the rows, and
+    /// `a_component_added_to_the_selected_entity_rebuilds_the_panel` fails.
+    /// Make it ignore the title, and
+    /// `renaming_the_selected_entity_changes_the_header` fails.
+    ///
+    /// **What it compares inside a row is held by no test**, measured: the
+    /// component, the field names and kinds, and the leaves' names and count
+    /// can each be ignored with the suite green. The row's name is its type's
+    /// short path, so the component differs under the same name only for two
+    /// types sharing a short name, which no test builds; ignoring it then
+    /// would leave the boxes writing to the type shown before. The fields cannot
+    /// differ under the same component at all: [`fields_of`] and
+    /// [`leaves_of`] choose a field's kind and leaves from the type's declared
+    /// fields, never from a value. They are compared so that this stays the
+    /// whole layout if a shape ever does come from a value.
+    ///
+    /// **Comparing `of` is what keeps an edit on the entity selected.** Two
+    /// entities with one `Name` and the same components differ in nothing
+    /// else the layout carries, and the boxes left standing would keep
+    /// writing to the one shown before: a commit to an entity the user did
+    /// not choose, through the history but easily unseen. Mutation: ignore
+    /// `of`, and
+    /// `an_edit_after_moving_between_look_alikes_lands_on_the_one_selected`
+    /// fails.
+    fn same_layout(&self, other: &Shape) -> bool {
+        self.of == other.of
+            && self.into == other.into
+            && self.title == other.title
+            && self.rows.len() == other.rows.len()
+            && self.rows.iter().zip(&other.rows).all(|pair| match pair {
+                (
+                    Row::Named {
+                        name: a,
+                        component: ca,
+                        fields: fa,
+                    },
+                    Row::Named {
+                        name: b,
+                        component: cb,
+                        fields: fb,
+                    },
+                ) => {
+                    a == b
+                        && ca == cb
+                        && fa.len() == fb.len()
+                        && fa.iter().zip(fb).all(|pair| match pair {
+                            (Field::Text { name: a, .. }, Field::Text { name: b, .. }) => a == b,
+                            (
+                                Field::Numbers {
+                                    name: a,
+                                    leaves: la,
+                                },
+                                Field::Numbers {
+                                    name: b,
+                                    leaves: lb,
+                                },
+                            ) => {
+                                a == b
+                                    && la.len() == lb.len()
+                                    && la.iter().zip(lb).all(|(x, y)| x.name == y.name)
+                            }
+                            _ => false,
+                        })
+                }
+                (Row::Unregistered, Row::Unregistered) => true,
+                _ => false,
+            })
+    }
+
+    /// The values of the text lines, in the order [`show`] spawns them, which
+    /// is the order [`TextValue`] numbers them in.
+    fn text_values(&self) -> Vec<String> {
+        self.rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Named { fields, .. } => Some(fields),
+                Row::Unregistered => None,
+            })
+            .flatten()
+            .filter_map(|field| match field {
+                Field::Text { value, .. } => Some(value.clone()),
+                Field::Numbers { .. } => None,
+            })
+            .collect()
+    }
+}
+
+/// Where a text line stands among the panel's text lines, put on the root of
+/// the line so that [`write_values_in_place`] can find it again.
+///
+/// A position rather than a name, because a layout compared equal by
+/// [`Shape::same_layout`] spawns the same lines in the same order, so the
+/// position is fixed by the panel standing:
+/// [ADR-0004](../../../docs/adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md).
+#[derive(Component)]
+struct TextValue(usize);
+
 /// One component's row, and what it opens into.
 ///
 /// **What the rows sort on is [`Row::key`] and not a derive.** It used to be
@@ -203,12 +310,18 @@ enum Field {
 /// **`PartialEq` is written by hand, and compares the bits.** A derived one
 /// would use `f32`'s, under which `NaN` is equal to nothing including itself,
 /// so a `Transform` holding a `NaN` would make [`Shape`] differ from itself
-/// every frame and the panel would be despawned and respawned every frame.
-/// That is row 5 of `CLAUDE.md`'s list, and it is the failure
+/// every frame. Under
 /// [ADR-0002](../../../docs/adr/0002-rebuild-the-inspector-rather-than-diff-it.md)
-/// rejected *rebuild every frame* over.
+/// that despawned and respawned the panel every frame, row 5 of `CLAUDE.md`'s
+/// list. Under
+/// [ADR-0004](../../../docs/adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md)
+/// the layout still compares equal, so it would cost a pass of
+/// [`write_values_in_place`] a frame that writes nothing, and the bits are
+/// what keeps the frame idle.
 ///
-/// Mutation: derive `PartialEq` instead, and
+/// **No test holds this alone any more**, measured: deriving `PartialEq`
+/// leaves the suite green, because the write in place keeps the panel
+/// standing. Break that as well, and
 /// `a_panel_holding_a_nan_is_not_rebuilt_every_frame` fails.
 struct Leaf {
     /// What the box is labelled with, from the type's own field name.
@@ -481,6 +594,18 @@ fn show(
         return;
     }
 
+    // Only values moved: the panel stays standing and they are written into
+    // it, which is what a drag does on every frame.
+    // [ADR-0004](../../../docs/adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md).
+    if let (Some(old), Some(new)) = (&shown.0, &wanted)
+        && old.same_layout(new)
+    {
+        let texts = new.text_values();
+        commands.queue(move |world: &mut World| write_values_in_place(world, &texts));
+        commands.insert_resource(Shown(wanted));
+        return;
+    }
+
     // A rebuild leaves the pane's `ScrollPosition` alone, because the pane
     // outlives the panel drawn into it and because most rebuilds are the same
     // entity's values moving: hovering a sprite changes `PickingInteraction`,
@@ -508,6 +633,7 @@ fn show(
             .spawn_scene(pane_body())
             .insert(ChildOf(panel))
             .id();
+        let mut texts = 0..;
         for row in &shape.rows {
             match row {
                 Row::Named {
@@ -548,7 +674,10 @@ fn show(
                                         @field_row(name, value)
                                         Node { padding: {indent} }
                                     })
-                                    .insert(ChildOf(group));
+                                    .insert((
+                                        ChildOf(group),
+                                        TextValue(texts.next().unwrap_or_default()),
+                                    ));
                             }
                             Field::Text { name: None, value } => {
                                 let value = value.clone();
@@ -557,7 +686,10 @@ fn show(
                                         @label_dim(value)
                                         Node { padding: {indent} }
                                     })
-                                    .insert(ChildOf(group));
+                                    .insert((
+                                        ChildOf(group),
+                                        TextValue(texts.next().unwrap_or_default()),
+                                    ));
                             }
                             Field::Numbers { name, leaves } => {
                                 let named = name.clone();
@@ -853,6 +985,112 @@ pub(crate) fn take_back_typing(world: &mut World) -> bool {
     true
 }
 
+/// Write a value-only change into the panel standing: each text line's text,
+/// then each box's value.
+///
+/// A text line drawn by `field_row` keeps its value in its root's last child;
+/// one drawn by `label_dim` is the text itself. A text that would not change is
+/// not written, so a line whose value held still is not marked changed while
+/// the others move. That saves a relayout and is held by no test, measured:
+/// writing every line unconditionally leaves the suite green.
+///
+/// **A box gets its text replaced now, as well as its value**, which is what
+/// [`put_in_box`] does for the focused box after an undo. Given only a
+/// `NumberInputValue`, a box whose new value is longer than it holds keeps its
+/// old text, because the engine refuses such an insert whole, and a box writes
+/// what it holds when it is let go: clicking into it and away would write the
+/// old number over the new one, and that is saved. A rebuilt panel never had
+/// this, since a box spawned for such a value is empty. Measured: with the
+/// `NumberInputValue` alone,
+/// `ctrl_z_in_a_box_left_empty_by_a_long_value_reaches_the_history` found the
+/// box under `1e30` still reading `0`.
+///
+/// **A box is compared by what it shows as well as by its value.** Text that
+/// was typed and refused, or that did not parse, is left in the box by the
+/// commit, as [`docs/specs/ui.md` §7](../../../docs/specs/ui.md) decided, and a
+/// rebuilt panel put the real value back once the focus had left; with no
+/// rebuild, a box whose `NumberInputValue` already holds the value would keep
+/// that text. Measured: comparing the value alone,
+/// `a_scale_the_engine_could_not_read_back_is_never_written` found the box
+/// still reading the refused `0`.
+///
+/// Nothing here runs while focus is in the panel, which [`show`] returns
+/// before, so no box being typed into is touched:
+/// [ADR-0003](../../../docs/adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md).
+///
+/// Mutation: skip the text lines, and
+/// `a_drag_leaves_the_panel_standing_and_its_values_follow` fails on the
+/// `GlobalTransform` line. Mutation: skip the boxes, and it fails on the
+/// translation boxes. Mutation: give a box only its `NumberInputValue`, and
+/// `ctrl_z_in_a_box_left_empty_by_a_long_value_reaches_the_history` fails.
+/// Mutation: compare a box by its value alone, and
+/// `a_scale_the_engine_could_not_read_back_is_never_written` fails.
+fn write_values_in_place(world: &mut World, texts: &[String]) {
+    let lines: Vec<(Entity, usize)> = world
+        .query::<(Entity, &TextValue)>()
+        .iter(world)
+        .map(|(root, at)| (root, at.0))
+        .collect();
+    for (root, at) in lines {
+        let Some(wanted) = texts.get(at) else {
+            continue;
+        };
+        let holder = if world.get::<Text>(root).is_some() {
+            Some(root)
+        } else {
+            world
+                .get::<Children>(root)
+                .and_then(|children| children.last().copied())
+        };
+        let Some(mut text) = holder.and_then(|holder| world.get_mut::<Text>(holder)) else {
+            continue;
+        };
+        if text.0 != *wanted {
+            text.0.clone_from(wanted);
+        }
+    }
+
+    let cells: Vec<(Entity, Writes)> = world
+        .query::<(Entity, &Writes)>()
+        .iter(world)
+        .map(|(cell, writes)| (cell, writes.clone()))
+        .collect();
+    for (cell, target) in cells {
+        let Some(value) = read_leaf(world, &target) else {
+            continue;
+        };
+        let inner = editable_in(world, cell);
+        let holds_value = matches!(
+            world.get::<NumberInputValue>(cell),
+            Some(NumberInputValue::F32(held)) if held.to_bits() == value.to_bits()
+        );
+        let shows_value = inner
+            .and_then(|inner| world.get::<EditableText>(inner))
+            .is_none_or(|text| text.value().to_string() == shown_for(value, text));
+        if holds_value && shows_value {
+            continue;
+        }
+        if let Some(inner) = inner {
+            put_in_box(world, inner, value);
+        }
+        world.entity_mut(cell).insert(NumberInputValue::F32(value));
+    }
+}
+
+/// The entity inside a box that holds the text being edited.
+fn editable_in(world: &World, cell: Entity) -> Option<Entity> {
+    let mut stack = vec![cell];
+    while let Some(next) = stack.pop() {
+        if next != cell && world.get::<EditableText>(next).is_some() {
+            return Some(next);
+        }
+        if let Some(children) = world.get::<Children>(next) {
+            stack.extend(children.iter());
+        }
+    }
+    None
+}
+
 /// Give every box on the panel its leaf's value, without rebuilding it.
 ///
 /// Called after an undo. With no box focused the panel is rebuilt anyway, and
@@ -1111,8 +1349,8 @@ fn holds(world: &World, target: &Writes, new: f32) -> bool {
 mod tests {
     use super::{UNREGISTERED, Writes};
     use crate::pointer::{
-        click_at, hold_key, hold_letter, in_window, release_key, release_letter, scroll_at,
-        write_input,
+        click_at, drag_through, hold_key, hold_letter, in_window, release_key, release_letter,
+        scroll_at, write_input,
     };
     use crate::{Region, Selection, editor, headless};
     use bevy::feathers::controls::FeathersNumberInput;
@@ -3007,13 +3245,17 @@ mod tests {
     /// A panel holding a `NaN` is not rebuilt every frame.
     ///
     /// `f32`'s own `PartialEq` says `NaN` is equal to nothing, itself
-    /// included, so a compared value holding one differs from itself and the
-    /// panel is despawned and respawned on every update. That is row 5 of
-    /// `CLAUDE.md`'s list, and it is the failure ADR-0002 rejected *rebuild
-    /// every frame* over. `Leaf` compares the bits for this reason.
+    /// included, so a compared value holding one differs from itself on every
+    /// update. That is row 5 of `CLAUDE.md`'s list if it rebuilds the panel,
+    /// and it is the failure ADR-0002 rejected *rebuild every frame* over.
     ///
-    /// Mutation: derive `PartialEq` on `Leaf` instead of writing it, and this
-    /// fails with none of the entities surviving.
+    /// **Two things keep the panel standing now, and either one alone holds
+    /// this green**: `Leaf` comparing the bits, so the shape equals itself,
+    /// and a value-only difference being written in place rather than
+    /// rebuilt (ADR-0004). Measured: deriving `PartialEq` on `Leaf` alone
+    /// leaves this green, and so does rebuilding on any difference alone.
+    ///
+    /// Mutation: do both, and this fails with none of the entities surviving.
     #[test]
     fn a_panel_holding_a_nan_is_not_rebuilt_every_frame() {
         let mut app = inspector_editor();
@@ -4957,5 +5199,213 @@ mod tests {
         undo(&mut app);
 
         assert_eq!(scale_of(&app, middle).x, 2.0, "Ctrl+Z took back the commit");
+    }
+
+    /// A drag leaves the panel standing, and its values follow the entity:
+    /// in a box, and in a text line.
+    ///
+    /// The drag changes the entity's `Transform`, `GlobalTransform` and `Aabb`
+    /// on every frame of it, which rebuilt the whole panel on every frame
+    /// until values were written in place
+    /// ([ADR-0004](../../../docs/adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md)).
+    /// Read through the entity ids under the panel, which a rebuild replaces,
+    /// and driven by the pointer over several moves, so each frame of the
+    /// drag goes through the panel.
+    ///
+    /// Mutation: compare whole shapes again in `show`, rebuilding on any
+    /// difference, and this fails on the ids. Mutation: skip the text lines in
+    /// `write_values_in_place`, and it fails on `GlobalTransform`. Mutation:
+    /// skip the boxes, and it fails on the translation box.
+    #[test]
+    fn a_drag_leaves_the_panel_standing_and_its_values_follow() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.update();
+        app.update();
+        let before = under_the_panel(&mut app);
+        assert!(!before.is_empty(), "nothing was built to keep");
+
+        let path: Vec<Vec2> = (0..=4)
+            .map(|step| in_window(Vec2::new(10.0 * step as f32, 0.0)))
+            .collect();
+        drag_through(&mut app, &path);
+        app.update();
+        app.update();
+
+        assert_eq!(
+            under_the_panel(&mut app),
+            before,
+            "the drag rebuilt the panel"
+        );
+        let x = translation(&app, middle).x;
+        assert!(
+            x > 30.0,
+            "the drag moved the entity to {x}, so this says nothing"
+        );
+        let line = line_of(&mut app, "Transform", 0);
+        let shown: f32 = numbers_on(&mut app, line)[0]
+            .parse()
+            .expect("the box holds a number");
+        assert_eq!(shown.to_bits(), x.to_bits(), "the translation box");
+        let global = line_of(&mut app, "GlobalTransform", 0);
+        let text = text_under(app.world(), global).join(" ");
+        assert!(
+            text.contains(&format!("{x:?}")),
+            "the GlobalTransform line does not show {x:?}: {text}"
+        );
+    }
+
+    /// A component added to the entity already selected puts its row on
+    /// screen: a change of layout rebuilds the panel, as it did before values
+    /// were written in place.
+    ///
+    /// Only the rows differ here, the entity, the region and the title being
+    /// the same, so a layout comparison that skipped the rows would call this
+    /// a value change and leave the new component off the panel.
+    ///
+    /// Mutation: make `Shape::same_layout` ignore the rows, and this fails.
+    #[test]
+    fn a_component_added_to_the_selected_entity_rebuilds_the_panel() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.update();
+        app.update();
+
+        app.world_mut().entity_mut(middle).insert(Weight(2.5));
+        app.update();
+        app.update();
+
+        let line = line_of(&mut app, "Weight", 0);
+        assert_eq!(
+            text_under(app.world(), line),
+            ["b2d_editor::inspector::tests::Weight(2.5)"]
+        );
+    }
+
+    /// Renaming the selected entity puts the new name in the header.
+    ///
+    /// The rename is a value change, the `Name` row's text, and nothing else
+    /// about the layout moves, so only the title tells the two shapes apart.
+    /// The title is drawn when the panel is built and is not one of the values
+    /// written in place, so a header left standing keeps the old name.
+    ///
+    /// Mutation: make `Shape::same_layout` ignore the title, and this fails.
+    #[test]
+    fn renaming_the_selected_entity_changes_the_header() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut()
+            .entity_mut(middle)
+            .insert(Name::new("Player"));
+        app.update();
+        app.update();
+        assert_eq!(title(&mut app), Some("Player".to_owned()));
+
+        app.world_mut()
+            .entity_mut(middle)
+            .insert(Name::new("Enemy"));
+        app.update();
+        app.update();
+
+        assert_eq!(title(&mut app), Some("Enemy".to_owned()));
+    }
+
+    /// A field of text that changes while the layout holds is written into
+    /// the line already showing it, beside its name rather than over it.
+    ///
+    /// The drag test reads `GlobalTransform`, whose line has no name and is
+    /// its own text. A line with a name is drawn by `field_row`, which keeps
+    /// the value in the line's last child, and finds its value by a position
+    /// numbered in a different arm of `show`; neither was reached by any test.
+    ///
+    /// Mutation: take the line's first child rather than its last in
+    /// `write_values_in_place`, and this fails with the name overwritten.
+    /// Mutation: number every named line `TextValue(0)`, and this fails with
+    /// another line's text.
+    #[test]
+    fn a_named_text_field_changed_in_place_is_written_beside_its_name() {
+        let mut app = inspector_editor();
+        let middle = select_the_middle(&mut app);
+        app.world_mut().entity_mut(middle).insert(Titled {
+            title: "before".to_owned(),
+        });
+        app.update();
+        app.update();
+        let before = under_the_panel(&mut app);
+
+        app.world_mut()
+            .get_mut::<Titled>(middle)
+            .expect("inserted above")
+            .title = "after".to_owned();
+        app.update();
+        app.update();
+
+        assert_eq!(
+            under_the_panel(&mut app),
+            before,
+            "a value change rebuilt the panel, so this says nothing about the write"
+        );
+        let line = line_of(&mut app, "Titled", 0);
+        assert_eq!(
+            text_under(app.world(), line),
+            ["title", "\"after\""],
+            "the named line does not show its new value beside its name"
+        );
+    }
+
+    /// Moving the selection between two entities that look alike rebuilds
+    /// the panel, so an edit lands on the entity selected.
+    ///
+    /// Two placeholders named alike, with the same components, differ only in
+    /// which entity they are, and in their values. A layout comparison that
+    /// skipped the entity would call the move a value change, and the boxes
+    /// standing would keep writing to the entity shown before: the header
+    /// reads the same name, the boxes show the other entity's numbers, and a
+    /// commit moves it, which is a value the user did not choose landing
+    /// where they are not looking.
+    ///
+    /// Mutation: make `Shape::same_layout` ignore `of`, and this fails with
+    /// the edit on the left placeholder.
+    #[test]
+    fn an_edit_after_moving_between_look_alikes_lands_on_the_one_selected() {
+        let mut app = inspector_editor();
+        // Found by where they stand rather than by clicking, so that nothing
+        // has been shown before both carry the name.
+        let at = |app: &mut App, x: f32| -> Entity {
+            let mut query = app.world_mut().query::<(Entity, &Transform, &Sprite)>();
+            query
+                .iter(app.world())
+                .find(|(_, transform, _)| transform.translation.x == x)
+                .map(|(entity, _, _)| entity)
+                .expect("a placeholder stands there")
+        };
+        let (left, middle) = (at(&mut app, -200.0), at(&mut app, 0.0));
+        for entity in [left, middle] {
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(Name::new("Enemy"));
+        }
+        click_at(
+            &mut app,
+            in_window(Vec2::new(-200.0, 0.0)),
+            PointerButton::Primary,
+        );
+        app.update();
+        app.update();
+        click_at(&mut app, in_window(Vec2::ZERO), PointerButton::Primary);
+        app.update();
+        app.update();
+        let left_before = translation(&app, left);
+
+        let line = line_of(&mut app, "Transform", 0);
+        let y = boxes_on(&mut app, line)[1];
+        type_and_commit(&mut app, y, "-42.5");
+
+        assert_eq!(
+            translation(&app, left),
+            left_before,
+            "the edit landed on an entity that is not selected"
+        );
+        assert_eq!(translation(&app, middle).y, -42.5, "the selected one");
     }
 }

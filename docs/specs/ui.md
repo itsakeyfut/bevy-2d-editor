@@ -682,8 +682,10 @@ pane now scrolls with the wheel, through `bevy_ui_widgets::ScrollArea` and a
 mechanism this project wrote.
 
 **The scroll position lives on the pane, not on the panel drawn into it**,
-because the panel is despawned and respawned whenever anything in it changes,
-hovering a sprite included. It goes back to the top when the selection moves to
+because the panel is despawned and respawned whenever its layout changes: another
+entity, a component added or removed
+([ADR-0004](../adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md)).
+It goes back to the top when the selection moves to
 **another entity**, and only then: a position into one entity's list means
 nothing in another's, while a rebuild of the same entity is the ordinary case
 and must not throw the reader back to the top.
@@ -703,8 +705,9 @@ looks like here until it says otherwise, and it is one line of noise rather than
 a wrong value.
 
 **Every value is formatted every frame**, because
-[ADR-0002](../adr/0002-rebuild-the-inspector-rather-than-diff-it.md) compares
-the finished picture and the picture now holds the text. That is 22 short
+[ADR-0004](../adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md),
+like the ADR-0002 it replaced, compares the finished picture and the picture
+holds the text. That is 22 short
 strings a frame for one placeholder. A component carrying a large array would
 make it row 5, and phase 2's tile data is the first thing that could; the answer
 then is to bound what a row formats rather than to start watching for changes.
@@ -738,7 +741,7 @@ the panel is editable.
 | The box | `bevy_feathers`' `FeathersNumberInput`. On 0.20 it takes any character, and what does not parse is the row below |
 | The name beside it | the leaf's own name through reflection, `x`, `y`, `z`, `w`, dimmed, drawn by this project rather than by the widget |
 | What commits | **Enter, the box losing focus, or letting go of a drag across the box**, which the widget turns into a scrub. Typing moves nothing, and neither do the steps of a scrub |
-| A value that does not parse | **nothing is written.** The box keeps the typed text until it loses focus, and the real value comes back with the rebuild that follows |
+| A value that does not parse | **nothing is written.** The box keeps the typed text until it loses focus, and the real value comes back the next time the panel draws a change after that, which writes it into the box in place rather than rebuilding it ([ADR-0004](../adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md)) |
 | A value that parses and cannot be held | **nothing is written, as for one that does not parse**, and the box keeps the typed text: a value that is not finite, and on `Transform` a value that turns a transform the editor can hold into one it cannot, which is one the engine cannot read a scale and a rotation back out of, or one whose world bounds have no width or no height. Decided on issue #82 |
 | Where the write lands | one `f32` leaf, of one field, of one component, on the active entity, through `World::get_reflect_mut`, as a command the history holds ([data-model.md §1](./data-model.md)) |
 | While a box has focus | **the panel is not rebuilt**, so the box survives the value it just changed, and for one frame after the focus leaves, so that it survives its own commit. [ADR-0003](../adr/0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) |
@@ -1350,9 +1353,14 @@ is read where the pointer is after the whole frame's input, so the entity does
 not follow that first step and trails the pointer by it for the rest of the
 drag. The box has the same property. Row 4, and only on a long frame.
 
-**The inspector rebuilds on every frame of a drag**, because the transform it
+~~**The inspector rebuilds on every frame of a drag**, because the transform it
 shows changes. Bounded by one panel and not measured. Row 5 if it ever shows,
-and the run in the real window is where it is looked at.
+and the run in the real window is where it is looked at.~~ **Retired by
+[#88](https://github.com/itsakeyfut/bevy-2d-editor/issues/88).** It did show:
+120 to 160 ms a frame in a development build, measured on #86. The panel is
+now rebuilt only when its layout changes, and a drag's values are written into
+the rows already showing them
+([ADR-0004](../adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md)).
 
 **A move writes a world distance as a local one.** That holds while nothing in
 the editor has a parent. A hierarchy is what breaks it.
