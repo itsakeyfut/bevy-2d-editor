@@ -1350,9 +1350,14 @@ is read where the pointer is after the whole frame's input, so the entity does
 not follow that first step and trails the pointer by it for the rest of the
 drag. The box has the same property. Row 4, and only on a long frame.
 
-**The inspector rebuilds on every frame of a drag**, because the transform it
+~~**The inspector rebuilds on every frame of a drag**, because the transform it
 shows changes. Bounded by one panel and not measured. Row 5 if it ever shows,
-and the run in the real window is where it is looked at.
+and the run in the real window is where it is looked at.~~ **Retired by
+[#88](https://github.com/itsakeyfut/bevy-2d-editor/issues/88).** It did show:
+120 to 160 ms a frame in a development build, measured on #86. The panel is
+now rebuilt only when its layout changes, and a drag's values are written into
+the rows already showing them
+([ADR-0004](../adr/0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md)).
 
 **A move writes a world distance as a local one.** That holds while nothing in
 the editor has a parent. A hierarchy is what breaks it.

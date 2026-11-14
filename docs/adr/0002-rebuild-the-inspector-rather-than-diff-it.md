@@ -1,10 +1,15 @@
 ---
-status: "accepted"
+status: "superseded by ADR-0004"
 date: 2026-09-23
 decision-makers: the project's owner, during `/spec` on #42
 ---
 
 # Rebuild the inspector's panel rather than reconcile it, and walk the entity with the engine's own call
+
+**Superseded by [ADR-0004](./0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md)**
+for when the panel is rebuilt: a drag in the viewport made the rebuild visible as
+a dropped frame, which is the reversal this record named. The walk, the second
+half of what this decided, stands.
 
 ## Context and Problem Statement
 

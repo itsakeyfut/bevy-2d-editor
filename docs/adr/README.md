@@ -37,10 +37,11 @@ code to look at, it is a record.
 | # | Decision | Status | Confirmed by |
 | --- | --- | --- | --- |
 | [0001](./0001-compose-the-editor-from-a-table-a-test-can-read.md) | Compose the editor from a table a test can read, not from Bevy's `plugin_group!` | accepted | `the_group_carries_the_members_the_table_names` |
-| [0002](./0002-rebuild-the-inspector-rather-than-diff-it.md) | Rebuild the inspector's panel rather than reconcile it, and walk the entity from an ordinary system | accepted | `the_inspector_does_not_rebuild_what_has_not_changed` |
+| [0002](./0002-rebuild-the-inspector-rather-than-diff-it.md) | Rebuild the inspector's panel rather than reconcile it, and walk the entity from an ordinary system | superseded by ADR-0004 | `the_inspector_does_not_rebuild_what_has_not_changed` |
 | [0003](./0003-the-inspector-panel-belongs-to-the-user-while-focus-is-in-it.md) | The inspector panel belongs to the user while focus is inside it, so `show` does not rebuild it | accepted | `a_focused_field_survives_the_edit_it_commits` |
+| [0004](./0004-rebuild-the-inspector-on-its-layout-and-write-values-in-place.md) | Rebuild the inspector's panel when its layout changes, and write a changed value into the row already showing it | accepted | `a_drag_leaves_the_panel_standing_and_its_values_follow` |
 
-**By status**: accepted: 0001, 0002, 0003 · proposed: none · superseded: none
+**By status**: accepted: 0001, 0003, 0004 · proposed: none · superseded: 0002
 
 Records are numbered consecutively from `0001`.
 
