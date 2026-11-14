@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask"]
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,28 +22,25 @@ b2d_editor_ui = { path = "crates/editor_ui" }
 # The stack, and why the defaults are not taken, are settled in
 # docs/specs/ui.md §3. What dropping them costs is bevy_audio and bevy_gltf and
 # nothing this milestone needs; §3 carries the measurement, and a second copy
-# of it here is a second copy to go stale. xtask's
-# every_crate_that_takes_the_engine_gets_the_features_the_specification_settled
-# holds this entry against that section.
+# of it here is a second copy to go stale. Nothing holds this entry against
+# that section by machine since xtask was retired (dev-environment.md §3).
 bevy = { version = "0.20.1", default-features = false, features = [
     "2d",
     "ui",
     "bevy_feathers",
 ] }
-regex = "1.13.1"
 serde_json = "1.0.151"
-toml = "1.2.1"
-yaml-rust2 = "0.13.0"
 
 [workspace.lints.rust]
-# The gate runs clippy with `-D warnings`, so a crate that does not say what it
+# CI's clippy leg runs with `-D warnings`, so a crate that does not say what it
 # is for fails the build rather than drifting.
 missing_docs = "warn"
 # Nothing here needs it: Bevy's API is safe, and `TilemapChunk`, reflection and
 # the asset system are all reachable without it. A block that appears is a sign
 # that something the engine already does is being done again by hand. `forbid`
 # rather than `deny`, so that an `#[allow]` inside a crate cannot lower it.
-# xtask's `unsafe_code_is_forbidden_in_every_crate` holds every member to this.
+# A member gets it only by saying `[lints] workspace = true`, which nothing
+# checks by machine since xtask was retired (dev-environment.md §3).
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
