@@ -359,7 +359,24 @@ runs, and it is not what made the drag slow.
 
 **A cold build takes about three minutes longer**, once per target directory:
 a fresh clone, a `cargo clean`, a toolchain update. On CI that is a cache miss
-on the `test` job, which §3's cache already keys by itself.
+on the `test` job, which §3's cache already keys by itself. Measured on the
+first run of [#89](https://github.com/itsakeyfut/bevy-2d-editor/pull/89),
+where every `test` cache missed, against the first run of #91's matrix, which
+also missed, and `main`'s last warm run before either:
+
+| `test` job | dependencies at 3, cold | at 0, cold | at 0, warm |
+| --- | --- | --- | --- |
+| `ubuntu-latest` | 13m45s | 6m31s | 3m08s |
+| `macos-latest` | 21m14s | 7m28s | 1m08s |
+| `windows-latest` | 39m16s | 14m29s | 7m35s |
+
+A cold `test` job takes two to three times as long, and the Windows one
+becomes the run's whole critical path. The `test` caches it saves are larger,
+1,787 MiB on Windows and 1,304 MiB on macOS against 1,196 and 996 MiB at 0,
+which brings §3's caches, kept per pull request as well as on `main`, nearer
+the repository's 10 GiB and the evictions that limit causes. What a warm
+`test` job costs with optimized dependencies is not measured yet: it needs a
+run on `main` that finds the cache this one saves.
 
 **Nothing holds the profile by test.** A test in `xtask` held it until
 [#92](https://github.com/itsakeyfut/bevy-2d-editor/issues/92) retired `xtask`
